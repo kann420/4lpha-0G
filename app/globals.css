@@ -1,0 +1,367 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-geist-sans);
+}
+
+:root {
+  --bg: #05080c;
+  --background: #05080c;
+  --foreground: #edf4f6;
+  --panel: rgba(10, 15, 20, 0.86);
+  --panel-strong: rgba(12, 18, 25, 0.96);
+  --line: rgba(255, 255, 255, 0.09);
+  --line-strong: rgba(255, 255, 255, 0.15);
+  --text: #eef7f7;
+  --muted: #7f93a4;
+  --teal: #1ee8c5;
+  --amber: #ffd166;
+  --rose: #ff7063;
+  --green: #92e766;
+  --blue: #75a7ff;
+  --pulse-bg: #05080c;
+  --pulse-panel: rgb(11 17 22 / 0.78);
+  --pulse-panel-strong: rgb(12 20 26 / 0.94);
+  --pulse-line: rgb(255 255 255 / 0.08);
+  --pulse-teal: #1ee8c5;
+  --pulse-amber: #ffd166;
+  --pulse-rose: #ff7063;
+  --pulse-image-outline: rgb(255 255 255 / 0.1);
+  --radius: 1rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 17px;
+  overflow-x: hidden;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  min-height: 100%;
+  margin: 0;
+  background: #030405;
+  font-family: var(--font-geist-sans);
+  font-feature-settings: "cv02" 1, "cv03" 1, "cv04" 1;
+  overflow-x: hidden;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  text-wrap: balance;
+}
+
+p,
+li,
+blockquote {
+  text-wrap: pretty;
+}
+
+img {
+  outline: 1px solid var(--pulse-image-outline);
+  outline-offset: -1px;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.og-dark-select {
+  color-scheme: dark;
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.og-dark-select option {
+  background-color: #020617;
+  color: #f8fafc;
+}
+
+button,
+a,
+[role="button"] {
+  touch-action: manipulation;
+}
+
+::selection {
+  background: rgba(30, 232, 197, 0.24);
+  color: #ffffff;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+:where(table, [role="table"], .tabular-nums, .font-mono) {
+  font-variant-numeric: tabular-nums;
+}
+
+:where(code, kbd, samp, pre) {
+  font-family: var(--font-geist-mono);
+  font-size: 0.94em;
+}
+
+.font-heading {
+  font-family: var(--font-heading);
+}
+
+.tracking-tight {
+  letter-spacing: 0;
+}
+
+.text-\[10px\] {
+  font-size: 0.8125rem;
+  line-height: 1.125rem;
+}
+
+.text-\[11px\] {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+
+.text-\[12px\],
+.text-\[13px\] {
+  font-size: 0.9375rem;
+  line-height: 1.375rem;
+}
+
+.scrollbar-subtle {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+
+.scrollbar-subtle::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-subtle::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-subtle::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  background: rgba(255, 255, 255, 0.12);
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+
+.surface-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.92), rgba(0, 0, 0, 0.38));
+}
+
+.soft-panel {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 18px 48px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(14px);
+}
+
+:where(section, article, aside, header, footer, form)[class*="border"] {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 18px 52px rgba(0, 0, 0, 0.24);
+  backdrop-filter: blur(12px);
+}
+
+:where(button, input, select, textarea)[class*="border"] {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 10px 24px rgba(0, 0, 0, 0.16);
+}
+
+.ambient-surface {
+  position: relative;
+  isolation: isolate;
+  background-color: var(--pulse-bg);
+  overflow: hidden;
+}
+
+.ambient-surface::before,
+.ambient-surface::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.ambient-surface::before {
+  background:
+    radial-gradient(circle at 12% 16%, rgb(56 110 255 / 0.28), transparent 18rem),
+    radial-gradient(circle at 74% 18%, rgb(255 184 72 / 0.24), transparent 20rem),
+    radial-gradient(circle at 86% 72%, rgb(255 87 101 / 0.08), transparent 16rem),
+    radial-gradient(circle at 42% 88%, rgb(28 79 235 / 0.18), transparent 20rem),
+    linear-gradient(180deg, #050608 0%, #040506 48%, #030405 100%);
+  opacity: 1;
+  filter: saturate(1.15);
+  transform: translate3d(0, 0, 0);
+  animation: ambient-drift 26s ease-in-out infinite alternate;
+}
+
+.ambient-surface::after {
+  background:
+    repeating-linear-gradient(132deg, rgb(255 255 255 / 0.05) 0 1px, transparent 1px 88px),
+    repeating-linear-gradient(48deg, rgb(255 255 255 / 0.03) 0 1px, transparent 1px 132px),
+    repeating-linear-gradient(8deg, rgb(255 255 255 / 0.018) 0 1px, transparent 1px 184px),
+    conic-gradient(from 210deg at 24% 22%, transparent 0 24deg, rgb(255 255 255 / 0.035) 24deg 30deg, transparent 30deg 94deg, rgb(255 255 255 / 0.024) 94deg 100deg, transparent 100deg 360deg),
+    conic-gradient(from 40deg at 74% 18%, transparent 0 28deg, rgb(255 255 255 / 0.03) 28deg 34deg, transparent 34deg 176deg, rgb(255 255 255 / 0.02) 176deg 182deg, transparent 182deg 360deg),
+    radial-gradient(circle at 22% 18%, rgb(56 110 255 / 0.26), transparent 8rem),
+    radial-gradient(circle at 54% 28%, rgb(255 184 72 / 0.2), transparent 9rem),
+    radial-gradient(circle at 78% 72%, rgb(255 87 101 / 0.1), transparent 10rem),
+    radial-gradient(circle at 42% 56%, rgb(28 79 235 / 0.16), transparent 10rem);
+  opacity: 1;
+  filter: blur(0.35px) blur(14px);
+  mix-blend-mode: screen;
+  animation: ambient-sweep 18s linear infinite;
+}
+
+.ambient-surface > * {
+  position: relative;
+  z-index: 1;
+}
+
+.interaction {
+  transition-property: background-color, border-color, color, filter, transform, opacity;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.interaction:hover {
+  transform: translateY(-1px);
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes nav-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes beacon {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+}
+
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(0, -18px, 0) scale(1.05);
+  }
+}
+
+@keyframes ambient-drift {
+  0% {
+    transform: translate3d(-1.5%, -0.5%, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(1.5%, 0.8%, 0) scale(1.04);
+  }
+  100% {
+    transform: translate3d(0.5%, -1%, 0) scale(1.02);
+  }
+}
+
+@keyframes ambient-sweep {
+  0% {
+    transform: translate3d(-1%, 0, 0);
+  }
+  50% {
+    transform: translate3d(1%, 0.5%, 0);
+  }
+  100% {
+    transform: translate3d(-1%, 0, 0);
+  }
+}
+
+.animate-rise-in {
+  animation: rise-in 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-nav-in {
+  animation: nav-in 500ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-feed-reveal {
+  animation: rise-in 550ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.animate-beacon {
+  animation: beacon 1.8s ease-in-out infinite;
+}
+
+.animate-drift-slow {
+  animation: drift 18s ease-in-out infinite;
+}
+
+.animate-drift-delayed {
+  animation: drift 24s ease-in-out infinite reverse;
+}
+
+.interaction-transition {
+  transition-property: background-color, border-color, color, filter, transform, opacity;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.hit-area-40 {
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
+  }
+}
