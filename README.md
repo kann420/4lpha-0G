@@ -6,6 +6,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-6-blue?logo=typescript)](https://www.typescriptlang.org)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-4-38bdf8?logo=tailwindcss)](https://tailwindcss.com)
 [![0G Galileo](https://img.shields.io/badge/0G-Galileo%20testnet-111827)](https://chainscan-galileo.0g.ai)
+[![0G Mainnet](https://img.shields.io/badge/0G-Mainnet-22c55e)](https://chainscan.0g.ai)
 
 4lpha 0G rebuilds the product around the 0G stack instead of legacy assumptions from the previous product line. The app centers on four surfaces:
 
