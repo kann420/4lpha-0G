@@ -159,6 +159,8 @@ npm run lint
 
 Copilot is available as an embedded chat rail inside AI Scan and Agents. All LLM calls should go through server-side routes and the 0G Compute Router integration.
 
+For executable trade commands, Copilot uses Tria (TradeGPT) route context for quote and route selection, then submits only allowlisted buy/sell requests through the 0G Policy Vault. The vault remains the on-chain enforcement layer for spend caps, min-out, deadlines, executor scope, and proof binding.
+
 ### Agents
 
 `/agents` is the trading agent workspace. It covers:
@@ -167,6 +169,7 @@ Copilot is available as an embedded chat rail inside AI Scan and Agents. All LLM
 - Run review and status
 - Audit evidence and proof references
 - Policy visibility
+- Trade execution through Tria (TradeGPT) routes, with Policy Vault checks before any executor transaction
 - Embedded Copilot support
 
 ### Fund / Vault
