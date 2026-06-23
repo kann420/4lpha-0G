@@ -1,6 +1,6 @@
 # 4lpha 0G
 
-0G-native autonomous trading agent experience for the 0G Zero Cup hackathon.
+0G-native autonomous trading agent experience for AI-assisted discovery, policy-vault execution, and proof-backed agent workflows.
 
 [![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-6-blue?logo=typescript)](https://www.typescriptlang.org)
@@ -8,14 +8,14 @@
 [![0G Galileo](https://img.shields.io/badge/0G-Galileo%20testnet-111827)](https://chainscan-galileo.0g.ai)
 [![0G Mainnet](https://img.shields.io/badge/0G-Mainnet-22c55e)](https://chainscan.0g.ai)
 
-4lpha 0G rebuilds the product around the 0G stack instead of legacy assumptions from the previous product line. The app centers on four surfaces:
+4lpha 0G centers the trading workflow on four connected surfaces:
 
 - AI Scan
 - Copilot
 - Trading Agent
 - Fund as a 0G Policy Vault
 
-The repo is designed to stand on its own as a public demo and hackathon submission.
+The product is designed to stand on its own as a 0G-native autonomous trading workspace.
 
 ---
 
