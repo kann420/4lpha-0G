@@ -45,6 +45,11 @@ export interface OgAgentDeploymentRecord {
   runtime?: OgAgentRuntimeSettings;
 }
 
+export interface OgRemovedAgentRecord extends OgAgentDeploymentRecord {
+  removedAt: string;
+  removedBy?: Address;
+}
+
 export interface OgAgentRuntimeSettings {
   maxCapitalPerTrade0G?: string;
   maxHoldingMinutes: number;
@@ -126,7 +131,7 @@ export interface OgAgentWorkspace {
     id: string;
     name: string;
     readiness: AgentTradeReadiness;
-    status: "draft" | "armed" | "paused" | "blocked";
+    status: "draft" | "armed" | "paused" | "blocked" | "removed";
   };
   agents: OgAgentDeploymentRecord[];
   filters: OgAgentFilterPreset[];
@@ -142,6 +147,7 @@ export interface OgAgentWorkspace {
     label: "Coming soon";
   };
   logs: OgAgentLogEntry[];
+  removedAgents: OgRemovedAgentRecord[];
   storage: OgAgentStorageSnapshot;
   vault: OgAgentVaultSnapshot;
 }

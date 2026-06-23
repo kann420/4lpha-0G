@@ -750,10 +750,6 @@ export function EmbeddedCopilotRail({
                 mode={permissionMode}
                 onChange={(mode) => setPermissionModeByNetwork((current) => ({ ...current, [networkId]: mode }))}
               />
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs font-semibold text-slate-400">
-                <ShieldCheck className="h-3 w-3" />
-                {networkId === "mainnet" ? "Mainnet isolated" : "Testnet isolated"}
-              </span>
             </div>
             <button
               type="button"

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { loadOgAgentWorkspace, removeSingleOgAgentRecord } from "@/lib/agent/single-agent-server";
+import { readMainnetOwnerAddress } from "@/lib/agent/mainnet-vault-resolver";
 import { validateCopilotWalletGate } from "@/lib/copilot/wallet-gate";
 import { getOgNetwork } from "@/lib/og/networks";
 
@@ -31,7 +32,11 @@ export async function POST(request: Request) {
     return removeError(walletError.code, walletError.message, walletError.status);
   }
 
-  const workspace = await loadOgAgentWorkspace(parsed.data.agentId);
+  const ownerAddress = readMainnetOwnerAddress(parsed.data.wallet.address);
+  if (!ownerAddress) {
+    return removeError("invalid_wallet", "Connected wallet address is not valid.", 400);
+  }
+  const workspace = await loadOgAgentWorkspace({ agentId: parsed.data.agentId, ownerAddress });
   if (workspace.agent.id !== parsed.data.agentId || !workspace.agent.deployment) {
     return removeError("agent_not_found", "Unknown 0G agent id.", 404);
   }
@@ -44,8 +49,8 @@ export async function POST(request: Request) {
     return removeError("owner_required", "Connect the Policy Vault owner wallet before removing this agent.", 403);
   }
 
-  const removed = await removeSingleOgAgentRecord(parsed.data.agentId, workspace.agent.deployment);
-  const nextWorkspace = await loadOgAgentWorkspace();
+  const removed = await removeSingleOgAgentRecord(parsed.data.agentId, workspace.agent.deployment, ownerAddress);
+  const nextWorkspace = await loadOgAgentWorkspace({ ownerAddress });
   return NextResponse.json({ data: { removed, workspace: nextWorkspace } });
 }
 

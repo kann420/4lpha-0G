@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getAddress, isAddress, type Address } from "viem";
 import { z } from "zod";
 import {
   AgentTradeError,
@@ -19,9 +20,11 @@ const requestSchema = z.object({
   intent: z.enum(["preview", "execute"]),
   networkId: z.string().trim().optional(),
   operatorKey: z.string().trim().min(1).max(256).optional(),
+  ownerAddress: z.string().trim().optional(),
   routeId: z.string().trim().min(1).max(128),
   side: z.enum(["buy", "sell"]),
   slippageBps: z.number().int().min(1).max(500),
+  vaultAddress: z.string().trim().optional(),
 });
 
 export async function POST(request: Request) {
@@ -46,9 +49,11 @@ export async function POST(request: Request) {
     auditId: parsed.data.auditId,
     intent: parsed.data.intent,
     networkId,
+    ownerAddress: parseAddress(parsed.data.ownerAddress),
     routeId: parsed.data.routeId,
     side: parsed.data.side,
     slippageBps: parsed.data.slippageBps,
+    vaultAddress: parseAddress(parsed.data.vaultAddress),
   };
 
   try {
@@ -76,6 +81,10 @@ export async function POST(request: Request) {
 function isAuthorizedOperator(value: string | undefined): boolean {
   const expected = process.env.AGENT_TRADE_OPERATOR_KEY?.trim();
   return Boolean(expected && value === expected);
+}
+
+function parseAddress(value: string | undefined): Address | undefined {
+  return value && isAddress(value) ? getAddress(value) : undefined;
 }
 
 async function readJson(request: Request): Promise<unknown | "body_too_large"> {

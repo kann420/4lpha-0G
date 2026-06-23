@@ -5,6 +5,7 @@ import {
   loadOgAgentWorkspace,
   OgAgentDeployError,
 } from "@/lib/agent/single-agent-server";
+import { readMainnetOwnerAddress } from "@/lib/agent/mainnet-vault-resolver";
 import { OG_AGENT_FILTER_PRESETS, type OgAgentFilterId } from "@/lib/agent/single-agent";
 import { validateCopilotWalletGate } from "@/lib/copilot/wallet-gate";
 import { getOgNetwork } from "@/lib/og/networks";
@@ -41,7 +42,11 @@ export async function POST(request: Request) {
   if (walletError) {
     return deployError(walletError.code, walletError.message, walletError.status);
   }
-  const currentWorkspace = await loadOgAgentWorkspace();
+  const ownerAddress = readMainnetOwnerAddress(parsed.data.wallet.address);
+  if (!ownerAddress) {
+    return deployError("invalid_wallet", "Connected wallet address is not valid.", 400);
+  }
+  const currentWorkspace = await loadOgAgentWorkspace({ ownerAddress });
   const owner = currentWorkspace.agent.deployment?.owner ?? currentWorkspace.vault.owner;
   if (!owner) {
     return deployError("owner_unavailable", "Policy Vault owner must be verified before minting Agentic ID.", 409);
@@ -54,9 +59,10 @@ export async function POST(request: Request) {
     const deployment = await deploySingleOgAgent({
       filterIds: parsed.data.filterIds,
       name: parsed.data.name,
+      ownerAddress,
       runtime: parsed.data.runtime,
     });
-    const workspace = await loadOgAgentWorkspace(deployment.id);
+    const workspace = await loadOgAgentWorkspace({ agentId: deployment.id, ownerAddress });
     return NextResponse.json({ data: { deployment, workspace } }, { status: 201 });
   } catch (error) {
     if (error instanceof OgAgentDeployError) {

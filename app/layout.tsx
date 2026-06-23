@@ -18,7 +18,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "4lpha 0G",
   description:
-    "A 0G-native AI Scan, trading agent, and Policy Vault workspace.",
+    "AI-powered token intelligence and autonomous trading agents on 0G, with Smart Scan for fast risk-aware discovery.",
   icons: {
     icon: "/4lpha_logo.svg",
   },

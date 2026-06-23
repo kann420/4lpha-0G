@@ -272,9 +272,11 @@ export interface AgentTradeRequest {
   auditId?: string;
   intent: AgentTradeIntent;
   networkId: OgNetworkId;
+  ownerAddress?: Address;
   routeId: string;
   side: AgentTradeSide;
   slippageBps: number;
+  vaultAddress?: Address;
 }
 
 export interface AgentRouteQuote {
@@ -324,6 +326,7 @@ export interface AgentTradePreview {
   proofBundle: AgentAuditProofPreview;
   quote: AgentRouteQuote;
   route: AgentTradeRouteOption;
+  vaultAddress?: Address;
 }
 
 export interface AgentTradeExecution {

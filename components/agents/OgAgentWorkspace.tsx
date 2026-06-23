@@ -22,11 +22,13 @@ import {
   type EmbeddedCopilotMessage,
 } from "@/components/app/EmbeddedCopilotRail";
 import { useOgNetwork } from "@/components/app/useOgNetwork";
-import type { OgAgentDeploymentRecord, OgAgentWorkspace } from "@/lib/agent/single-agent";
+import { useWalletConnection } from "@/components/wallet/useWalletConnection";
+import type { OgAgentDeploymentRecord, OgAgentWorkspace, OgRemovedAgentRecord } from "@/lib/agent/single-agent";
 import type { CopilotContextItem } from "@/lib/types";
 
-type RosterFilter = "all" | "armed" | "paused" | "blocked" | "draft";
+type RosterFilter = "all" | "armed" | "paused" | "blocked" | "draft" | "removed";
 type RosterView = "grid" | "table";
+type RosterDeployment = OgAgentDeploymentRecord | OgRemovedAgentRecord;
 
 const FILTERS: Array<{ label: string; value: RosterFilter }> = [
   { label: "All", value: "all" },
@@ -34,12 +36,14 @@ const FILTERS: Array<{ label: string; value: RosterFilter }> = [
   { label: "Paused", value: "paused" },
   { label: "Blocked", value: "blocked" },
   { label: "Draft", value: "draft" },
+  { label: "Removed", value: "removed" },
 ];
 
 const AGENT_INITIAL_MESSAGES: EmbeddedCopilotMessage[] = [];
 
 export function OgAgentWorkspace() {
   const { network, networkId, setNetworkId } = useOgNetwork();
+  const wallet = useWalletConnection(networkId);
   const [workspace, setWorkspace] = useState<OgAgentWorkspace | null>(null);
   const [error, setError] = useState<string>();
   const [isLoading, setIsLoading] = useState(true);
@@ -48,10 +52,17 @@ export function OgAgentWorkspace() {
   const [rosterView, setRosterView] = useState<RosterView>("grid");
 
   async function loadWorkspace() {
+    if (!wallet.address) {
+      setWorkspace(null);
+      setError(undefined);
+      setIsLoading(false);
+      return;
+    }
+
     setIsLoading(true);
     setError(undefined);
     try {
-      const response = await fetch("/api/agents", { cache: "no-store" });
+      const response = await fetch(`/api/agents?ownerAddress=${encodeURIComponent(wallet.address)}`, { cache: "no-store" });
       const payload = (await response.json()) as { data?: OgAgentWorkspace; error?: { message: string } };
       if (!response.ok || !payload.data) {
         throw new Error(payload.error?.message ?? "Unable to load agent workspace.");
@@ -71,17 +82,20 @@ export function OgAgentWorkspace() {
       return;
     }
     void loadWorkspace();
-  }, [networkId]);
+  }, [networkId, wallet.address]);
 
   const isMainnetAgentScope = networkId === "mainnet";
   const scopedWorkspace = isMainnetAgentScope ? workspace : null;
   const agentDeployments = scopedWorkspace?.agents ?? [];
+  const removedDeployments = scopedWorkspace?.removedAgents ?? [];
   const rosterStatus = scopedWorkspace?.agent.status ?? "draft";
 
   const visibleDeployments = useMemo(() => {
     if (!scopedWorkspace) return [];
+    if (activeFilter === "removed") return removedDeployments;
     return agentDeployments.filter(() => activeFilter === "all" || rosterStatus === activeFilter);
-  }, [activeFilter, agentDeployments, rosterStatus, scopedWorkspace]);
+  }, [activeFilter, agentDeployments, removedDeployments, rosterStatus, scopedWorkspace]);
+  const visibleStatus = activeFilter === "removed" ? "removed" : rosterStatus;
 
   const health = isMainnetAgentScope ? buildHealth(scopedWorkspace) : buildNetworkEmptyHealth(network.label);
   const copilotContext = useMemo(
@@ -156,7 +170,7 @@ export function OgAgentWorkspace() {
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div className="space-y-1.5">
                 <h2 className="text-xl font-semibold text-white">Agents</h2>
-                <p className="text-sm text-slate-400">Track live status, identity evidence, and vault readiness.</p>
+                <p className="text-sm text-slate-400">Track live status, positions, last action of agents.</p>
               </div>
 
               <div className="flex flex-col gap-2 lg:items-end">
@@ -214,20 +228,22 @@ export function OgAgentWorkspace() {
               </div>
             ) : scopedWorkspace && visibleDeployments.length ? (
               rosterView === "grid" ? (
-                <div className="grid justify-start gap-4 sm:grid-cols-[repeat(auto-fill,minmax(17rem,19.5rem))]">
-                  {visibleDeployments.map((deployment) => (
+                <div className="grid gap-4 xl:grid-cols-2">
+                  {visibleDeployments.map((deployment, index) => (
                     <AgentCard
                       deployment={deployment}
                       identityLabel={scopedWorkspace.identity.label}
+                      index={index}
+                      logs={scopedWorkspace.logs}
                       key={deployment.id}
                       networkLabel="0G Mainnet"
-                      status={rosterStatus}
+                      status={visibleStatus}
                       vault={scopedWorkspace.vault}
                     />
                   ))}
                 </div>
               ) : (
-                <AgentTable deployments={visibleDeployments} status={rosterStatus} vault={scopedWorkspace.vault} />
+                <AgentTable deployments={visibleDeployments} status={visibleStatus} vault={scopedWorkspace.vault} />
               )
             ) : (
               <NetworkEmptyState activeFilter={activeFilter} isMainnet={isMainnetAgentScope} networkLabel={network.label} />
@@ -287,14 +303,11 @@ function buildHealth(workspace: OgAgentWorkspace | null) {
   const deployedCount = workspace?.agents.length ?? 0;
   const deployed = deployedCount > 0;
   const vaultReady = workspace?.vault.ready === true;
-  const storageReady = workspace?.storage.ready === true;
-  const storageUploadReady = workspace?.storage.uploadReady === true;
   const warnings = (workspace?.vault.warnings.length ?? 0) + (workspace?.storage.warnings.length ?? 0);
-  const perTradeCap = workspace?.vault.policy?.perTradeCap0G;
-  const storageLag = workspace?.storage.lagBlocks;
+  const openPositions = workspace?.vault.sellablePositions?.length ?? 0;
   return [
     {
-      detail: deployed ? "Agentic ID minted" : "No Agentic ID minted",
+      detail: `${deployedCount} total agent${deployedCount === 1 ? "" : "s"}`,
       label: "Live agents",
       tone: deployed ? "positive" : "neutral",
       value: String(deployedCount),
@@ -306,34 +319,22 @@ function buildHealth(workspace: OgAgentWorkspace | null) {
       value: vaultReady && deployed ? String(deployedCount) : "0",
     },
     {
-      detail: "Policy-bound exposure",
-      label: "Open exposure",
+      detail: openPositions > 0 ? "Positions currently being managed" : "No open positions right now",
+      label: "Open positions",
+      tone: openPositions > 0 ? "positive" : "neutral",
+      value: String(openPositions),
+    },
+    {
+      detail: "No realized PnL tracked yet",
+      label: "Net PnL",
       tone: "neutral",
-      value: `${format0GMetric(workspace?.vault.openExposure0G ?? "0")} 0G`,
+      value: "0 0G",
     },
     {
-      detail: workspace?.vault.balance0G ? "Policy Vault balance" : "No vault balance loaded",
-      label: "Vault balance",
-      tone: vaultReady ? "positive" : "warning",
-      value: workspace?.vault.balance0G ? `${format0GMetric(workspace.vault.balance0G)} 0G` : "--",
-    },
-    {
-      detail: warnings ? `${warnings} blocker${warnings === 1 ? "" : "s"} to review` : "Per-trade vault cap",
-      label: "Policy cap",
+      detail: warnings ? "Review the flagged agent or wallet state" : "No blockers detected",
+      label: "Attention needed",
       tone: warnings ? "warning" : "positive",
-      value: perTradeCap ? `${format0GMetric(perTradeCap)} 0G` : "--",
-    },
-    {
-      detail: storageReady
-        ? "Retrieval synced"
-        : storageUploadReady && storageLag !== undefined
-          ? `${formatIntegerMetric(storageLag)} block lag`
-          : storageUploadReady
-            ? "Direct upload available"
-            : "Storage unavailable",
-      label: "0G Storage",
-      tone: storageUploadReady ? "positive" : "warning",
-      value: storageReady ? "Synced" : storageUploadReady ? "Upload ready" : "--",
+      value: String(warnings),
     },
   ] as const;
 }
@@ -353,28 +354,22 @@ function buildNetworkEmptyHealth(networkLabel: string) {
       value: "0",
     },
     {
-      detail: "No vault exposure",
-      label: "Open exposure",
+      detail: "No open positions right now",
+      label: "Open positions",
+      tone: "neutral",
+      value: "0",
+    },
+    {
+      detail: "No realized PnL tracked yet",
+      label: "Net PnL",
       tone: "neutral",
       value: "0 0G",
     },
     {
-      detail: "No network vault",
-      label: "Vault balance",
+      detail: "Mainnet agent hidden",
+      label: "Attention needed",
       tone: "neutral",
-      value: "--",
-    },
-    {
-      detail: "Mainnet policy only",
-      label: "Policy cap",
-      tone: "neutral",
-      value: "--",
-    },
-    {
-      detail: "No agent evidence",
-      label: "0G Storage",
-      tone: "neutral",
-      value: "--",
+      value: "0",
     },
   ] as const;
 }
@@ -402,6 +397,27 @@ function formatIntegerMetric(value: string): string {
     return value;
   }
   return numeric.toLocaleString("en-US");
+}
+
+function formatRelativeTime(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    return "recently";
+  }
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (elapsedSeconds < 60) {
+    return "now";
+  }
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m ago`;
+  }
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) {
+    return `${elapsedHours}h ago`;
+  }
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  return `${elapsedDays}d ago`;
 }
 
 function buildWorkspaceCopilotContext(
@@ -448,12 +464,16 @@ function NetworkEmptyState({
   networkLabel: string;
 }) {
   const title = isMainnet
-    ? activeFilter === "all"
+    ? activeFilter === "removed"
+      ? "No removed 0G agents."
+      : activeFilter === "all"
       ? "No active 0G agent."
       : "No agents match this view."
     : `No ${networkLabel} agent deployed.`;
   const detail = isMainnet
-    ? activeFilter === "draft"
+    ? activeFilter === "removed"
+      ? "Removed Agentic ID records will appear here as read-only history."
+      : activeFilter === "draft"
       ? "Draft setup lives in the create flow. The roster only shows minted Agentic ID records."
       : "Create a new agent to mint an Agentic ID and attach it to the Policy Vault."
     : "The armed Agentic ID and Policy Vault are scoped to 0G Mainnet, so they stay hidden while Testnet is selected.";
@@ -463,7 +483,7 @@ function NetworkEmptyState({
       <Bot className="mb-3 h-7 w-7 text-slate-600" />
       <p className="text-sm font-semibold text-white">{title}</p>
       <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">{detail}</p>
-      {isMainnet ? (
+      {isMainnet && activeFilter !== "removed" ? (
         <Link
           href="/agents/create"
           className="mt-5 inline-flex h-10 items-center gap-2 rounded-full bg-[var(--pulse-teal)] px-4 text-sm font-semibold text-[#041015] transition-[filter,transform] hover:brightness-105 active:scale-[0.96]"
@@ -482,16 +502,16 @@ function HealthStrip({
   items: readonly { detail: string; label: string; tone: "neutral" | "positive" | "warning"; value: string }[];
 }) {
   return (
-    <section className="grid gap-3 rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(12,17,24,0.94),rgba(8,12,18,0.9))] p-3 shadow-[0_20px_60px_rgba(0,0,0,0.22)] sm:grid-cols-2 lg:grid-cols-3 lg:rounded-[28px] lg:p-4 2xl:grid-cols-6">
+    <section className="grid gap-3 rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(12,17,24,0.94),rgba(8,12,18,0.9))] p-3 shadow-[0_20px_60px_rgba(0,0,0,0.22)] sm:grid-cols-2 lg:rounded-[28px] lg:p-4 xl:grid-cols-5">
       {items.map((item) => {
         const toneClass = item.tone === "positive" ? "text-emerald-300" : item.tone === "warning" ? "text-amber-200" : "text-slate-400";
         return (
           <article key={item.label} className="min-w-0 rounded-[18px] border border-white/8 bg-white/[0.03] px-3 py-3 lg:rounded-[22px] lg:px-4 lg:py-3.5">
-            <p className="truncate text-[10px] uppercase tracking-[0.22em] text-slate-500">{item.label}</p>
-            <p className="mt-2 truncate text-xl font-semibold tracking-tight text-white" title={item.value}>
+            <p className="text-[10px] uppercase tracking-[0.24em] text-slate-500">{item.label}</p>
+            <p className="mt-2 text-2xl font-semibold tracking-tight text-white" title={item.value}>
               {item.value}
             </p>
-            <p className={`mt-1 truncate text-sm ${toneClass}`} title={item.detail}>
+            <p className={`mt-1 text-sm ${toneClass}`} title={item.detail}>
               {item.detail}
             </p>
           </article>
@@ -504,12 +524,16 @@ function HealthStrip({
 function AgentCard({
   deployment,
   identityLabel,
+  index,
+  logs,
   networkLabel,
   status,
   vault,
 }: {
-  deployment: OgAgentDeploymentRecord;
+  deployment: RosterDeployment;
   identityLabel: OgAgentWorkspace["identity"]["label"];
+  index: number;
+  logs: OgAgentWorkspace["logs"];
   networkLabel: string;
   status: OgAgentWorkspace["agent"]["status"];
   vault: OgAgentWorkspace["vault"];
@@ -519,57 +543,99 @@ function AgentCard({
       ? "border-emerald-400/15 bg-emerald-400/10 text-emerald-300"
       : status === "paused"
         ? "border-yellow-300/15 bg-yellow-300/10 text-yellow-200"
+      : status === "removed"
+        ? "border-rose-300/15 bg-rose-300/10 text-rose-200"
       : status === "blocked"
         ? "border-amber-300/15 bg-amber-300/10 text-amber-200"
         : "border-slate-400/15 bg-slate-400/10 text-slate-300";
+  const tradeCount = logs.filter((entry) => entry.filter === "executed" && (entry.action === "buy" || entry.action === "sell")).length;
+  const lastTrade = logs.find((entry) => entry.action === "buy" || entry.action === "sell");
+  const lastAction = lastTrade ? `${lastTrade.action} ${formatRelativeTime(lastTrade.createdAt)}` : `proof ${formatRelativeTime(deployment.createdAt)}`;
+  const openPositions = vault.sellablePositions?.length ?? 0;
+  const maxPositions = deployment.runtime?.maxPositions ?? 0;
+  const sourceCount = deployment.filters.length;
+  const isRemoved = "removedAt" in deployment;
+  const needsAttention = status === "blocked" || vault.paused === true || vault.executorRevoked === true || vault.warnings.length > 0;
+  const statusNote = needsAttention
+    ? vault.warnings[0] ?? (vault.paused ? "Paused by operator" : vault.executorRevoked ? "Executor revoked by owner" : "Review vault readiness")
+    : isRemoved
+      ? `Removed ${formatRelativeTime(deployment.removedAt)}. Read-only history; cannot resume or edit.`
+    : "Policy Vault ready with proof-bound execution.";
 
   return (
-    <article className="animate-feed-reveal group flex aspect-square min-h-[19rem] w-full max-w-[19.5rem] flex-col rounded-[28px] border border-white/8 bg-[linear-gradient(180deg,rgba(12,17,24,0.96),rgba(7,10,15,0.88))] p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04),0_22px_64px_rgba(0,0,0,0.22)] transition-[transform,border-color,box-shadow] duration-200 hover:-translate-y-0.5 hover:border-white/14 hover:shadow-[0_0_0_1px_rgba(255,255,255,0.08),0_28px_76px_rgba(0,0,0,0.28)]">
-      <div className="flex items-start justify-between gap-3">
+    <article
+      className="animate-feed-reveal rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(12,17,24,0.95),rgba(7,10,15,0.86))] p-4 shadow-[0_22px_64px_rgba(0,0,0,0.22)] transition-[transform,border-color] duration-200 hover:-translate-y-0.5 hover:border-white/14 lg:rounded-[28px] lg:p-5"
+      style={{ animationDelay: `${index * 60}ms` }}
+    >
+      <div className="flex items-start justify-between gap-4">
         <Link href={`/agents/${deployment.id}`} className="flex min-w-0 flex-1 items-start gap-3 text-left">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-cyan-200/10 bg-cyan-300/12 font-heading text-sm font-semibold uppercase tracking-[0.2em] text-[var(--pulse-teal)] transition-[border-color,background-color] duration-200 group-hover:border-cyan-200/18 group-hover:bg-cyan-300/16">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-cyan-200/10 bg-cyan-300/12 font-heading text-sm font-semibold uppercase tracking-[0.2em] text-[var(--pulse-teal)]">
             {deployment.tokenId}
           </div>
-          <div className="min-w-0">
-            <h3 className="truncate text-base font-semibold text-white">{deployment.name}</h3>
-            <p className="mt-1 line-clamp-2 text-sm leading-5 text-slate-400">0G Policy Vault trading agent</p>
+          <div className="min-w-0 space-y-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="truncate text-base font-semibold text-white">{deployment.name}</h3>
+              <span className={`rounded-full border px-2.5 py-1 text-[11px] font-medium capitalize ${statusClass}`}>
+                {status}
+              </span>
+            </div>
+            <p className="text-sm leading-5 text-slate-300">0G Policy Vault trading agent with proof-bound Agentic ID evidence.</p>
           </div>
         </Link>
-        <span className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-medium capitalize ${statusClass}`}>
-          {status}
-        </span>
+
+        <Link
+          href={`/agents/${deployment.id}`}
+          className="hidden items-center gap-1 rounded-full border border-white/10 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:border-white/16 hover:text-white sm:inline-flex"
+        >
+          View
+          <ArrowRight className="h-3.5 w-3.5" />
+        </Link>
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        <AgentMetric label="Network" value={networkLabel} />
-        <AgentMetric label="Vault" value={vault.vault ? shortHash(vault.vault) : "--"} />
-        <AgentMetric label="Identity" value={`#${deployment.tokenId}`} />
-        <AgentMetric label="Evidence" value={shortHash(deployment.storageRoot)} />
+      <div className="mt-5 grid gap-4 border-y border-white/8 py-4 text-sm sm:grid-cols-4">
+        <div className="space-y-1">
+          <p className="text-[10px] uppercase tracking-[0.24em] text-slate-500">Positions</p>
+          <p className="font-semibold text-white">{openPositions}</p>
+        </div>
+        <div className="space-y-1">
+          <p className="text-[10px] uppercase tracking-[0.24em] text-slate-500">PnL</p>
+          <p className="font-semibold text-slate-400">0 0G</p>
+        </div>
+        <div className="space-y-1">
+          <p className="text-[10px] uppercase tracking-[0.24em] text-slate-500">Trades</p>
+          <p className="font-semibold text-white">{tradeCount}</p>
+        </div>
+        <div className="space-y-1">
+          <p className="text-[10px] uppercase tracking-[0.24em] text-slate-500">Last action</p>
+          <p className="text-slate-300">{lastAction}</p>
+        </div>
       </div>
 
-      <div className="mt-3 rounded-[18px] border border-cyan-300/12 bg-cyan-300/[0.045] px-3 py-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <span className="truncate rounded-full border border-cyan-300/15 bg-cyan-300/10 px-2 py-0.5 text-[10px] font-medium text-cyan-200">
+      <div className={`mt-4 rounded-2xl border px-4 py-3 text-sm ${needsAttention ? "border-amber-300/18 bg-amber-300/[0.08] text-amber-100" : "border-white/8 bg-white/[0.03] text-slate-300"}`}>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${needsAttention ? "border-amber-300/20 bg-amber-300/10 text-amber-100" : "border-cyan-300/15 bg-cyan-300/10 text-cyan-200"}`}>
+            {needsAttention ? "Review" : "Proof ready"}
+          </span>
+          <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-slate-500">
             {identityLabel}
           </span>
-          <span className="shrink-0 font-mono text-[10px] text-slate-500">proof-bound</span>
         </div>
-        <p className="mt-2 truncate text-xs leading-5 text-slate-400" title={deployment.agentRef}>
-          Agent ref {shortHash(deployment.agentRef)}
-        </p>
+        <p className="mt-2">{statusNote}</p>
       </div>
 
-      <div className="mt-auto flex items-center justify-between gap-3 border-t border-white/8 pt-3">
-        <div className="min-w-0 text-[10px] uppercase tracking-[0.2em] text-slate-500">
-          <p className="truncate">0G Mainnet</p>
-          <p className="mt-1 truncate">Policy Vault</p>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] uppercase tracking-[0.2em] text-slate-500">
+          <span>{networkLabel}</span>
+          <span>Policy vault</span>
+          <span>{sourceCount} source{sourceCount === 1 ? "" : "s"}</span>
+          {maxPositions > 0 ? <span>{openPositions}/{maxPositions} positions</span> : null}
         </div>
         <Link
           href={`/agents/${deployment.id}`}
-          className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] pl-3 pr-2.5 text-sm text-slate-200 transition-[background-color,border-color,transform] hover:bg-white/[0.07] active:scale-[0.96]"
+          className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 text-sm text-slate-200 transition-[background-color,border-color,transform] hover:bg-white/[0.07] active:scale-[0.96] sm:hidden"
         >
-          Review
-          <ArrowRight className="h-4 w-4" />
+          View
+          <ArrowRight className="h-3.5 w-3.5" />
         </Link>
       </div>
     </article>
@@ -581,7 +647,7 @@ function AgentTable({
   status,
   vault,
 }: {
-  deployments: OgAgentDeploymentRecord[];
+  deployments: RosterDeployment[];
   status: OgAgentWorkspace["agent"]["status"];
   vault: OgAgentWorkspace["vault"];
 }) {

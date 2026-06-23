@@ -77,6 +77,8 @@ function statusBadgeClass(status: OgAgentWorkspace["agent"]["status"] | "loading
       return "border-amber-300/20 bg-amber-300/10 text-amber-200";
     case "paused":
       return "border-yellow-300/20 bg-yellow-300/10 text-yellow-200";
+    case "removed":
+      return "border-rose-300/20 bg-rose-300/10 text-rose-200";
     case "draft":
     case "loading":
     case "mainnet only":
@@ -99,12 +101,23 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
   const [walletAccessByKey, setWalletAccessByKey] = useState<Record<string, string>>({});
   const [error, setError] = useState<string>();
   const loadWorkspace = useCallback(async (options: { silent?: boolean } = {}) => {
+    if (!wallet.address) {
+      setWorkspace(null);
+      setError(undefined);
+      setIsLoading(false);
+      return;
+    }
+
     if (!options.silent) {
       setIsLoading(true);
     }
     setError(undefined);
     try {
-      const response = await fetch(`/api/agents?agentId=${encodeURIComponent(agentId)}`, { cache: "no-store" });
+      const params = new URLSearchParams({
+        agentId,
+        ownerAddress: wallet.address,
+      });
+      const response = await fetch(`/api/agents?${params.toString()}`, { cache: "no-store" });
       const payload = (await response.json()) as { data?: OgAgentWorkspace; error?: { message: string } };
       if (!response.ok || !payload.data) {
         throw new Error(payload.error?.message ?? "Unable to load agent workspace.");
@@ -117,7 +130,7 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
         setIsLoading(false);
       }
     }
-  }, [agentId]);
+  }, [agentId, wallet.address]);
 
   useEffect(() => {
     if (networkId !== "mainnet") {
@@ -148,12 +161,15 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
   const openPositionCount = workspace?.vault.sellablePositions?.length ?? 0;
   const runtimeSettings = deployment?.runtime;
   const isAgentPaused = workspace?.agent.status === "paused";
+  const isAgentRemoved = workspace?.agent.status === "removed";
+  const removedAt = deployment && "removedAt" in deployment && typeof deployment.removedAt === "string" ? deployment.removedAt : undefined;
   const ownerAddress = deployment?.owner ?? workspace?.vault.owner;
   const isOwnerWallet =
     Boolean(wallet.address && ownerAddress && wallet.address.toLowerCase() === ownerAddress.toLowerCase());
   const ownerActionDisabled =
     !isMainnetAgentScope ||
     !deployment ||
+    isAgentRemoved ||
     !wallet.isConnected ||
     !isOwnerWallet ||
     actionLoading !== null ||
@@ -162,6 +178,7 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
     isConnected: wallet.isConnected,
     isOwnerWallet,
     isWrongChain: wallet.isWrongChain,
+    isRemoved: isAgentRemoved,
     ownerAddress,
     walletAddress: wallet.address,
   });
@@ -486,6 +503,12 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
           {isMainnetAgentScope && agentMismatch ? (
             <div className="mb-5 rounded-[22px] border border-rose-300/18 bg-rose-300/10 px-4 py-3 text-sm text-rose-100">
               Unknown or removed agent id. On-chain Agentic ID history can still exist, but this local roster no longer tracks that record.
+            </div>
+          ) : null}
+
+          {isMainnetAgentScope && isAgentRemoved ? (
+            <div className="mb-5 rounded-[22px] border border-rose-300/18 bg-rose-300/10 px-4 py-3 text-sm leading-6 text-rose-100">
+              This Agentic ID was removed from the active roster{removedAt ? ` ${formatRelativeTime(removedAt)}` : ""}. It is preserved as read-only audit history and cannot be armed, edited, resumed, or traded.
             </div>
           ) : null}
 
@@ -1194,16 +1217,19 @@ function getDefaultSlippageBps(policy: OgAgentWorkspace["vault"]["policy"]): num
 function getOwnerWalletMessage({
   isConnected,
   isOwnerWallet,
+  isRemoved,
   isWrongChain,
   ownerAddress,
   walletAddress,
 }: {
   isConnected: boolean;
   isOwnerWallet: boolean;
+  isRemoved: boolean;
   isWrongChain: boolean;
   ownerAddress?: string;
   walletAddress?: string;
 }): string | undefined {
+  if (isRemoved) return "This removed agent is read-only and cannot be changed or traded.";
   if (!ownerAddress) return "Vault owner is not available yet; owner actions are locked.";
   if (!isConnected || !walletAddress) return "Connect the Policy Vault owner wallet to sell, pause, arm, edit, or remove this agent.";
   if (!isOwnerWallet) return `Connected wallet ${shortHash(walletAddress)} is not the vault owner ${shortHash(ownerAddress)}.`;

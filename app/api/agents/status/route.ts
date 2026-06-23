@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { loadOgAgentWorkspace, setSingleOgAgentPaused } from "@/lib/agent/single-agent-server";
+import { readMainnetOwnerAddress } from "@/lib/agent/mainnet-vault-resolver";
 import { validateCopilotWalletGate } from "@/lib/copilot/wallet-gate";
 import { getOgNetwork } from "@/lib/og/networks";
 
@@ -32,7 +33,11 @@ export async function POST(request: Request) {
     return statusError(walletError.code, walletError.message, walletError.status);
   }
 
-  const workspace = await loadOgAgentWorkspace(parsed.data.agentId);
+  const ownerAddress = readMainnetOwnerAddress(parsed.data.wallet.address);
+  if (!ownerAddress) {
+    return statusError("invalid_wallet", "Connected wallet address is not valid.", 400);
+  }
+  const workspace = await loadOgAgentWorkspace({ agentId: parsed.data.agentId, ownerAddress });
   if (workspace.agent.id !== parsed.data.agentId || !workspace.agent.deployment) {
     return statusError("agent_not_found", "Unknown 0G agent id.", 404);
   }
@@ -54,7 +59,7 @@ export async function POST(request: Request) {
     return statusError("agent_not_found", "Unknown 0G agent id.", 404);
   }
 
-  const nextWorkspace = await loadOgAgentWorkspace(parsed.data.agentId);
+  const nextWorkspace = await loadOgAgentWorkspace({ agentId: parsed.data.agentId, ownerAddress });
   return NextResponse.json({ data: { deployment: updated, workspace: nextWorkspace } });
 }
 

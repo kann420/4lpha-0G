@@ -23,6 +23,11 @@ import { privateKeyToAccount } from "viem/accounts";
 import { agenticIdAbi, agentMintedEvent, type AgenticIdIntelligentData } from "@/lib/contracts/agentic-id";
 import { CURATED_MAINNET_POLICY_VAULT_ROUTES } from "@/lib/contracts/curated-routes";
 import { policyVaultAbi } from "@/lib/contracts/policy-vault";
+import {
+  readConfiguredMainnetVaultAddress,
+  readMainnetOwnerAddress,
+  resolveMainnetVaultForOwner,
+} from "@/lib/agent/mainnet-vault-resolver";
 import { getOgNetwork } from "@/lib/og/networks";
 import { uploadBytesTo0GStorage, type ZeroGStorageProgress } from "@/lib/og/storage-upload";
 import {
@@ -34,6 +39,7 @@ import {
   type OgAgentDeploymentRecord,
   type OgAgentFilterId,
   type OgAgentLogEntry,
+  type OgRemovedAgentRecord,
   type OgAgentRuntimeSettings,
   type OgAgentStorageSnapshot,
   type OgAgentVaultPosition,
@@ -80,7 +86,13 @@ export class OgAgentDeployError extends Error {
 export interface DeploySingleOgAgentInput {
   filterIds: OgAgentFilterId[];
   name: string;
+  ownerAddress?: Address;
   runtime?: Partial<OgAgentRuntimeSettings>;
+}
+
+export interface LoadOgAgentWorkspaceInput {
+  agentId?: string;
+  ownerAddress?: Address | string | null;
 }
 
 interface AgenticIdDeploymentArtifact {
@@ -93,6 +105,7 @@ interface AgenticIdDeploymentArtifact {
 interface AgentDeploymentRegistryArtifact {
   agents: OgAgentDeploymentRecord[];
   removedAgentIds?: string[];
+  removedAgents?: OgRemovedAgentRecord[];
   updatedAt: string;
 }
 
@@ -158,11 +171,12 @@ export interface StoredAgentTradeArtifact {
 
 export type StoredAgentTradeSide = "buy" | "sell";
 
-export async function loadOgAgentWorkspace(agentId?: string): Promise<OgAgentWorkspace> {
+export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspaceInput): Promise<OgAgentWorkspace> {
+  const { agentId, ownerAddress } = normalizeWorkspaceInput(input);
   const identity = await resolveAgenticIdAddress();
-  const [deployments, vault, storage] = await Promise.all([
-    readAgentDeploymentRecords(identity.address),
-    readVaultSnapshot().catch((error): OgAgentVaultSnapshot => ({
+  let [vault, storage] = await Promise.all([
+    readVaultSnapshot(undefined, { ownerAddress }).catch((error): OgAgentVaultSnapshot => ({
+      owner: ownerAddress,
       ready: false,
       warnings: [error instanceof Error ? error.message : "Unable to read Policy Vault state."],
     })),
@@ -173,16 +187,47 @@ export async function loadOgAgentWorkspace(agentId?: string): Promise<OgAgentWor
       warnings: [error instanceof Error ? error.message : "Unable to read 0G Storage state."],
     })),
   ]);
-  const deployment = selectAgentDeployment(deployments, agentId);
-  const status = deployment ? (deployment.paused ? "paused" : vault.ready ? "armed" : "blocked") : "draft";
-  const logs = await readAgentLogEntries({ deployment, storage, vault });
+  let roster = await readAgentDeploymentRoster(identity.address, {
+    ownerAddress: vault.owner ?? ownerAddress,
+    vaultAddress: vault.vault,
+  });
+  let deployments = roster.active;
+  let removedDeployments = roster.removed;
+  let deployment = selectAgentDeployment(deployments, agentId);
+  let removedDeployment = selectRemovedAgentDeployment(removedDeployments, agentId);
+  if (!ownerAddress && deployment && vault.vault?.toLowerCase() !== deployment.vault.toLowerCase()) {
+    vault = await readVaultSnapshot(undefined, { ownerAddress: deployment.owner }).catch((error): OgAgentVaultSnapshot => ({
+      owner: deployment?.owner,
+      ready: false,
+      warnings: [error instanceof Error ? error.message : "Unable to read Policy Vault state."],
+    }));
+    roster = await readAgentDeploymentRoster(identity.address, {
+      ownerAddress: vault.owner ?? deployment.owner,
+      vaultAddress: vault.vault ?? deployment.vault,
+    });
+    deployments = roster.active;
+    removedDeployments = roster.removed;
+    deployment = selectAgentDeployment(deployments, agentId);
+    removedDeployment = selectRemovedAgentDeployment(removedDeployments, agentId);
+  }
+  const selectedDeployment = deployment ?? removedDeployment ?? null;
+  const status = removedDeployment
+    ? "removed"
+    : deployment
+      ? deployment.paused
+        ? "paused"
+        : vault.ready
+          ? "armed"
+          : "blocked"
+      : "draft";
+  const logs = await readAgentLogEntries({ deployment: selectedDeployment, storage, vault });
 
   return {
     agent: {
-      deployment,
-      id: deployment?.id ?? agentId ?? SINGLE_OG_AGENT_ID,
-      name: deployment?.name ?? SINGLE_OG_AGENT_NAME,
-      readiness: deployment && vault.ready ? "ready" : vault.ready ? "review" : "blocked",
+      deployment: selectedDeployment,
+      id: selectedDeployment?.id ?? agentId ?? SINGLE_OG_AGENT_ID,
+      name: selectedDeployment?.name ?? SINGLE_OG_AGENT_NAME,
+      readiness: removedDeployment ? "blocked" : deployment && vault.ready ? "ready" : vault.ready ? "review" : "blocked",
       status,
     },
     agents: deployments,
@@ -199,8 +244,23 @@ export async function loadOgAgentWorkspace(agentId?: string): Promise<OgAgentWor
       label: "Coming soon",
     },
     logs,
+    removedAgents: removedDeployments,
     storage,
     vault,
+  };
+}
+
+function normalizeWorkspaceInput(input?: string | LoadOgAgentWorkspaceInput): {
+  agentId?: string;
+  ownerAddress?: Address;
+} {
+  if (typeof input === "string") {
+    return { agentId: input };
+  }
+
+  return {
+    agentId: input?.agentId,
+    ownerAddress: readMainnetOwnerAddress(input?.ownerAddress ?? undefined),
   };
 }
 
@@ -239,7 +299,7 @@ export async function deploySingleOgAgent(input: DeploySingleOgAgentInput): Prom
     throw new OgAgentDeployError("Configured Agentic ID address has no bytecode.", "identity_not_deployed", 409);
   }
 
-  const vault = await readVaultSnapshot(publicClient);
+  const vault = await readVaultSnapshot(publicClient, { ownerAddress: input.ownerAddress });
   if (!vault.ready || !vault.vault || !vault.executor || !vault.owner || !vault.policy) {
     throw new OgAgentDeployError(
       vault.warnings.join(" ") || "Policy Vault is not ready for agent deployment.",
@@ -334,6 +394,7 @@ export async function deploySingleOgAgent(input: DeploySingleOgAgentInput): Prom
 export async function removeSingleOgAgentRecord(
   agentId: string,
   knownRecord?: OgAgentDeploymentRecord,
+  removedBy?: Address,
 ): Promise<OgAgentDeploymentRecord | null> {
   const registry = await readAgentDeploymentRegistryArtifact();
   const deployments = mergeAgentDeploymentRecords([
@@ -341,9 +402,19 @@ export async function removeSingleOgAgentRecord(
     ...(knownRecord ? [knownRecord] : []),
   ]);
   const current = deployments.find((deployment) => deployment.id === agentId) ?? knownRecord ?? null;
+  const removedAgents = buildRemovedAgentRecords(registry, deployments);
+  const tombstone = current
+    ? normalizeRemovedAgentRecord({
+        ...current,
+        removedAt: new Date().toISOString(),
+        removedBy,
+      })
+    : null;
   await writeAgentDeploymentRegistry(
     deployments.filter((deployment) => deployment.id !== agentId),
-    [...(registry?.removedAgentIds ?? []), agentId],
+    tombstone
+      ? [...removedAgents.filter((deployment) => deployment.id !== agentId), tombstone]
+      : removedAgents,
   );
   return current;
 }
@@ -368,7 +439,7 @@ export async function setSingleOgAgentPaused(
   } satisfies OgAgentDeploymentRecord;
   await writeAgentDeploymentRegistry(
     deployments.map((deployment) => (deployment.id === agentId ? updated : deployment)),
-    registry?.removedAgentIds ?? [],
+    buildRemovedAgentRecords(registry, deployments),
   );
   return updated;
 }
@@ -394,22 +465,36 @@ async function readPolicyHash(
 
 async function readVaultSnapshot(
   client?: PublicClient,
+  options: { ownerAddress?: Address } = {},
 ): Promise<OgAgentVaultSnapshot> {
   const rpcUrl = process.env.OG_RPC_URL?.trim();
-  const vault = readAddress(process.env.NEXT_PUBLIC_POLICY_VAULT_MAINNET_ADDRESS)
-    ?? readAddress(process.env.POLICY_VAULT_MAINNET_ADDRESS);
-  if (!rpcUrl || !vault) {
+  if (!rpcUrl) {
     return {
+      owner: options.ownerAddress,
       ready: false,
-      warnings: ["Mainnet Policy Vault address or OG_RPC_URL is missing."],
+      warnings: ["OG_RPC_URL is missing."],
     };
   }
 
   const publicClient = client ?? createPublicClient({ chain: make0GMainnetChain(rpcUrl), transport: http(rpcUrl) });
+  const vault = options.ownerAddress
+    ? await resolveMainnetVaultForOwner(options.ownerAddress, publicClient).catch(() => null)
+    : readConfiguredMainnetVaultAddress();
+  if (!vault) {
+    return {
+      owner: options.ownerAddress,
+      ready: false,
+      warnings: options.ownerAddress
+        ? ["No mainnet Policy Vault exists for the connected wallet yet."]
+        : ["Mainnet Policy Vault address is missing."],
+    };
+  }
+
   const chainId = await publicClient.getChainId();
   if (chainId !== MAINNET_CHAIN_ID) {
     return {
       ready: false,
+      owner: options.ownerAddress,
       vault,
       warnings: [`RPC chain mismatch: expected ${MAINNET_CHAIN_ID}, got ${chainId}.`],
     };
@@ -441,6 +526,9 @@ async function readVaultSnapshot(
     publicClient.getBalance({ address: vault }),
   ]);
   const warnings: string[] = [];
+  if (options.ownerAddress && owner.toLowerCase() !== options.ownerAddress.toLowerCase()) {
+    warnings.push("Resolved Policy Vault owner does not match the connected wallet.");
+  }
   if (paused) warnings.push("Policy Vault is paused.");
   if (executorRevoked) warnings.push("Policy Vault executor is revoked.");
   if (mockAdapterAllowed) warnings.push("Policy Vault allows a mock adapter.");
@@ -1009,26 +1097,55 @@ function selectAgentDeployment(
   deployments: OgAgentDeploymentRecord[],
   agentId?: string,
 ): OgAgentDeploymentRecord | null {
-  if (agentId) {
+  if (agentId && agentId !== SINGLE_OG_AGENT_ID) {
     return deployments.find((deployment) => deployment.id === agentId) ?? null;
   }
   return deployments.at(-1) ?? null;
 }
 
-async function readAgentDeploymentRecords(identityAddress?: Address): Promise<OgAgentDeploymentRecord[]> {
+function selectRemovedAgentDeployment(
+  deployments: OgRemovedAgentRecord[],
+  agentId?: string,
+): OgRemovedAgentRecord | null {
+  if (!agentId || agentId === SINGLE_OG_AGENT_ID) {
+    return null;
+  }
+  return deployments.find((deployment) => deployment.id === agentId) ?? null;
+}
+
+async function readAgentDeploymentRoster(
+  identityAddress?: Address,
+  filter: { ownerAddress?: Address; vaultAddress?: Address } = {},
+): Promise<{ active: OgAgentDeploymentRecord[]; removed: OgRemovedAgentRecord[] }> {
   const registry = await readAgentDeploymentRegistryArtifact();
-  const removedAgentIds = new Set(registry?.removedAgentIds ?? []);
   const [onChainRecords, legacyDeployResponse, legacySingleRecord] = await Promise.all([
     readOnChainAgentDeploymentRecords(identityAddress).catch(() => []),
     readLegacyDeployResponseRecord(),
     readJsonArtifact<OgAgentDeploymentRecord>(LEGACY_AGENT_DEPLOYMENT_PATH),
   ]);
-  return mergeAgentDeploymentRecords([
+  const allDeployments = mergeAgentDeploymentRecords([
     ...onChainRecords,
     ...(legacyDeployResponse ? [legacyDeployResponse] : []),
     ...(legacySingleRecord ? [legacySingleRecord] : []),
     ...(registry?.agents ?? []),
-  ]).filter((deployment) => !removedAgentIds.has(deployment.id));
+  ]);
+  const removedAgents = buildRemovedAgentRecords(registry, allDeployments)
+    .filter((deployment) => deploymentMatchesFilter(deployment, filter));
+  const removedAgentIds = new Set(removedAgents.map((deployment) => deployment.id));
+  const active = allDeployments.filter((deployment) => {
+    if (removedAgentIds.has(deployment.id)) return false;
+    return deploymentMatchesFilter(deployment, filter);
+  });
+  return { active, removed: removedAgents };
+}
+
+function deploymentMatchesFilter(
+  deployment: OgAgentDeploymentRecord,
+  filter: { ownerAddress?: Address; vaultAddress?: Address },
+): boolean {
+    if (filter.ownerAddress && deployment.owner.toLowerCase() !== filter.ownerAddress.toLowerCase()) return false;
+    if (filter.vaultAddress && deployment.vault.toLowerCase() !== filter.vaultAddress.toLowerCase()) return false;
+    return true;
 }
 
 async function readAgentDeploymentRegistryArtifact(): Promise<AgentDeploymentRegistryArtifact | null> {
@@ -1043,17 +1160,19 @@ async function readLegacyDeployResponseRecord(): Promise<OgAgentDeploymentRecord
 async function upsertAgentDeploymentRecord(record: OgAgentDeploymentRecord) {
   const registry = await readAgentDeploymentRegistryArtifact();
   const deployments = mergeAgentDeploymentRecords([...(registry?.agents ?? []), record]);
-  const removedAgentIds = (registry?.removedAgentIds ?? []).filter((id) => id !== record.id);
-  await writeAgentDeploymentRegistry(deployments, removedAgentIds);
+  const removedAgents = buildRemovedAgentRecords(registry, deployments).filter((deployment) => deployment.id !== record.id);
+  await writeAgentDeploymentRegistry(deployments, removedAgents);
 }
 
 async function writeAgentDeploymentRegistry(
   deployments: OgAgentDeploymentRecord[],
-  removedAgentIds: string[] = [],
+  removedAgents: OgRemovedAgentRecord[] = [],
 ) {
+  const normalizedRemovedAgents = mergeRemovedAgentRecords(removedAgents);
   await writeJsonArtifact(AGENT_REGISTRY_PATH, {
     agents: mergeAgentDeploymentRecords(deployments),
-    removedAgentIds: [...new Set(removedAgentIds)].sort(),
+    removedAgentIds: normalizedRemovedAgents.map((deployment) => deployment.id).sort(),
+    removedAgents: normalizedRemovedAgents,
     updatedAt: new Date().toISOString(),
   } satisfies AgentDeploymentRegistryArtifact);
 }
@@ -1062,6 +1181,39 @@ function mergeAgentDeploymentRecords(records: Array<OgAgentDeploymentRecord | nu
   const byIdentityToken = new Map<string, OgAgentDeploymentRecord>();
   for (const record of records) {
     const normalized = normalizeAgentDeploymentRecord(record);
+    if (!normalized) continue;
+    byIdentityToken.set(`${normalized.identityAddress.toLowerCase()}:${normalized.tokenId}`, normalized);
+  }
+  return Array.from(byIdentityToken.values()).sort((left, right) => compareTokenIds(left.tokenId, right.tokenId));
+}
+
+function buildRemovedAgentRecords(
+  registry: AgentDeploymentRegistryArtifact | null,
+  candidateRecords: OgAgentDeploymentRecord[],
+): OgRemovedAgentRecord[] {
+  const candidatesById = new Map(candidateRecords.map((deployment) => [deployment.id, deployment]));
+  const removedRecords = (registry?.removedAgents ?? [])
+    .map((record) => normalizeRemovedAgentRecord(record))
+    .filter((record): record is OgRemovedAgentRecord => record !== null);
+  const removedById = new Map(removedRecords.map((record) => [record.id, record]));
+  const registryUpdatedAt = registry?.updatedAt;
+  const removedAt = registryUpdatedAt && isValidDateString(registryUpdatedAt) ? registryUpdatedAt : new Date().toISOString();
+
+  for (const removedId of registry?.removedAgentIds ?? []) {
+    if (removedById.has(removedId)) continue;
+    const candidate = candidatesById.get(removedId);
+    if (!candidate) continue;
+    const tombstone = normalizeRemovedAgentRecord({ ...candidate, removedAt });
+    if (tombstone) removedById.set(tombstone.id, tombstone);
+  }
+
+  return mergeRemovedAgentRecords(Array.from(removedById.values()));
+}
+
+function mergeRemovedAgentRecords(records: Array<OgRemovedAgentRecord | null | undefined>): OgRemovedAgentRecord[] {
+  const byIdentityToken = new Map<string, OgRemovedAgentRecord>();
+  for (const record of records) {
+    const normalized = normalizeRemovedAgentRecord(record);
     if (!normalized) continue;
     byIdentityToken.set(`${normalized.identityAddress.toLowerCase()}:${normalized.tokenId}`, normalized);
   }
@@ -1103,6 +1255,20 @@ function normalizeAgentDeploymentRecord(
     storageRoot,
     tokenId,
     vault,
+  };
+}
+
+function normalizeRemovedAgentRecord(
+  record: (OgAgentDeploymentRecord & { removedAt?: string; removedBy?: string }) | null | undefined,
+): OgRemovedAgentRecord | null {
+  const normalized = normalizeAgentDeploymentRecord(record);
+  if (!normalized) return null;
+  const removedBy = readAddress(record?.removedBy);
+  const removedAt = record?.removedAt;
+  return {
+    ...normalized,
+    removedAt: removedAt && isValidDateString(removedAt) ? removedAt : new Date().toISOString(),
+    ...(removedBy ? { removedBy } : {}),
   };
 }
 

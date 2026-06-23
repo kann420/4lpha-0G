@@ -3,10 +3,10 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { type Hex } from "viem";
 import {
-  discoverMainnetTradingVault,
   executeCuratedTrade,
   quoteCuratedTrade,
 } from "@/lib/agent/curated-trade";
+import { resolveMainnetVaultForOwner } from "@/lib/agent/mainnet-vault-resolver";
 import { loadOgAgentWorkspace, storeAgentTradeArtifact } from "@/lib/agent/single-agent-server";
 import { AGENT_TRADE_ROUTES, canAgentUseTradeRoute, getAgentTradeRoute } from "@/lib/agent/trade-catalog";
 import { hashText } from "@/lib/copilot/audit";
@@ -56,9 +56,20 @@ export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
 
   const preview = await buildMainnetTradePreview(request, route);
   const now = new Date().toISOString();
-  const workspace = await loadOgAgentWorkspace(request.agentId);
+  const workspace = await loadOgAgentWorkspace({
+    agentId: request.agentId,
+    ownerAddress: request.ownerAddress,
+  });
+  const resolvedRequest = workspace.agent.deployment
+    ? {
+        ...request,
+        agentId: workspace.agent.deployment.id,
+        ownerAddress: workspace.agent.deployment.owner,
+        vaultAddress: preview.vaultAddress ?? workspace.agent.deployment.vault,
+      }
+    : request;
   if (!workspace.agent.deployment) {
-    return persistAgentTradeResult(request, preview, {
+    return persistAgentTradeResult(resolvedRequest, preview, {
         id: randomUUID(),
         proofBundle: {
           ...preview.proofBundle,
@@ -71,7 +82,7 @@ export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
     });
   }
   if (!workspace.storage.uploadReady) {
-    return persistAgentTradeResult(request, preview, {
+    return persistAgentTradeResult(resolvedRequest, preview, {
         id: randomUUID(),
         proofBundle: {
           ...preview.proofBundle,
@@ -86,7 +97,7 @@ export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
     });
   }
   if (preview.proofBundle.policyDecision !== "allow") {
-    return persistAgentTradeResult(request, preview, {
+    return persistAgentTradeResult(resolvedRequest, preview, {
         id: randomUUID(),
         proofBundle: preview.proofBundle,
         reason: preview.quote.warnings.join(" ") || "Policy requires review before live trade submission.",
@@ -102,6 +113,7 @@ export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
     routeId: route.id as Hex,
     side: request.side,
     slippageBps: request.slippageBps,
+    vaultAddress: preview.vaultAddress,
   });
   const proofBundle: AgentAuditProofPreview = {
     ...preview.proofBundle,
@@ -113,7 +125,7 @@ export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
     verificationStatus: "verified",
   };
 
-  return persistAgentTradeResult(request, {
+  return persistAgentTradeResult(resolvedRequest, {
     ...preview,
     proofBundle,
   }, {
@@ -174,7 +186,9 @@ async function buildMainnetTradePreview(
     );
   }
 
-  const vaultAddress = await discoverMainnetTradingVault().catch(() => null);
+  const vaultAddress = request.vaultAddress ?? (
+    request.ownerAddress ? await resolveMainnetVaultForOwner(request.ownerAddress).catch(() => null) : null
+  );
   const quote = await quoteCuratedTrade({
     amount: request.amountIn,
     networkId: "mainnet",
@@ -248,6 +262,7 @@ async function buildMainnetTradePreview(
       readiness: status,
       venue: quote.route.venue,
     },
+    vaultAddress: quote.vaultAddress,
   };
 }
 

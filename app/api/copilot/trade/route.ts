@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createPublicClient, formatUnits, http, type Address } from "viem";
+import { createPublicClient, formatUnits, getAddress, http, isAddress, type Address } from "viem";
 import { z } from "zod";
 import { canAgentUseTradeRoute, getAgentTradeRoute } from "@/lib/agent/trade-catalog";
 import { loadOgAgentWorkspace } from "@/lib/agent/single-agent-server";
@@ -76,13 +76,18 @@ export async function POST(request: Request) {
     return tradeError("wallet_required", "Connect a wallet before using 0G Copilot trade commands.", 401, networkId);
   }
 
-  const ownerError = await validateVaultOwnerAccess(parsed.data.wallet.address, networkId);
+  const ownerAddress = parseWalletAddress(parsed.data.wallet.address);
+  if (!ownerAddress) {
+    return tradeError("invalid_wallet", "Connected wallet address is not valid.", 400, networkId);
+  }
+
+  const ownerError = await validateVaultOwnerAccess(ownerAddress, networkId);
   if (ownerError) {
     return tradeError(ownerError.code, ownerError.message, ownerError.status, networkId);
   }
 
   try {
-    const tradeRequest = await resolveTradeRequestAmount(parsed.data.request, parsed.data.intent, networkId);
+    const tradeRequest = await resolveTradeRequestAmount(parsed.data.request, parsed.data.intent, networkId, ownerAddress);
 
     if (parsed.data.intent === "preview") {
       const preview = await buildAgentTradePreview(tradeRequest);
@@ -105,6 +110,7 @@ async function resolveTradeRequestAmount(
   request: z.infer<typeof tradeRequestSchema>,
   intent: "preview" | "execute",
   networkId: OgNetworkId,
+  ownerAddress: Address,
 ): Promise<AgentTradeRequest> {
   if (request.amountIn) {
     return {
@@ -113,6 +119,7 @@ async function resolveTradeRequestAmount(
       auditId: request.auditId,
       intent,
       networkId,
+      ownerAddress,
       routeId: request.routeId,
       side: request.side,
       slippageBps: request.slippageBps,
@@ -132,7 +139,7 @@ async function resolveTradeRequestAmount(
     throw new AgentTradeError("Selected route is not in the server allowlist.", "route_not_allowed", 404);
   }
 
-  const amountIn = await resolveSellPercentAmount(networkId, request.sellPercent, route.tokenAddress, route.defaultAmountIn);
+  const amountIn = await resolveSellPercentAmount(networkId, ownerAddress, request.sellPercent, route.tokenAddress, route.defaultAmountIn);
   if (amountIn === "0") {
     throw new AgentTradeError("The Policy Vault does not hold a sellable balance for that token.", "empty_position", 409);
   }
@@ -143,6 +150,7 @@ async function resolveTradeRequestAmount(
     auditId: request.auditId,
     intent,
     networkId,
+    ownerAddress,
     routeId: request.routeId,
     side: "sell",
     slippageBps: request.slippageBps,
@@ -151,6 +159,7 @@ async function resolveTradeRequestAmount(
 
 async function resolveSellPercentAmount(
   networkId: OgNetworkId,
+  ownerAddress: Address,
   percent: number,
   tokenAddress: Address | undefined,
   fallbackAmount: string,
@@ -168,7 +177,7 @@ async function resolveSellPercentAmount(
     throw new AgentTradeError("Selected route does not expose a token address for percentage sell.", "route_not_allowed", 409);
   }
 
-  const workspace = await loadOgAgentWorkspace();
+  const workspace = await loadOgAgentWorkspace({ ownerAddress });
   const vault = workspace.vault.vault;
   if (!vault) {
     throw new AgentTradeError("Policy Vault address is required for percentage sell.", "vault_not_ready", 409);
@@ -194,14 +203,14 @@ async function resolveSellPercentAmount(
 }
 
 async function validateVaultOwnerAccess(
-  walletAddress: string,
+  walletAddress: Address,
   networkId: OgNetworkId,
 ): Promise<{ code: string; message: string; status: number } | undefined> {
   if (networkId !== "mainnet") {
     return undefined;
   }
 
-  const workspace = await loadOgAgentWorkspace().catch(() => null);
+  const workspace = await loadOgAgentWorkspace({ ownerAddress: walletAddress }).catch(() => null);
   const owner = workspace?.vault.owner;
   if (!owner) {
     return {
@@ -220,6 +229,10 @@ async function validateVaultOwnerAccess(
   }
 
   return undefined;
+}
+
+function parseWalletAddress(value: string): Address | undefined {
+  return isAddress(value) ? getAddress(value) : undefined;
 }
 
 async function readJson(request: Request): Promise<unknown | "body_too_large"> {

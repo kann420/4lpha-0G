@@ -250,9 +250,11 @@ async function buildBuyCandidates({
       auditId: route.auditId,
       intent: "preview",
       networkId: "mainnet",
+      ownerAddress: deployment.owner,
       routeId: route.id,
       side: "buy",
       slippageBps: settings.slippageBps,
+      vaultAddress: deployment.vault,
     })),
   );
 }
@@ -284,9 +286,11 @@ async function buildSellCandidates({
         auditId: route?.auditId,
         intent: "preview" as const,
         networkId: "mainnet" as const,
+        ownerAddress: deployment.owner,
         routeId: position.routeId,
         side: "sell" as const,
         slippageBps: settings.slippageBps,
+        vaultAddress: deployment.vault,
       };
     });
 

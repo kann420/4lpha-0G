@@ -160,9 +160,16 @@ export function OgAgentCreateWorkspace() {
   const [walletAccessByKey, setWalletAccessByKey] = useState<Record<string, string>>({});
 
   async function loadWorkspace() {
+    if (!wallet.address) {
+      setWorkspace(null);
+      setIsLoading(false);
+      setStatusText("Connect a wallet to resolve its Policy Vault and Agentic IDs.");
+      return;
+    }
+
     setIsLoading(true);
     try {
-      const response = await fetch("/api/agents", { cache: "no-store" });
+      const response = await fetch(`/api/agents?ownerAddress=${encodeURIComponent(wallet.address)}`, { cache: "no-store" });
       const payload = (await response.json()) as { data?: OgAgentWorkspace; error?: { message: string } };
       if (!response.ok || !payload.data) {
         throw new Error(payload.error?.message ?? "Unable to load agent workspace.");
@@ -189,7 +196,7 @@ export function OgAgentCreateWorkspace() {
 
   useEffect(() => {
     void loadWorkspace();
-  }, []);
+  }, [wallet.address]);
 
   const activeStrategy = useMemo(() => getStrategyTemplate(strategyTemplate), [strategyTemplate]);
   const selectedFilterIds = activeStrategy.filterIds;
