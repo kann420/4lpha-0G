@@ -9,12 +9,98 @@
 
 4lpha 0G rebuilds the product around the 0G stack instead of legacy assumptions from the previous product line. The app centers on four surfaces:
 
-- Discover
+- AI Scan
 - Copilot
 - Trading Agent
 - Fund as a 0G Policy Vault
 
 The repo is designed to stand on its own as a public demo and hackathon submission.
+
+---
+
+## What is 4lpha 0G?
+
+4lpha 0G is an autonomous trading workspace built around 0G Compute Router, 0G Storage, and 0G Chain proof anchoring.
+
+The app is organized around practical operator flows:
+
+| Surface | Description |
+|---|---|
+| AI Scan | 0G-powered token and wallet scanner for contract facts, risk signals, route context, and policy-ready evidence packets. |
+| Copilot | Embedded chat for reasoning, policy review, and trade assistance powered through server-only routes. |
+| Trading Agent | Agent setup, run review, status, execution logs, and policy-aware trade actions. |
+| Fund / Vault | 0G Policy Vault funding, limits, executor controls, pause/revoke, proof links, and withdrawals. |
+
+Copilot is intentionally embedded in AI Scan and Agents. This repo does not introduce a standalone `/copilot` product surface.
+
+---
+
+## 0G Product Path
+
+The main demo path should use 0G for real work:
+
+- 0G Compute Router for reasoning and Copilot responses.
+- 0G Storage for redacted audit bundles and run evidence.
+- 0G Chain Galileo testnet for proof anchoring during demo flows.
+- 0G Policy Vault contracts for bounded trade execution and fund control.
+
+### High-level flow
+
+```mermaid
+flowchart LR
+  User["Operator"]
+  Scan["/scan"]
+  Agents["/agents"]
+  Vault["/vault or /fund"]
+  Chat["Server-only Copilot routes"]
+  Compute["0G Compute Router"]
+  Storage["0G Storage"]
+  Chain["0G Chain proof anchoring"]
+  Contracts["Policy Vault + Proof Registry"]
+  Worker["Agent worker"]
+
+  User --> Scan
+  User --> Agents
+  User --> Vault
+  Scan --> Chat
+  Agents --> Chat
+  Chat --> Compute
+  Agents --> Worker
+  Worker --> Storage
+  Worker --> Chain
+  Vault --> Contracts
+  Contracts --> Chain
+```
+
+---
+
+## Deployed 0G Contracts
+
+The current vault path uses deployed 0G contracts and curated routes rather than a legacy smart-account or arbitrary executor path.
+
+### 0G Mainnet
+
+| Contract | Address | Purpose |
+|---|---|---|
+| PolicyVault | [`0xE4c802B58993e49bEFe824ec0765e1128586dB2A`](https://chainscan.0g.ai/address/0xE4c802B58993e49bEFe824ec0765e1128586dB2A) | Live vault instance for owner deposits, bounded executor buy/sell, pause, revoke, and withdraw. |
+| PolicyVaultFactory | [`0x9bcb67FE731c6eB1ed0c51f1b821100CC8CE25C4`](https://chainscan.0g.ai/address/0x9bcb67FE731c6eB1ed0c51f1b821100CC8CE25C4) | Per-owner vault creation and discovery. |
+| ProofRegistry | [`0xfe87d95B76E297Bb28b0eC4dD72b15cfC2b14E7a`](https://chainscan.0g.ai/address/0xfe87d95B76E297Bb28b0eC4dD72b15cfC2b14E7a) | Anchors audit roots, policy hashes, model metadata hashes, and vault action hashes. |
+| CuratedUniswapV3RouteAdapter | [`0xfaa8A8e03307dd901054E16Ee89189d006DBf6Db`](https://chainscan.0g.ai/address/0xfaa8A8e03307dd901054E16Ee89189d006DBf6Db) | Real mainnet adapter for allowlisted ZIA/Oku routes, tokens, pools, routers, and selectors. |
+| AgenticID | [`0x7a968138991c054c8eaf280a4c62f4ac265f84ce`](https://chainscan.0g.ai/address/0x7a968138991c054c8eaf280a4c62f4ac265f84ce) | ERC-7857-inspired MVP identity record for agent, vault, executor, and storage references. |
+
+Mainnet policy defaults in the deployment artifact: per-trade cap `5 0G`, daily cap `25 0G`, max exposure `25 0G`, default min-out `9950` bps, deadline window `900` seconds, and cooldown `0` seconds. The mainnet vault allows `8` route tokens across `11` curated routes.
+
+### 0G Galileo Smoke Deployment
+
+| Contract | Address | Purpose |
+|---|---|---|
+| PolicyVault | [`0xC4313B4ab3Ff969542Dc1dEC9ef0A6B697eb949C`](https://chainscan-galileo.0g.ai/address/0xC4313B4ab3Ff969542Dc1dEC9ef0A6B697eb949C) | Testnet smoke vault used for the deposit, buy, sell, pause, revoke, and withdraw path. |
+| PolicyVaultFactory | [`0x961205be651f9378bbb628e1d609ae79970fc2b0`](https://chainscan-galileo.0g.ai/address/0x961205be651f9378bbb628e1d609ae79970fc2b0) | Testnet factory for smoke vault creation. |
+| ProofRegistry | [`0xb58bf66df9f7620878ba5b894086655c8ae10da4`](https://chainscan-galileo.0g.ai/address/0xb58bf66df9f7620878ba5b894086655c8ae10da4) | Testnet proof anchor for smoke buy/sell proofs. |
+| MockDexAdapter | [`0x6b8fe9aae525997d81208681299ad5ef347332fd`](https://chainscan-galileo.0g.ai/address/0x6b8fe9aae525997d81208681299ad5ef347332fd) | Test-only adapter for the first Galileo smoke flow. |
+| MockAssetToken | [`0x9eaa37b76633181203b3c09da1aadf8c23fbc8e7`](https://chainscan-galileo.0g.ai/address/0x9eaa37b76633181203b3c09da1aadf8c23fbc8e7) | Test-only token used by the mock adapter path. |
+
+Production and public mainnet flows must use `ENABLE_REAL_DEX_ADAPTER=true` and `ENABLE_MOCK_DEX_ADAPTER=false`.
 
 ---
 
@@ -52,71 +138,17 @@ npm run lint
 
 ---
 
-## What is 4lpha 0G?
-
-4lpha 0G is an autonomous trading workspace built around 0G Compute Router, 0G Storage, and 0G Chain proof anchoring.
-
-The app is organized around practical operator flows:
-
-| Surface | Description |
-|---|---|
-| Discover | 0G-focused workspace for market context, token inspection, and operator decisions. |
-| Copilot | Embedded chat for reasoning, policy review, and trade assistance powered through server-only routes. |
-| Trading Agent | Agent setup, run review, status, execution logs, and policy-aware trade actions. |
-| Fund / Vault | 0G Policy Vault funding, limits, executor controls, pause/revoke, proof links, and withdrawals. |
-
-Copilot is intentionally embedded in Discover and Agents. This repo does not introduce a standalone `/copilot` page.
-
----
-
-## 0G Product Path
-
-The main demo path should use 0G for real work:
-
-- 0G Compute Router for reasoning and Copilot responses.
-- 0G Storage for redacted audit bundles and run evidence.
-- 0G Chain Galileo testnet for proof anchoring during demo flows.
-- 0G Policy Vault contracts for bounded trade execution and fund control.
-
-### High-level flow
-
-```mermaid
-flowchart LR
-  User["Operator"]
-  Discover["/discover"]
-  Agents["/agents"]
-  Vault["/vault or /fund"]
-  Chat["Server-only Copilot routes"]
-  Compute["0G Compute Router"]
-  Storage["0G Storage"]
-  Chain["0G Chain proof anchoring"]
-  Contracts["Policy Vault + Proof Registry"]
-  Worker["Agent worker"]
-
-  User --> Discover
-  User --> Agents
-  User --> Vault
-  Discover --> Chat
-  Agents --> Chat
-  Chat --> Compute
-  Agents --> Worker
-  Worker --> Storage
-  Worker --> Chain
-  Vault --> Contracts
-  Contracts --> Chain
-```
-
----
-
 ## Product Surfaces
 
-### Discover
+### AI Scan
 
-`/` and `/discover` open the 0G Discover workspace. It is the main first-screen surface for market context and Copilot-assisted decisions.
+`/scan` opens the 4lpha AI Smart Scan workspace for token and wallet scanning. It combines deterministic RPC facts with 0G Compute Router analysis to produce a readable risk report, local evidence root, route context, and policy-ready scan packet.
+
+`/discover` is kept as a compatibility route and redirects to `/scan`. `/` currently redirects to `/agents`.
 
 ### Copilot
 
-Copilot is available as an embedded chat rail inside Discover and Agents. All LLM calls should go through server-side routes and the 0G Compute Router integration.
+Copilot is available as an embedded chat rail inside AI Scan and Agents. All LLM calls should go through server-side routes and the 0G Compute Router integration.
 
 ### Agents
 
@@ -254,8 +286,9 @@ MAINNET_CREATE_VAULT=false
 
 ```text
 app/
-  page.tsx                    Discover landing surface
-  discover/                   Discover workspace route
+  page.tsx                    Redirects to the Agents workspace
+  scan/                       AI Scan workspace route
+  discover/                   Compatibility redirect to AI Scan
   agents/                     Trading agent workspace and setup flow
   vault/ and fund/            0G Policy Vault surfaces
   api/                        Server routes for Copilot, agents, AI scan, and trade flows
