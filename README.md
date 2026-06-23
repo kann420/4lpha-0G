@@ -28,8 +28,8 @@ The app is organized around practical operator flows:
 | Surface | Description |
 |---|---|
 | AI Scan | 0G-powered token and wallet scanner for contract facts, risk signals, route context, and policy-ready evidence packets. |
-| Copilot | Embedded chat for reasoning, policy review, and trade assistance powered through server-only routes, with executable trade commands routed through Tria (TradeGPT) context before Policy Vault submission. |
-| Trading Agent | Agent setup, run review, status, execution logs, and policy-aware trade actions using Tria (TradeGPT) route context plus 0G Policy Vault enforcement. |
+| Copilot | Embedded chat for reasoning, policy review, and trade assistance powered through server-only routes, with executable trade commands routed through Zia (TradeGPT) context before Policy Vault submission. |
+| Trading Agent | Agent setup, run review, status, execution logs, and policy-aware trade actions using Zia (TradeGPT) route context plus 0G Policy Vault enforcement. |
 | Fund / Vault | 0G Policy Vault funding, limits, executor controls, pause/revoke, proof links, and withdrawals. |
 
 Copilot is intentionally embedded in AI Scan and Agents. This repo does not introduce a standalone `/copilot` product surface.
@@ -41,7 +41,7 @@ Copilot is intentionally embedded in AI Scan and Agents. This repo does not intr
 The main demo path should use 0G for real work:
 
 - 0G Compute Router for reasoning and Copilot responses.
-- Tria (TradeGPT) route context for executable quote and route selection.
+- Zia (TradeGPT) route context for executable quote and route selection.
 - 0G Storage for redacted audit bundles and run evidence.
 - 0G Chain Galileo testnet for proof anchoring during demo flows.
 - 0G Policy Vault contracts for bounded trade execution and fund control.
@@ -56,7 +56,7 @@ flowchart LR
   Vault["/vault or /fund"]
   Chat["Server-only Copilot routes"]
   Compute["0G Compute Router"]
-  Tria["Tria (TradeGPT) route context"]
+  Zia["Zia (TradeGPT) route context"]
   Storage["0G Storage"]
   Chain["0G Chain proof anchoring"]
   VaultPolicy["0G Policy Vault"]
@@ -69,11 +69,11 @@ flowchart LR
   Scan --> Chat
   Agents --> Chat
   Chat --> Compute
-  Chat --> Tria
+  Chat --> Zia
   Agents --> Worker
   Worker --> Compute
-  Worker --> Tria
-  Tria --> VaultPolicy
+  Worker --> Zia
+  Zia --> VaultPolicy
   Vault --> VaultPolicy
   VaultPolicy --> Proof
   Worker --> Storage
@@ -167,7 +167,7 @@ npm run lint
 
 Copilot is available as an embedded chat rail inside AI Scan and Agents. All LLM calls should go through server-side routes and the 0G Compute Router integration.
 
-For executable trade commands, Copilot uses Tria (TradeGPT) route context for quote and route selection, then submits only allowlisted buy/sell requests through the 0G Policy Vault. The vault remains the on-chain enforcement layer for spend caps, min-out, deadlines, executor scope, and proof binding.
+For executable trade commands, Copilot uses Zia (TradeGPT) route context for quote and route selection, then submits only allowlisted buy/sell requests through the 0G Policy Vault. The vault remains the on-chain enforcement layer for spend caps, min-out, deadlines, executor scope, and proof binding.
 
 ### Agents
 
@@ -177,7 +177,7 @@ For executable trade commands, Copilot uses Tria (TradeGPT) route context for qu
 - Run review and status
 - Audit evidence and proof references
 - Policy visibility
-- Trade execution through Tria (TradeGPT) routes, with Policy Vault checks before any executor transaction
+- Trade execution through Zia (TradeGPT) routes, with Policy Vault checks before any executor transaction
 - Embedded Copilot support
 
 ### Fund / Vault
