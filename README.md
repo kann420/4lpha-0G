@@ -77,19 +77,27 @@ flowchart LR
 
 ## Deployed 0G Contracts
 
-The current vault path uses deployed 0G contracts and curated routes rather than a legacy smart-account or arbitrary executor path.
+The current vault path uses deployed 0G contracts and curated routes rather than a legacy smart-account or arbitrary executor path. Mainnet is multi-user: the app resolves each connected wallet's vault through `PolicyVaultFactory.vaultOf(wallet)`. A new user creates a new vault instance from the deployed factory; the factory, adapter, proof registry, and AgenticID contracts do not need to be redeployed for each user.
 
 ### 0G Mainnet
 
 | Contract | Address | Purpose |
 |---|---|---|
-| PolicyVault | [`0xE4c802B58993e49bEFe824ec0765e1128586dB2A`](https://chainscan.0g.ai/address/0xE4c802B58993e49bEFe824ec0765e1128586dB2A) | Live vault instance for owner deposits, bounded executor buy/sell, pause, revoke, and withdraw. |
 | PolicyVaultFactory | [`0x9bcb67FE731c6eB1ed0c51f1b821100CC8CE25C4`](https://chainscan.0g.ai/address/0x9bcb67FE731c6eB1ed0c51f1b821100CC8CE25C4) | Per-owner vault creation and discovery. |
 | ProofRegistry | [`0xfe87d95B76E297Bb28b0eC4dD72b15cfC2b14E7a`](https://chainscan.0g.ai/address/0xfe87d95B76E297Bb28b0eC4dD72b15cfC2b14E7a) | Anchors audit roots, policy hashes, model metadata hashes, and vault action hashes. |
 | CuratedUniswapV3RouteAdapter | [`0xfaa8A8e03307dd901054E16Ee89189d006DBf6Db`](https://chainscan.0g.ai/address/0xfaa8A8e03307dd901054E16Ee89189d006DBf6Db) | Real mainnet adapter for allowlisted ZIA/Oku routes, tokens, pools, routers, and selectors. |
 | AgenticID | [`0x7a968138991c054c8eaf280a4c62f4ac265f84ce`](https://chainscan.0g.ai/address/0x7a968138991c054c8eaf280a4c62f4ac265f84ce) | ERC-7857-inspired MVP identity record for agent, vault, executor, and storage references. |
 
-Mainnet policy defaults in the deployment artifact: per-trade cap `5 0G`, daily cap `25 0G`, max exposure `25 0G`, default min-out `9950` bps, deadline window `900` seconds, and cooldown `0` seconds. The mainnet vault allows `8` route tokens across `11` curated routes.
+Example owner vault: [`0xE4c802B58993e49bEFe824ec0765e1128586dB2A`](https://chainscan.0g.ai/address/0xE4c802B58993e49bEFe824ec0765e1128586dB2A). This is a demo/operator vault instance, not a global vault for every user.
+
+Mainnet policy defaults for new vault instances: per-trade cap `5 0G`, daily cap `25 0G`, max exposure `25 0G`, default min-out `9950` bps, deadline window `900` seconds, and cooldown `0` seconds. Mainnet vaults allow `8` route tokens across `11` curated routes.
+
+For deployment and operations:
+
+- `NEXT_PUBLIC_POLICY_VAULT_FACTORY_MAINNET_ADDRESS` is the required multi-user vault discovery entrypoint.
+- `NEXT_PUBLIC_POLICY_VAULT_MAINNET_ADDRESS` / `POLICY_VAULT_MAINNET_ADDRESS` are optional demo or script fallbacks, not the user vault source of truth.
+- `DEPLOYER_PRIVATE_KEY` is the server-side proof and AgenticID minter key; it is not the owner key for every user's vault.
+- `VAULT_EXECUTOR_PRIVATE_KEY` controls the bounded executor address configured into each vault.
 
 ### 0G Galileo Smoke Deployment
 
