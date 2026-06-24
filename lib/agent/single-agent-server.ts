@@ -1123,20 +1123,44 @@ async function readAgentDeploymentRoster(
     readLegacyDeployResponseRecord(),
     readJsonArtifact<OgAgentDeploymentRecord>(LEGACY_AGENT_DEPLOYMENT_PATH),
   ]);
-  const allDeployments = mergeAgentDeploymentRecords([
-    ...onChainRecords,
+  const appDeployments = mergeAgentDeploymentRecords([
     ...(legacyDeployResponse ? [legacyDeployResponse] : []),
     ...(legacySingleRecord ? [legacySingleRecord] : []),
     ...(registry?.agents ?? []),
   ]);
-  const removedAgents = buildRemovedAgentRecords(registry, allDeployments)
+  const removedCandidates = mergeAgentDeploymentRecords([...onChainRecords, ...appDeployments]);
+  const removedAgents = buildRemovedAgentRecords(registry, removedCandidates)
     .filter((deployment) => deploymentMatchesFilter(deployment, filter));
   const removedAgentIds = new Set(removedAgents.map((deployment) => deployment.id));
-  const active = allDeployments.filter((deployment) => {
+
+  const activeAppDeployments = appDeployments.filter((deployment) => {
     if (removedAgentIds.has(deployment.id)) return false;
     return deploymentMatchesFilter(deployment, filter);
   });
-  return { active, removed: removedAgents };
+  if (activeAppDeployments.length > 0) {
+    return { active: latestDeploymentOnly(activeAppDeployments), removed: removedAgents };
+  }
+
+  const activeOnChainDeployments = latestDeploymentOnly(
+    onChainRecords.filter((deployment) => {
+      if (removedAgentIds.has(deployment.id)) return false;
+      return deploymentMatchesFilter(deployment, filter);
+    }),
+  ).map(normalizeOnChainFallbackAgent);
+
+  return { active: activeOnChainDeployments, removed: removedAgents };
+}
+
+function latestDeploymentOnly(deployments: OgAgentDeploymentRecord[]): OgAgentDeploymentRecord[] {
+  const latest = deployments.at(-1);
+  return latest ? [latest] : [];
+}
+
+function normalizeOnChainFallbackAgent(deployment: OgAgentDeploymentRecord): OgAgentDeploymentRecord {
+  return {
+    ...deployment,
+    name: SINGLE_OG_AGENT_NAME,
+  };
 }
 
 function deploymentMatchesFilter(
