@@ -56,7 +56,7 @@ export function ConnectWalletModal({
             <div className="shrink-0 px-5 pb-3 pt-5">
               <h2 className="font-heading text-lg font-semibold text-white">Connect a wallet</h2>
               <p className="mt-1 text-xs leading-5 text-slate-500">
-                Use an EVM wallet on 0G Galileo testnet first.
+                Use an EVM wallet on 0G Mainnet.
               </p>
             </div>
 
@@ -123,12 +123,12 @@ export function ConnectWalletModal({
                 Get a wallet
               </a>
               <a
-                href="https://docs.0g.ai/developer-hub/testnet/testnet-overview"
+                href="https://docs.0g.ai"
                 target="_blank"
                 rel="noreferrer"
                 className="text-sm font-semibold text-cyan-100 interaction-transition hover:text-cyan-50"
               >
-                0G testnet docs
+                0G docs
               </a>
             </div>
           </div>
