@@ -5,7 +5,6 @@ import {
   DEFAULT_OG_NETWORK_ID,
   OG_NETWORK_STORAGE_KEY,
   getOgNetwork,
-  isOgNetworkId,
 } from "@/lib/og/networks";
 import type { OgNetworkConfig, OgNetworkId } from "@/lib/types";
 
@@ -18,7 +17,7 @@ export function useOgNetwork(): {
 
   function setNetworkId(value: OgNetworkId) {
     try {
-      window.localStorage.setItem(OG_NETWORK_STORAGE_KEY, value);
+      window.localStorage.setItem(OG_NETWORK_STORAGE_KEY, value === "mainnet" ? value : DEFAULT_OG_NETWORK_ID);
       window.dispatchEvent(new Event("4lpha-0g-network-change"));
     } catch {}
   }
@@ -47,12 +46,7 @@ function subscribeToNetwork(onStoreChange: () => void): () => void {
 }
 
 function getNetworkSnapshot(): OgNetworkId {
-  try {
-    const stored = window.localStorage.getItem(OG_NETWORK_STORAGE_KEY);
-    return isOgNetworkId(stored) ? stored : DEFAULT_OG_NETWORK_ID;
-  } catch {
-    return DEFAULT_OG_NETWORK_ID;
-  }
+  return DEFAULT_OG_NETWORK_ID;
 }
 
 function getNetworkServerSnapshot(): OgNetworkId {

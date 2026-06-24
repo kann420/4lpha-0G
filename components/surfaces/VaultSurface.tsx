@@ -99,7 +99,6 @@ export function VaultSurface() {
         <div className="mx-auto grid w-full max-w-7xl gap-5 xl:grid-cols-[minmax(0,1fr)_24rem]">
           <div className="flex min-w-0 flex-col gap-5">
             <FundRouteHeader network={network} />
-            <FundNetworkSelector activeId={network.id} onSelect={setNetworkId} />
             <FundBalanceGrid
               ownerBalanceLabel={readOwnerBalanceLabel({
                 balance: ownerBalance.data,
@@ -153,7 +152,7 @@ function FundRouteHeader({ network }: { network: OgNetworkConfig }) {
               {network.networkName}
             </span>
             <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-xs font-medium text-emerald-100">
-              {network.id === "mainnet" ? "Real-gated" : "Mock-labeled"}
+              Real-gated
             </span>
           </div>
           <div>
@@ -172,7 +171,7 @@ function FundRouteHeader({ network }: { network: OgNetworkConfig }) {
           <HeaderMetric
             icon={<ShieldCheck className="h-4 w-4" />}
             label="Routes"
-            value={network.id === "mainnet" ? `${CURATED_MAINNET_POLICY_VAULT_ROUTES.length} curated` : "Vault ready"}
+            value={`${CURATED_MAINNET_POLICY_VAULT_ROUTES.length} curated`}
           />
         </div>
       </div>
@@ -199,60 +198,6 @@ function HeaderMetric({
       </div>
       <p className={`mt-2 font-semibold ${tone === "amber" ? "text-amber-100" : "text-white"}`}>{value}</p>
     </div>
-  );
-}
-
-function FundNetworkSelector({
-  activeId,
-  onSelect,
-}: {
-  activeId: "mainnet" | "testnet";
-  onSelect: (id: "mainnet" | "testnet") => void;
-}) {
-  const options = [
-    {
-      description: "Default demo network for UI and future smoke paths.",
-      id: "testnet",
-      label: "0G Galileo Testnet",
-      symbol: "16602",
-    },
-    {
-      description: "Uses reviewed mainnet vault config when available.",
-      id: "mainnet",
-      label: "0G Mainnet",
-      symbol: "16661",
-    },
-  ] as const;
-
-  return (
-    <section className="rounded-[22px] border border-white/8 bg-white/[0.035] p-3">
-      <div className="grid gap-2 md:grid-cols-2">
-        {options.map((option) => {
-          const selected = option.id === activeId;
-          return (
-            <button
-              key={option.id}
-              type="button"
-              aria-pressed={selected}
-              onClick={() => onSelect(option.id)}
-              className={`flex min-h-[74px] items-center justify-between gap-3 rounded-[16px] border px-4 py-3 text-left transition-colors ${
-                selected
-                  ? "border-cyan-200/35 bg-cyan-200/[0.12] text-cyan-50"
-                  : "border-white/8 bg-black/20 text-slate-300 hover:border-white/16 hover:bg-white/[0.05]"
-              }`}
-            >
-              <span className="min-w-0">
-                <span className="block text-sm font-semibold text-white">{option.label}</span>
-                <span className="mt-1 block text-xs leading-5 text-slate-400">{option.description}</span>
-              </span>
-              <span className="shrink-0 rounded-full border border-white/10 bg-black/20 px-2.5 py-1 text-xs font-semibold">
-                {option.symbol}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </section>
   );
 }
 
