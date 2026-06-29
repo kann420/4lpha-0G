@@ -29,6 +29,15 @@ export interface OgAgentWorkerRunSummary {
   dryRuns: number;
   finishedAt: string;
   held: number;
+  results: Array<{
+    action: OgAgentBrainDecision["action"];
+    agentId: string;
+    error?: string;
+    executionReason?: string;
+    executionStatus?: NonNullable<OgAgentRuntimeRunRecord["execution"]>["status"];
+    status: OgAgentRuntimeRunRecord["status"];
+    summary: string;
+  }>;
   selectedAgentIds: string[];
   sellsExecuted: number;
   startedAt: string;
@@ -52,6 +61,7 @@ export async function runOgAgentWorkerOnce(config: OgAgentWorkerConfig): Promise
     dryRuns: 0,
     finishedAt: startedAt,
     held: 0,
+    results: [],
     selectedAgentIds: selected.map((deployment) => deployment.id),
     sellsExecuted: 0,
     startedAt,
@@ -66,6 +76,15 @@ export async function runOgAgentWorkerOnce(config: OgAgentWorkerConfig): Promise
     if (result.status === "held") summary.held += 1;
     if (result.status === "executed" && result.decision.action === "buy") summary.buysExecuted += 1;
     if (result.status === "executed" && result.decision.action === "sell") summary.sellsExecuted += 1;
+    summary.results.push({
+      action: result.decision.action,
+      agentId: result.agentId,
+      error: result.error,
+      executionReason: result.execution?.reason,
+      executionStatus: result.execution?.status,
+      status: result.status,
+      summary: result.decision.summary,
+    });
   }
 
   summary.finishedAt = new Date().toISOString();
