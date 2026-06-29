@@ -151,6 +151,10 @@ async function processDeployment(
       decision = holdDecision(positionHoldReason ?? "No quote-ready 0G route candidates were available.");
       return appendAndReturn(buildRunRecord({ candidates, decision, deployment, request, startedAt, status: "held" }));
     }
+    if (!candidates.some((candidate) => candidate.policyDecision === "allow")) {
+      decision = holdDecision(candidateHoldReason(candidates));
+      return appendAndReturn(buildRunRecord({ candidates, decision, deployment, request, startedAt, status: "blocked" }));
+    }
 
     decision = await decideOgAgentAction({ candidates, config, deployment, workspace });
     if (decision.action === "hold" || !decision.routeId) {
@@ -463,6 +467,14 @@ function formatSellAmount(position: OgAgentVaultPosition, sellPercent: number): 
 
 function routeLabel(routeId: string): string {
   return AGENT_TRADE_ROUTES.find((route: AgentTradeRouteOption) => route.id === routeId)?.label ?? routeId;
+}
+
+function candidateHoldReason(candidates: OgAgentTradeCandidate[]): string {
+  const reasons = candidates.flatMap((candidate) => [
+    candidate.reason,
+    ...(candidate.preview?.quote.warnings ?? []),
+  ]).filter((reason): reason is string => Boolean(reason));
+  return reasons[0] ?? "No execution-ready candidate passed the vault policy checks.";
 }
 
 function resolveRuntimeSettings(

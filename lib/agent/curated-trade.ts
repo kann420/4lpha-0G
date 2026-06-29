@@ -38,6 +38,7 @@ const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
 const AGENT_REF = "4lpha-agent:curated-route-executor:v1";
 const DEFAULT_SLIPPAGE_BPS = 50;
 const MAX_SCRIPT_TRADE_0G = parseEther("0.005");
+const MIN_EXECUTOR_GAS_BALANCE = parseEther("0.005");
 
 export type CuratedTradeSide = "buy" | "sell";
 
@@ -663,6 +664,7 @@ async function readVaultState(
     dailyWindowStart,
     lastTradeAt,
     openExposure0G,
+    executorNativeBalance,
   ] =
     await Promise.all([
       runtime.publicClient.getBlock(),
@@ -682,12 +684,18 @@ async function readVaultState(
       runtime.publicClient.readContract({ address: vault, abi: policyVaultAbi, functionName: "dailyWindowStart" }),
       runtime.publicClient.readContract({ address: vault, abi: policyVaultAbi, functionName: "lastTradeAt" }),
       runtime.publicClient.readContract({ address: vault, abi: policyVaultAbi, functionName: "openExposure0G" }),
+      runtime.publicClient.getBalance({ address: runtime.executor }),
     ]);
 
   const warnings: string[] = [];
   const policy = normalizePolicy(rawPolicy);
   if (!owner || owner === zeroAddress) warnings.push("Vault owner could not be resolved.");
   if (executor.toLowerCase() !== runtime.executor.toLowerCase()) warnings.push("Vault executor does not match server executor.");
+  if (executorNativeBalance < MIN_EXECUTOR_GAS_BALANCE) {
+    warnings.push(
+      `Vault executor gas balance is ${formatEther(executorNativeBalance)} 0G, below the required ${formatEther(MIN_EXECUTOR_GAS_BALANCE)} 0G.`,
+    );
+  }
   if (adapter.toLowerCase() !== runtime.adapter.toLowerCase()) warnings.push("Vault adapter is not the curated route adapter.");
   if (proofRegistry.toLowerCase() !== runtime.proofRegistry.toLowerCase()) warnings.push("Vault proof registry does not match server config.");
   if (paused) warnings.push("Vault is paused.");
