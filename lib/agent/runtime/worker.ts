@@ -38,6 +38,8 @@ interface ResolvedAgentRuntimeSettings extends OgAgentRuntimeSettings {
   maxHoldingSeconds: number;
 }
 
+const WORKSPACE_FETCH_TIMEOUT_MS = 15_000;
+
 export async function runOgAgentWorkerOnce(config: OgAgentWorkerConfig): Promise<OgAgentWorkerRunSummary> {
   const startedAt = new Date().toISOString();
   const selected = config.killSwitchEnabled ? [] : await selectDeploymentsForCycle(config);
@@ -71,7 +73,7 @@ export async function runOgAgentWorkerOnce(config: OgAgentWorkerConfig): Promise
 }
 
 async function selectDeploymentsForCycle(config: OgAgentWorkerConfig): Promise<OgAgentDeploymentRecord[]> {
-  const workspace = await loadOgAgentWorkspace(config.agentId);
+  const workspace = await loadWorkerWorkspace(config, config.agentId);
   if (config.agentId) {
     if (!config.allowConfiguredAgent) {
       return [];
@@ -104,7 +106,7 @@ async function processDeployment(
   let request: AgentTradeRequest | undefined;
 
   try {
-    workspace = await loadOgAgentWorkspace(deployment.id);
+    workspace = await loadWorkerWorkspace(config, deployment.id);
     if (config.killSwitchEnabled) {
       decision = holdDecision("Worker kill switch is enabled.");
       return appendAndReturn(buildRunRecord({ candidates, decision, deployment, request, startedAt, status: "blocked" }));
@@ -176,6 +178,78 @@ async function processDeployment(
       buildRunRecord({ candidates, decision, deployment, error: message, request, startedAt, status: "errored" }),
     );
   }
+}
+
+async function loadWorkerWorkspace(config: OgAgentWorkerConfig, agentId?: string): Promise<OgAgentWorkspace> {
+  if (!config.workspaceUrl) {
+    return loadOgAgentWorkspace(agentId);
+  }
+
+  const url = new URL(config.workspaceUrl);
+  if (agentId) {
+    url.searchParams.set("agentId", agentId);
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), WORKSPACE_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      cache: "no-store",
+      headers: {
+        accept: "application/json",
+        "user-agent": "4lpha-0g-agent-worker",
+      },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Agent workspace endpoint returned HTTP ${response.status}.`);
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new Error("Agent workspace endpoint did not return JSON.");
+    }
+
+    const workspace = getWorkspaceFromPayload(payload);
+    if (!isOgAgentWorkspace(workspace)) {
+      throw new Error("Agent workspace endpoint returned an invalid workspace payload.");
+    }
+
+    return workspace;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Agent workspace endpoint timed out after ${WORKSPACE_FETCH_TIMEOUT_MS}ms.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function getWorkspaceFromPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || !("data" in payload)) {
+    return undefined;
+  }
+  return (payload as { data?: unknown }).data;
+}
+
+function isOgAgentWorkspace(value: unknown): value is OgAgentWorkspace {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const workspace = value as Partial<OgAgentWorkspace>;
+  return (
+    !!workspace.agent &&
+    typeof workspace.agent === "object" &&
+    Array.isArray(workspace.agents) &&
+    !!workspace.storage &&
+    typeof workspace.storage === "object" &&
+    !!workspace.vault &&
+    typeof workspace.vault === "object"
+  );
 }
 
 async function getPositionHoldReason(

@@ -49,6 +49,7 @@ async function main(): Promise<void> {
     processAllAgents: config.processAllAgents,
     sellPercent: config.sellPercent,
     slippageBps: config.slippageBps,
+    workspaceUrlConfigured: Boolean(config.workspaceUrl),
   });
 
   if (config.once) {

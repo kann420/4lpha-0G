@@ -16,6 +16,7 @@ export interface OgAgentWorkerConfig {
   selectedModel?: string;
   sellPercent: number;
   slippageBps: number;
+  workspaceUrl?: string;
 }
 
 export function loadOgAgentWorkerConfig(argv: string[] = process.argv.slice(2)): OgAgentWorkerConfig {
@@ -63,7 +64,25 @@ export function loadOgAgentWorkerConfig(argv: string[] = process.argv.slice(2)):
     slippageBps: Number.isFinite(slippageArg)
       ? clamp(Math.trunc(slippageArg), 1, 1_000)
       : clamp(readIntegerEnv("OG_AGENT_WORKER_SLIPPAGE_BPS", 75), 1, 1_000),
+    workspaceUrl: readWorkspaceUrl(readValue(argv, "--workspace-url") ?? readEnv("OG_AGENT_WORKER_WORKSPACE_URL")),
   };
+}
+
+function readWorkspaceUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("OG_AGENT_WORKER_WORKSPACE_URL must be a valid http(s) URL.");
+  }
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("OG_AGENT_WORKER_WORKSPACE_URL must use http or https.");
+  }
+
+  return url.toString();
 }
 
 function validateBuyAmount(value: string) {
