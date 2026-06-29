@@ -1141,26 +1141,12 @@ async function readAgentDeploymentRoster(
     return { active: latestDeploymentOnly(activeAppDeployments), removed: removedAgents };
   }
 
-  const activeOnChainDeployments = latestDeploymentOnly(
-    onChainRecords.filter((deployment) => {
-      if (removedAgentIds.has(deployment.id)) return false;
-      return deploymentMatchesFilter(deployment, filter);
-    }),
-  ).map(normalizeOnChainFallbackAgent);
-
-  return { active: activeOnChainDeployments, removed: removedAgents };
+  return { active: [], removed: removedAgents };
 }
 
 function latestDeploymentOnly(deployments: OgAgentDeploymentRecord[]): OgAgentDeploymentRecord[] {
   const latest = deployments.at(-1);
   return latest ? [latest] : [];
-}
-
-function normalizeOnChainFallbackAgent(deployment: OgAgentDeploymentRecord): OgAgentDeploymentRecord {
-  return {
-    ...deployment,
-    name: SINGLE_OG_AGENT_NAME,
-  };
 }
 
 function deploymentMatchesFilter(
