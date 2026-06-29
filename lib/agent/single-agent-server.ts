@@ -1247,7 +1247,16 @@ async function readAgentDeploymentRoster(
     return { active: latestDeploymentOnly(activeAppDeployments), removed: removedAgents };
   }
 
-  return { active: [], removed: removedAgents };
+  if (!filter.ownerAddress && !filter.vaultAddress) {
+    return { active: [], removed: removedAgents };
+  }
+
+  const activeOnChainDeployments = mergeAgentDeploymentRecords(onChainRecords).filter((deployment) => {
+    if (removedAgentIds.has(deployment.id)) return false;
+    return deploymentMatchesFilter(deployment, filter);
+  });
+
+  return { active: latestDeploymentOnly(activeOnChainDeployments), removed: removedAgents };
 }
 
 function latestDeploymentOnly(deployments: OgAgentDeploymentRecord[]): OgAgentDeploymentRecord[] {
