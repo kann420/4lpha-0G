@@ -9,10 +9,10 @@ export function shortHash(value: string, head = 8, tail = 6): string {
 export function statusTone(status: "verified" | "pending" | "mock"): string {
   switch (status) {
     case "verified":
-      return "border-emerald-300/20 bg-emerald-300/10 text-emerald-100";
+      return "border-green/20 bg-green/10 text-green";
     case "pending":
-      return "border-amber-300/20 bg-amber-300/10 text-amber-100";
+      return "border-amber/20 bg-amber/10 text-amber";
     default:
-      return "border-cyan-300/20 bg-cyan-300/10 text-cyan-100";
+      return "border-primary/20 bg-primary/10 text-primary";
   }
 }

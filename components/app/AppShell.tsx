@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { WalletConnectButton } from "@/components/wallet";
 import type { OgNetworkConfig, OgNetworkId } from "@/lib/types";
 import { ZeroGNetworkSwitch } from "./ZeroGNetworkSwitch";
+import { ThemeToggle } from "./ThemeToggle";
 
 const NAV_ITEMS = [
   { href: "/scan", label: "AI Scan" },
@@ -32,11 +33,11 @@ export function AppShell({
   query?: string;
 }) {
   return (
-    <div className="ambient-surface relative flex h-svh w-full max-w-full flex-col overflow-hidden bg-[var(--pulse-bg)] text-white">
+    <div className="ambient-surface relative flex h-svh w-full max-w-full flex-col overflow-hidden bg-[var(--pulse-bg)] text-foreground">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="absolute -left-24 top-20 h-[28rem] w-[28rem] rounded-full bg-cyan-400/12 blur-[140px] animate-drift-slow" />
-        <div className="absolute right-[-8rem] top-0 h-[32rem] w-[32rem] rounded-full bg-amber-300/10 blur-[160px] animate-drift-delayed" />
-        <div className="absolute bottom-[-10rem] left-1/3 h-[26rem] w-[26rem] rounded-full bg-emerald-400/8 blur-[160px] animate-drift-slow" />
+        <div className="absolute -left-24 top-20 h-[28rem] w-[28rem] rounded-full bg-primary/15 blur-[140px] animate-drift-slow" />
+        <div className="absolute right-[-8rem] top-0 h-[32rem] w-[32rem] rounded-full bg-primary/10 blur-[160px] animate-drift-delayed" />
+        <div className="absolute bottom-[-10rem] left-1/3 h-[26rem] w-[26rem] rounded-full bg-primary/8 blur-[160px] animate-drift-slow" />
       </div>
 
       <div className="relative z-10 flex h-svh min-h-0 w-full max-w-full flex-col overflow-hidden">
@@ -69,13 +70,13 @@ function Header({
   const showSearch = typeof query === "string" && typeof onQueryChange === "function";
 
   return (
-    <header className="relative z-[100] w-full max-w-full overflow-visible border-b border-white/10 bg-[#070b10]/90 backdrop-blur-xl max-lg:rounded-none">
+    <header className="relative z-[100] w-full max-w-full overflow-visible border-b border-line bg-panel-solid-strong/90 backdrop-blur-xl max-lg:rounded-none">
       <div className="flex flex-col gap-2 px-3 py-2.5 lg:gap-3 lg:px-8 lg:py-4">
         <div className="flex items-center justify-between gap-3 lg:grid lg:grid-cols-[auto_auto_minmax(0,1fr)_auto] lg:gap-4">
           <Link
             href="/agents"
             aria-label="Go to Agents"
-            className="animate-nav-in flex min-w-0 items-center gap-2 rounded-[18px] transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 lg:min-w-[15rem] lg:gap-3"
+            className="animate-nav-in flex min-w-0 items-center gap-2 rounded-[18px] transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 lg:min-w-[15rem] lg:gap-3"
             style={{ animationDelay: "80ms" }}
           >
             <Image
@@ -86,10 +87,10 @@ function Header({
               className="h-10 w-10 shrink-0 rounded-[26%] lg:h-16 lg:w-16"
             />
             <div className="min-w-0">
-              <p className="font-heading text-lg font-bold leading-none text-white lg:text-xl">
+              <p className="font-heading text-lg font-bold leading-none text-foreground lg:text-xl">
                 4lpha AI
               </p>
-              <span className="mt-1 hidden rounded-full border border-cyan-300/12 bg-cyan-300/[0.06] px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-100/70 sm:inline-flex">
+              <span className="mt-1 hidden rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary sm:inline-flex">
                 AI Trading Agent
               </span>
             </div>
@@ -99,6 +100,7 @@ function Header({
             className="flex shrink-0 items-center gap-2 lg:hidden animate-nav-in"
             style={{ animationDelay: "240ms" }}
           >
+            <ThemeToggle />
             <WalletConnectButton compact networkId={networkId} />
           </div>
 
@@ -118,6 +120,7 @@ function Header({
             className="hidden items-center justify-end gap-2 lg:flex animate-nav-in"
             style={{ animationDelay: "320ms" }}
           >
+            <ThemeToggle />
             <ZeroGNetworkSwitch activeId={networkId} onChange={onNetworkChange} />
             <WalletConnectButton networkId={networkId} />
           </div>
@@ -149,7 +152,7 @@ function HeaderNav({ delayStartMs = 150 }: { delayStartMs?: number }) {
   const pathname = usePathname();
 
   return (
-    <nav className="flex min-w-0 items-center gap-1 max-lg:w-full max-lg:rounded-full max-lg:border max-lg:border-white/8 max-lg:bg-white/[0.035] max-lg:p-1">
+    <nav className="flex min-w-0 items-center gap-1 max-lg:w-full max-lg:rounded-full max-lg:border max-lg:border-line max-lg:bg-panel max-lg:p-1">
       {NAV_ITEMS.map((item, index) => {
         const active =
           (item.href === "/scan" &&
@@ -164,8 +167,8 @@ function HeaderNav({ delayStartMs = 150 }: { delayStartMs?: number }) {
             href={item.href}
             className={`animate-nav-in min-w-0 rounded-full px-3 py-3 text-base font-semibold transition-colors max-lg:flex-1 max-lg:px-2 max-lg:py-3 max-lg:text-center max-lg:text-sm ${
               active
-                ? "bg-white/[0.08] text-white"
-                : "text-slate-400 hover:bg-white/[0.04] hover:text-slate-200"
+                ? "bg-panel-strong text-foreground"
+                : "text-muted hover:bg-panel hover:text-foreground"
             }`}
             style={{ animationDelay: `${delayStartMs + index * 65}ms` }}
           >
@@ -188,27 +191,27 @@ function HeaderSearch({
 }) {
   return (
     <label
-      className="relative flex h-11 min-w-0 max-w-3xl flex-1 animate-nav-in items-center overflow-hidden rounded-full border border-white/10 bg-white/[0.04] px-3 text-sm text-slate-300 transition-colors focus-within:border-white/20 focus-within:bg-white/[0.06] lg:h-auto lg:w-full lg:px-4 lg:py-2.5 lg:text-base"
+      className="relative flex h-11 min-w-0 max-w-3xl flex-1 animate-nav-in items-center overflow-hidden rounded-full border border-line bg-panel px-3 text-sm text-muted transition-colors focus-within:border-line-strong focus-within:bg-panel-strong lg:h-auto lg:w-full lg:px-4 lg:py-2.5 lg:text-base"
       style={{ animationDelay: `${delayMs}ms` }}
     >
-      <Search className="mr-2 h-4 w-4 shrink-0 text-slate-500 lg:mr-3" />
+      <Search className="mr-2 h-4 w-4 shrink-0 text-muted lg:mr-3" />
       <input
         type="search"
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}
         placeholder="Search scans, contracts, risk signals"
-        className="min-w-0 w-full bg-transparent text-sm text-white placeholder:text-slate-500 focus:outline-none lg:text-base"
+        className="min-w-0 w-full bg-transparent text-sm text-foreground placeholder:text-muted focus:outline-none lg:text-base"
       />
       {query ? (
         <button
           type="button"
           onClick={() => onQueryChange("")}
-          className="ml-3 flex h-7 w-7 items-center justify-center rounded-full bg-white/[0.06] text-slate-400 transition-colors hover:bg-white/[0.1] hover:text-white"
+          className="ml-3 flex h-7 w-7 items-center justify-center rounded-full bg-panel-strong text-muted transition-colors hover:bg-primary/15 hover:text-foreground"
         >
           <X className="h-3.5 w-3.5" />
         </button>
       ) : (
-        <kbd className="ml-3 hidden rounded-full border border-white/8 bg-white/[0.05] px-2 py-1 font-mono text-xs uppercase tracking-[0.18em] text-slate-500 sm:inline-flex">
+        <kbd className="ml-3 hidden rounded-full border border-line bg-panel-strong px-2 py-1 font-mono text-xs uppercase tracking-[0.18em] text-muted sm:inline-flex">
           /
         </kbd>
       )}

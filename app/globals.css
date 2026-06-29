@@ -4,23 +4,66 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-heading: var(--font-geist-sans);
+
+  /* Semantic color tokens — each maps to a CSS variable that swaps per theme.
+     Using these utilities (bg-bg, bg-panel, border-line, text-foreground,
+     text-muted, text-primary, ...) makes any new UI support both themes
+     automatically. Add new tokens here and override them in :root.light. */
+  --color-bg: var(--bg);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-panel: var(--panel);
+  --color-panel-strong: var(--panel-strong);
+  --color-panel-solid: var(--panel-solid);
+  --color-panel-solid-strong: var(--panel-solid-strong);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-strong: var(--primary-strong);
+  --color-primary-soft: var(--primary-soft);
+  --color-teal: var(--teal);
+  --color-amber: var(--amber);
+  --color-yellow: var(--yellow);
+  --color-rose: var(--rose);
+  --color-green: var(--green);
+  --color-blue: var(--blue);
+  /* Ink for text on the bright primary CTA fill (teal in dark, violet in light).
+     Dark = near-black so text reads on teal; light = current foreground so light mode is unchanged. */
+  --color-on-primary: var(--on-primary);
+  /* Inverted pill: solid white fill + dark ink (the selected "0G Mainnet" pill).
+     Dark restores the original white pill / black text; light stays white pill / dark text. */
+  --color-invert: var(--invert);
+  --color-invert-ink: var(--invert-ink);
 }
 
 :root {
+  /* Dark theme (default) */
   --bg: #05080c;
   --background: #05080c;
   --foreground: #edf4f6;
-  --panel: rgba(10, 15, 20, 0.86);
-  --panel-strong: rgba(12, 18, 25, 0.96);
+  --panel: rgba(255, 255, 255, 0.04);
+  --panel-strong: rgba(255, 255, 255, 0.07);
+  --panel-solid: rgba(10, 15, 20, 0.86);
+  --panel-solid-strong: rgba(12, 18, 25, 0.96);
   --line: rgba(255, 255, 255, 0.09);
   --line-strong: rgba(255, 255, 255, 0.15);
   --text: #eef7f7;
   --muted: #7f93a4;
+  /* Brand accent. Dark keeps the existing teal identity. */
+  --primary: #1ee8c5;
+  --primary-strong: #1ee8c5;
+  --primary-soft: rgba(30, 232, 197, 0.12);
   --teal: #1ee8c5;
   --amber: #ffd166;
-  --rose: #ff7063;
-  --green: #92e766;
+  --yellow: #fde047;
+  --rose: #fb7185;
+  --green: #6ee7b7;
   --blue: #75a7ff;
+  --on-primary: #041015;
+  --invert: #f8fafc;
+  --invert-ink: #071015;
   --pulse-bg: #05080c;
   --pulse-panel: rgb(11 17 22 / 0.78);
   --pulse-panel-strong: rgb(12 20 26 / 0.94);
@@ -30,6 +73,78 @@
   --pulse-rose: #ff7063;
   --pulse-image-outline: rgb(255 255 255 / 0.1);
   --radius: 1rem;
+
+  /* Status accent channels (space-separated RGB) — used by status badges. */
+  --status-armed: 146 231 102;
+  --status-blocked: 255 209 102;
+  --status-paused: 253 224 71;
+  --status-removed: 255 112 99;
+  --status-info: 30 232 197;
+
+  /* Theme-aware shadows. */
+  --shadow-panel: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 48px rgba(0, 0, 0, 0.22);
+  --shadow-section: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 52px rgba(0, 0, 0, 0.24);
+  --shadow-control: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 10px 24px rgba(0, 0, 0, 0.16);
+  --grid-line: rgba(255, 255, 255, 0.045);
+  --grid-line-2: rgba(255, 255, 255, 0.035);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.12);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.16);
+  --selection-bg: rgba(30, 232, 197, 0.24);
+  --selection-fg: #ffffff;
+}
+
+:root.light {
+  /* Light theme — white + violet (0G brand). */
+  --bg: #ffffff;
+  --background: #f7f6fb;
+  --foreground: #1a1530;
+  --panel: rgba(255, 255, 255, 0.92);
+  --panel-strong: rgba(255, 255, 255, 0.98);
+  --panel-solid: rgba(255, 255, 255, 0.92);
+  --panel-solid-strong: rgba(255, 255, 255, 0.98);
+  --line: rgba(124, 58, 237, 0.14);
+  --line-strong: rgba(124, 58, 237, 0.22);
+  --text: #1a1530;
+  --muted: #6b6786;
+  /* Brand violet for light mode. */
+  --primary: #7c3aed;
+  --primary-strong: #6d28d9;
+  --primary-soft: rgba(124, 58, 237, 0.1);
+  /* Accent palette darkened for legibility on white. */
+  --teal: #0d9488;
+  --amber: #b45309;
+  --yellow: #a16207;
+  --rose: #e11d48;
+  --green: #15803d;
+  --blue: #2563eb;
+  --on-primary: #1a1530;
+  --invert: #ffffff;
+  --invert-ink: #1a1530;
+  --pulse-bg: #f7f6fb;
+  --pulse-panel: rgb(255 255 255 / 0.86);
+  --pulse-panel-strong: rgb(255 255 255 / 0.96);
+  --pulse-line: rgb(124 58 237 / 0.12);
+  --pulse-teal: #7c3aed;
+  --pulse-amber: #b45309;
+  --pulse-rose: #e11d48;
+  --pulse-image-outline: rgb(124 58 237 / 0.12);
+  --radius: 1rem;
+
+  --status-armed: 22 163 74;
+  --status-blocked: 180 83 9;
+  --status-paused: 161 98 7;
+  --status-removed: 225 29 72;
+  --status-info: 124 58 237;
+
+  --shadow-panel: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 18px 48px rgba(124, 58, 237, 0.08);
+  --shadow-section: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 18px 52px rgba(124, 58, 237, 0.07);
+  --shadow-control: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 8px 20px rgba(124, 58, 237, 0.06);
+  --grid-line: rgba(124, 58, 237, 0.06);
+  --grid-line-2: rgba(124, 58, 237, 0.04);
+  --scrollbar-thumb: rgba(124, 58, 237, 0.22);
+  --scrollbar-thumb-hover: rgba(124, 58, 237, 0.32);
+  --selection-bg: rgba(124, 58, 237, 0.18);
+  --selection-fg: #1a1530;
 }
 
 * {
@@ -50,7 +165,7 @@ html {
 body {
   min-height: 100%;
   margin: 0;
-  background: #030405;
+  background: var(--bg);
   font-family: var(--font-geist-sans);
   font-feature-settings: "cv02" 1, "cv03" 1, "cv04" 1;
   overflow-x: hidden;
@@ -93,6 +208,16 @@ select {
   color: #f8fafc;
 }
 
+:root.light .og-dark-select {
+  color-scheme: light;
+  background-color: var(--panel);
+}
+
+:root.light .og-dark-select option {
+  background-color: #ffffff;
+  color: var(--text);
+}
+
 button,
 a,
 [role="button"] {
@@ -100,8 +225,8 @@ a,
 }
 
 ::selection {
-  background: rgba(30, 232, 197, 0.24);
-  color: #ffffff;
+  background: var(--selection-bg);
+  color: var(--selection-fg);
 }
 
 .tabular {
@@ -143,7 +268,7 @@ a,
 
 .scrollbar-subtle {
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+  scrollbar-color: var(--scrollbar-thumb-hover) transparent;
 }
 
 .scrollbar-subtle::-webkit-scrollbar {
@@ -157,39 +282,33 @@ a,
 
 .scrollbar-subtle::-webkit-scrollbar-thumb {
   border: 2px solid transparent;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--scrollbar-thumb);
   background-clip: padding-box;
   border-radius: 999px;
 }
 
 .surface-grid {
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line-2) 1px, transparent 1px);
   background-size: 44px 44px;
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.92), rgba(0, 0, 0, 0.38));
 }
 
 .soft-panel {
   border: 1px solid var(--line);
-  background: var(--panel);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 18px 48px rgba(0, 0, 0, 0.22);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow-panel);
   backdrop-filter: blur(14px);
 }
 
 :where(section, article, aside, header, footer, form)[class*="border"] {
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 18px 52px rgba(0, 0, 0, 0.24);
+  box-shadow: var(--shadow-section);
   backdrop-filter: blur(12px);
 }
 
 :where(button, input, select, textarea)[class*="border"] {
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.03),
-    0 10px 24px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--shadow-control);
 }
 
 .ambient-surface {
@@ -236,6 +355,31 @@ a,
   filter: blur(0.35px) blur(14px);
   mix-blend-mode: screen;
   animation: ambient-sweep 18s linear infinite;
+}
+
+/* Light variant of the ambient background — soft violet blooms on white. */
+:root.light .ambient-surface::before {
+  background:
+    radial-gradient(circle at 12% 16%, rgb(124 58 237 / 0.18), transparent 18rem),
+    radial-gradient(circle at 74% 18%, rgb(167 139 250 / 0.16), transparent 20rem),
+    radial-gradient(circle at 86% 72%, rgb(196 181 253 / 0.12), transparent 16rem),
+    radial-gradient(circle at 42% 88%, rgb(109 40 217 / 0.12), transparent 20rem),
+    linear-gradient(180deg, #ffffff 0%, #f7f6fb 48%, #f3f1fb 100%);
+  filter: saturate(1.05);
+}
+
+:root.light .ambient-surface::after {
+  background:
+    repeating-linear-gradient(132deg, rgb(124 58 237 / 0.05) 0 1px, transparent 1px 88px),
+    repeating-linear-gradient(48deg, rgb(124 58 237 / 0.035) 0 1px, transparent 1px 132px),
+    repeating-linear-gradient(8deg, rgb(124 58 237 / 0.022) 0 1px, transparent 1px 184px),
+    conic-gradient(from 210deg at 24% 22%, transparent 0 24deg, rgb(124 58 237 / 0.04) 24deg 30deg, transparent 30deg 94deg, rgb(124 58 237 / 0.028) 94deg 100deg, transparent 100deg 360deg),
+    conic-gradient(from 40deg at 74% 18%, transparent 0 28deg, rgb(124 58 237 / 0.035) 28deg 34deg, transparent 34deg 176deg, rgb(124 58 237 / 0.024) 176deg 182deg, transparent 182deg 360deg),
+    radial-gradient(circle at 22% 18%, rgb(124 58 237 / 0.16), transparent 8rem),
+    radial-gradient(circle at 54% 28%, rgb(167 139 250 / 0.14), transparent 9rem),
+    radial-gradient(circle at 78% 72%, rgb(196 181 253 / 0.12), transparent 10rem),
+    radial-gradient(circle at 42% 56%, rgb(109 40 217 / 0.1), transparent 10rem);
+  mix-blend-mode: multiply;
 }
 
 .ambient-surface > * {

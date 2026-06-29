@@ -94,9 +94,11 @@ The current vault path uses deployed 0G contracts and curated routes rather than
 | PolicyVaultFactory | [`0x9bcb67FE731c6eB1ed0c51f1b821100CC8CE25C4`](https://chainscan.0g.ai/address/0x9bcb67FE731c6eB1ed0c51f1b821100CC8CE25C4) | Per-owner vault creation and discovery. |
 | ProofRegistry | [`0xfe87d95B76E297Bb28b0eC4dD72b15cfC2b14E7a`](https://chainscan.0g.ai/address/0xfe87d95B76E297Bb28b0eC4dD72b15cfC2b14E7a) | Anchors audit roots, policy hashes, model metadata hashes, and vault action hashes. |
 | CuratedUniswapV3RouteAdapter | [`0xfaa8A8e03307dd901054E16Ee89189d006DBf6Db`](https://chainscan.0g.ai/address/0xfaa8A8e03307dd901054E16Ee89189d006DBf6Db) | Real mainnet adapter for allowlisted ZIA/Oku routes, tokens, pools, routers, and selectors. |
-| AgenticID | [`0x7a968138991c054c8eaf280a4c62f4ac265f84ce`](https://chainscan.0g.ai/address/0x7a968138991c054c8eaf280a4c62f4ac265f84ce) | ERC-7857-inspired MVP identity record for agent, vault, executor, and storage references. |
+| AgenticID | [`0x058c5f4c72810d7d4fc0bef3875a8f779de7e59c`](https://chainscan.0g.ai/address/0x058c5f4c72810d7d4fc0bef3875a8f779de7e59c) | Canonical ERC-7857 identity record (ERC-165 `supportsInterface`) for agent, vault, executor, and storage references. |
 
 Example owner vault: [`0xE4c802B58993e49bEFe824ec0765e1128586dB2A`](https://chainscan.0g.ai/address/0xE4c802B58993e49bEFe824ec0765e1128586dB2A). This is a demo/operator vault instance, not a global vault for every user.
+
+Agentic ID is mainnet-only (chain ID `16661`). There is no Galileo/testnet Agentic ID deployment or smoke path; Galileo is used only for vault/adapter/proof smoke. Agentic ID mint requires `OG_NETWORK=mainnet`, `OG_CHAIN_ID=16661`, and `ENABLE_MAINNET_DEPLOY=true`. The re-key transfer path (`iTransfer`/`iClone`) requires a real TEE/ZKP verifier and is disabled in the server layer until one is wired.
 
 Mainnet policy defaults for new vault instances: per-trade cap `5 0G`, daily cap `25 0G`, max exposure `25 0G`, default min-out `9950` bps, deadline window `900` seconds, and cooldown `0` seconds. Mainnet vaults allow `8` route tokens across `11` curated routes.
 
@@ -284,6 +286,7 @@ POLICY_VAULT_ADDRESS=
 POLICY_VAULT_MAINNET_ADDRESS=
 PROOF_REGISTRY_ADDRESS=
 AGENT_IDENTITY_ADDRESS=
+AGENT_IDENTITY_MAINNET_ADDRESS=
 ```
 
 ### Feature Flags

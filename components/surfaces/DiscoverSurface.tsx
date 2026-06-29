@@ -122,10 +122,10 @@ const MODE_TO_STEP: Record<ScanMode, number> = {
 };
 
 const TONE_CLASS: Record<ReportTone, string> = {
-  clean: "border-emerald-300/20 bg-emerald-300/[0.07] text-emerald-100",
-  danger: "border-rose-300/22 bg-rose-300/[0.08] text-rose-100",
-  info: "border-cyan-300/20 bg-cyan-300/[0.07] text-cyan-100",
-  warning: "border-amber-300/22 bg-amber-300/[0.08] text-amber-100",
+  clean: "border-green/20 bg-green/10 text-green",
+  danger: "border-rose/20 bg-rose/10 text-rose",
+  info: "border-primary/20 bg-primary/10 text-primary",
+  warning: "border-amber/20 bg-amber/10 text-amber",
 };
 
 function getDefaultMode(targetType: ScanTargetType): ScanMode {
@@ -352,14 +352,14 @@ function ScanHero({
   const runLabel = isRunning ? "Scanning" : scanState === "complete" ? "Scan again" : "Scan";
 
   return (
-    <section className="min-w-0 max-w-full overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(8,12,18,0.98),rgba(5,8,12,0.96)_54%,rgba(30,232,197,0.1))] p-3 shadow-[0_28px_100px_rgba(0,0,0,0.26)] sm:p-5 lg:rounded-[30px] lg:p-7">
+    <section className="min-w-0 max-w-full overflow-hidden rounded-[24px] border border-line bg-[linear-gradient(135deg,var(--panel-solid-strong),var(--panel-solid-strong)_54%,var(--primary))] p-3 shadow-[0_28px_100px_rgba(0,0,0,0.26)] sm:p-5 lg:rounded-[30px] lg:p-7">
       <div className="grid min-w-0 max-w-full gap-6">
         <div className="min-w-0 space-y-6">
           <div className="min-w-0 max-w-full">
-            <h1 className="max-w-4xl text-[2rem] font-semibold leading-[1.08] tracking-tight text-white sm:text-5xl lg:text-[4rem]">
+            <h1 className="max-w-4xl text-[2rem] font-semibold leading-[1.08] tracking-tight text-foreground sm:text-5xl lg:text-[4rem]">
               4lpha AI Smart Scan
             </h1>
-            <p className="mt-4 max-w-3xl text-sm leading-6 text-slate-400 sm:text-base lg:text-lg">
+            <p className="mt-4 max-w-3xl text-sm leading-6 text-muted sm:text-base lg:text-lg">
               Scan tokens for honeypot and liquidity risk, or scan wallets for portfolio, recent activity,
               smart-money signals, and agent-ready evidence stored on 0G.
             </p>
@@ -378,9 +378,9 @@ function ScanHero({
           </div>
 
           <div className="grid gap-3">
-            <div className="flex min-w-0 max-w-full flex-col gap-2 rounded-[22px] border border-white/10 bg-black/20 p-2 lg:flex-row lg:items-center">
-              <label className="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-[16px] bg-white/[0.035] px-3 lg:px-4">
-                <Fingerprint className="h-4 w-4 shrink-0 text-cyan-100" />
+            <div className="flex min-w-0 max-w-full flex-col gap-2 rounded-[22px] border border-line bg-background/20 p-2 lg:flex-row lg:items-center">
+              <label className="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-[16px] bg-panel px-3 lg:px-4">
+                <Fingerprint className="h-4 w-4 shrink-0 text-primary" />
                 <input
                   value={targetAddress}
                   onChange={(event) => {
@@ -388,14 +388,14 @@ function ScanHero({
                   }}
                   placeholder={TARGET_COPY[targetType].placeholder}
                   spellCheck={false}
-                  className="min-w-0 flex-1 bg-transparent font-mono text-sm text-white outline-none placeholder:text-slate-600 lg:text-base"
+                  className="min-w-0 flex-1 bg-transparent font-mono text-sm text-foreground outline-none placeholder:text-muted lg:text-base"
                 />
               </label>
               <div className="grid grid-cols-[minmax(0,0.85fr)_minmax(0,1fr)] gap-2 sm:flex">
                 <button
                   type="button"
                   onClick={onLoadSample}
-                  className="inline-flex h-12 min-w-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] px-4 text-sm font-semibold text-slate-200 transition-[background-color,transform] hover:bg-white/[0.07] active:scale-[0.96] lg:h-14 lg:px-5 lg:text-base"
+                  className="inline-flex h-12 min-w-0 items-center justify-center rounded-full border border-line bg-panel px-4 text-sm font-semibold text-foreground transition-[background-color,transform] hover:bg-panel-strong active:scale-[0.96] lg:h-14 lg:px-5 lg:text-base"
                 >
                   Sample
                 </button>
@@ -403,7 +403,7 @@ function ScanHero({
                   type="button"
                   onClick={onRunScan}
                   disabled={isRunning}
-                  className="inline-flex h-12 min-w-0 items-center justify-center gap-2 rounded-full bg-[var(--pulse-teal)] px-4 text-sm font-semibold text-[#041015] transition-[filter,transform,opacity] hover:brightness-105 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-70 sm:min-w-[8.5rem] lg:h-14 lg:px-6 lg:text-base"
+                  className="inline-flex h-12 min-w-0 items-center justify-center gap-2 rounded-full bg-primary px-4 text-sm font-semibold text-on-primary transition-[filter,transform,opacity] hover:brightness-105 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-70 sm:min-w-[8.5rem] lg:h-14 lg:px-6 lg:text-base"
                 >
                   {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileScan className="h-4 w-4" />}
                   {runLabel}
@@ -412,7 +412,7 @@ function ScanHero({
             </div>
 
             {draftError ? (
-              <p className="rounded-full border border-amber-300/18 bg-amber-300/[0.08] px-3 py-2 text-sm text-amber-100">
+              <p className="rounded-full border border-amber/20 bg-amber/10 px-3 py-2 text-sm text-amber">
                 {draftError}
               </p>
             ) : null}
@@ -435,7 +435,7 @@ function TargetTypeSwitch({
   onChange: (value: ScanTargetType) => void;
 }) {
   return (
-    <div className="grid w-full grid-cols-2 gap-1 rounded-full border border-white/8 bg-white/[0.035] p-1">
+    <div className="grid w-full grid-cols-2 gap-1 rounded-full border border-line bg-panel p-1">
       {(["token", "wallet"] as const).map((type) => {
         const active = activeType === type;
         const Icon = type === "token" ? Coins : WalletCards;
@@ -446,7 +446,7 @@ function TargetTypeSwitch({
             aria-pressed={active}
             onClick={() => onChange(type)}
             className={`inline-flex h-11 items-center justify-center gap-2 rounded-full text-sm font-semibold transition-[background-color,color,transform] active:scale-[0.96] ${
-              active ? "bg-white/[0.1] text-white" : "text-slate-400 hover:text-slate-200"
+              active ? "bg-panel-strong text-foreground" : "text-muted hover:text-foreground"
             }`}
           >
             <Icon className="h-4 w-4" />
@@ -477,30 +477,30 @@ function ModelSelector({
 
   return (
     <div className="grid min-w-0 gap-2">
-      <label className="flex min-h-12 min-w-0 items-center gap-2 rounded-full border border-white/10 bg-white/[0.035] px-3">
-        <Bot className="h-4 w-4 shrink-0 text-cyan-100" />
-        <span className="shrink-0 text-sm font-semibold text-slate-300">Model</span>
+      <label className="flex min-h-12 min-w-0 items-center gap-2 rounded-full border border-line bg-panel px-3">
+        <Bot className="h-4 w-4 shrink-0 text-primary" />
+        <span className="shrink-0 text-sm font-semibold text-muted">Model</span>
         <select
           value={selectedModel}
           onChange={(event) => onModelChange(event.target.value)}
           disabled={disabled}
-          className="min-w-0 flex-1 appearance-none bg-transparent text-sm font-semibold text-white outline-none disabled:text-slate-500"
+          className="min-w-0 flex-1 appearance-none bg-transparent text-sm font-semibold text-foreground outline-none disabled:text-muted"
         >
           {modelStatus === "loading" ? <option value="">Loading models...</option> : null}
           {modelStatus === "error" ? <option value="">Model catalog unavailable</option> : null}
           {modelStatus === "ready" && modelOptions.length === 0 ? <option value="">No models available</option> : null}
           {modelOptions.map((model) => (
-            <option key={model} value={model} className="bg-[#0b1117] text-white">
+            <option key={model} value={model} className="bg-panel-solid-strong text-foreground">
               {model}
             </option>
           ))}
         </select>
-        <span className="hidden rounded-full border border-white/8 bg-black/20 px-2 py-1 text-[10px] font-semibold text-slate-400 xl:inline-flex">
+        <span className="hidden rounded-full border border-line bg-background/20 px-2 py-1 text-[10px] font-semibold text-muted xl:inline-flex">
           {networkLabel}
         </span>
       </label>
       {modelError ? (
-        <p className="rounded-full border border-amber-300/18 bg-amber-300/[0.08] px-3 py-2 text-sm text-amber-100">
+        <p className="rounded-full border border-amber/20 bg-amber/10 px-3 py-2 text-sm text-amber">
           {modelError}
         </p>
       ) : null}
@@ -510,9 +510,9 @@ function ModelSelector({
 
 function ScopeRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex min-w-0 items-center justify-between gap-3 overflow-hidden rounded-[14px] border border-white/8 bg-white/[0.035] px-3 py-2">
-      <span className="shrink-0 text-xs font-semibold text-slate-500">{label}</span>
-      <span className="min-w-0 truncate text-right text-sm font-semibold text-slate-200" title={value}>
+    <div className="flex min-w-0 items-center justify-between gap-3 overflow-hidden rounded-[14px] border border-line bg-panel px-3 py-2">
+      <span className="shrink-0 text-xs font-semibold text-muted">{label}</span>
+      <span className="min-w-0 truncate text-right text-sm font-semibold text-foreground" title={value}>
         {value}
       </span>
     </div>
@@ -537,23 +537,23 @@ function SecurityReport({
     const progress = Math.round(((activeStepIndex + 1) / ARCHITECTURE_STEPS.length) * 100);
 
     return (
-      <div className="overflow-hidden rounded-[22px] border border-cyan-300/20 bg-cyan-300/[0.055] p-4">
+      <div className="overflow-hidden rounded-[22px] border border-primary/20 bg-primary/10 p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-cyan-100/70">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-primary/70">
               AI Scan running
             </p>
-            <h2 className="mt-1 text-xl font-semibold text-white">{activeStep.label}</h2>
-            <p className="mt-1 text-sm leading-5 text-slate-400">{activeStep.detail}</p>
+            <h2 className="mt-1 text-xl font-semibold text-foreground">{activeStep.label}</h2>
+            <p className="mt-1 text-sm leading-5 text-muted">{activeStep.detail}</p>
           </div>
-          <span className="inline-flex w-fit items-center gap-2 rounded-full border border-cyan-300/20 bg-black/20 px-3 py-1.5 text-sm font-semibold text-cyan-100">
+          <span className="inline-flex w-fit items-center gap-2 rounded-full border border-primary/20 bg-background/20 px-3 py-1.5 text-sm font-semibold text-primary">
             <Loader2 className="h-4 w-4 animate-spin" />
             {progress}%
           </span>
         </div>
-        <div className="mt-4 h-2 overflow-hidden rounded-full bg-black/24">
+        <div className="mt-4 h-2 overflow-hidden rounded-full bg-background/24">
           <div
-            className="h-full rounded-full bg-[linear-gradient(90deg,var(--pulse-teal),rgba(255,209,102,0.9))] transition-[width] duration-500"
+            className="h-full rounded-full bg-[linear-gradient(90deg,var(--primary),var(--amber))] transition-[width] duration-500"
             style={{ width: `${progress}%` }}
           />
         </div>
@@ -569,26 +569,26 @@ function SecurityReport({
   const reportTone = result.verdict === "High risk" ? "warning" : result.verdict === "Watch" ? "info" : "clean";
 
   return (
-    <div className="grid gap-4 rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(7,11,15,0.96),rgba(10,16,20,0.9))] p-4 lg:grid-cols-[17rem_minmax(0,1fr)] lg:p-5">
-      <aside className="min-w-0 overflow-hidden rounded-[20px] border border-white/8 bg-black/22 p-4">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">
+    <div className="grid gap-4 rounded-[24px] border border-line bg-[linear-gradient(135deg,var(--panel-solid-strong),var(--panel-solid-strong))] p-4 lg:grid-cols-[17rem_minmax(0,1fr)] lg:p-5">
+      <aside className="min-w-0 overflow-hidden rounded-[20px] border border-line bg-background/22 p-4">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted">
           Security report
         </p>
         <div className="mt-4 flex items-end gap-3">
-          <span className="text-5xl font-semibold tabular-nums text-white">{result.score}</span>
-          <span className="pb-2 font-mono text-sm text-slate-500">/100</span>
+          <span className="text-5xl font-semibold tabular-nums text-foreground">{result.score}</span>
+          <span className="pb-2 font-mono text-sm text-muted">/100</span>
         </div>
         <span className={`mt-4 inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-semibold ${TONE_CLASS[reportTone]}`}>
           {isVerified ? <ShieldCheck className="h-3.5 w-3.5" /> : null}
           {result.verdict}
         </span>
         {isVerified && result.verifiedToken ? (
-          <p className="mt-2 text-xs leading-5 text-emerald-100/80">
+          <p className="mt-2 text-xs leading-5 text-green/80">
             {result.verifiedToken.verificationSource}
           </p>
         ) : null}
-        <p className="mt-5 text-sm font-semibold text-white">{result.targetLabel}</p>
-        <p className="mt-1 truncate font-mono text-xs text-slate-500" title={result.address}>
+        <p className="mt-5 text-sm font-semibold text-foreground">{result.targetLabel}</p>
+        <p className="mt-1 truncate font-mono text-xs text-muted" title={result.address}>
           {result.address}
         </p>
         <div className="mt-5 grid gap-2">
@@ -600,8 +600,8 @@ function SecurityReport({
       <div className="min-w-0 space-y-4">
         <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_21rem]">
           <div className="min-w-0">
-            <p className="text-sm leading-6 text-slate-300">{result.summary}</p>
-            <p className="mt-3 rounded-[18px] border border-cyan-300/18 bg-cyan-300/[0.06] px-3 py-3 text-sm leading-6 text-cyan-50">
+            <p className="text-sm leading-6 text-muted">{result.summary}</p>
+            <p className="mt-3 rounded-[18px] border border-primary/20 bg-primary/10 px-3 py-3 text-sm leading-6 text-primary">
               {result.recommendation}
             </p>
           </div>
@@ -622,16 +622,16 @@ function SecurityReport({
 
 function EvidencePanel({ evidence }: { evidence: EvidenceRow[] }) {
   return (
-    <div className="min-w-0 rounded-[18px] border border-white/8 bg-white/[0.035] p-3">
-      <div className="flex items-center gap-2 text-cyan-100">
+    <div className="min-w-0 rounded-[18px] border border-line bg-panel p-3">
+      <div className="flex items-center gap-2 text-primary">
         <Archive className="h-4 w-4" />
-        <h3 className="text-sm font-semibold text-white">0G evidence</h3>
+        <h3 className="text-sm font-semibold text-foreground">0G evidence</h3>
       </div>
       <div className="mt-3 space-y-2">
         {evidence.map((row) => (
           <div key={row.label} className="min-w-0">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">{row.label}</p>
-            <p className="mt-0.5 truncate font-mono text-xs font-semibold text-slate-200" title={row.value}>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted">{row.label}</p>
+            <p className="mt-0.5 truncate font-mono text-xs font-semibold text-foreground" title={row.value}>
               {row.value}
             </p>
           </div>
@@ -643,10 +643,10 @@ function EvidencePanel({ evidence }: { evidence: EvidenceRow[] }) {
 
 function ReportSectionCard({ section }: { section: ReportSection }) {
   return (
-    <section className="min-w-0 rounded-[20px] border border-white/8 bg-white/[0.028] p-4">
+    <section className="min-w-0 rounded-[20px] border border-line bg-panel p-4">
       <div className="flex items-center justify-between gap-3">
-        <h3 className="text-base font-semibold text-white">{section.title}</h3>
-        {section.action ? <span className="text-xs font-semibold text-cyan-100/70">{section.action}</span> : null}
+        <h3 className="text-base font-semibold text-foreground">{section.title}</h3>
+        {section.action ? <span className="text-xs font-semibold text-primary/70">{section.action}</span> : null}
       </div>
       <div className="mt-4 space-y-3">
         {section.items.map((item, index) => (
@@ -665,20 +665,20 @@ function ReportItemRow({ item }: { item: ReportItem }) {
   const Icon = item.status === "danger" ? XCircle : item.status === "warning" ? CircleAlert : CheckCircle2;
 
   return (
-    <div className="grid gap-2 rounded-[16px] border border-white/8 bg-black/18 p-3">
+    <div className="grid gap-2 rounded-[16px] border border-line bg-background/18 p-3">
       <div className="flex items-start gap-2">
         <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${TONE_CLASS[item.status]}`}>
           <Icon className="h-3.5 w-3.5" />
         </span>
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-white">{item.title}</p>
-          {item.detail ? <p className="mt-1 text-sm leading-5 text-slate-400">{item.detail}</p> : null}
+          <p className="text-sm font-semibold text-foreground">{item.title}</p>
+          {item.detail ? <p className="mt-1 text-sm leading-5 text-muted">{item.detail}</p> : null}
         </div>
       </div>
       {item.metrics ? (
         <div className="ml-7 grid gap-1">
           {item.metrics.map((metric) => (
-            <p key={metric} className="min-w-0 break-words font-mono text-xs text-slate-400 [overflow-wrap:anywhere]">
+            <p key={metric} className="min-w-0 break-words font-mono text-xs text-muted [overflow-wrap:anywhere]">
               {metric}
             </p>
           ))}
@@ -690,21 +690,21 @@ function ReportItemRow({ item }: { item: ReportItem }) {
 
 function AgentReasoningLog({ logs }: { logs: AgentLogEntry[] }) {
   return (
-    <section className="min-w-0 rounded-[20px] border border-white/8 bg-black/20 p-4">
-      <div className="flex items-center gap-2 text-cyan-100">
+    <section className="min-w-0 rounded-[20px] border border-line bg-background/20 p-4">
+      <div className="flex items-center gap-2 text-primary">
         <Bot className="h-4 w-4" />
-        <h3 className="text-base font-semibold text-white">Agent reasoning log</h3>
+        <h3 className="text-base font-semibold text-foreground">Agent reasoning log</h3>
       </div>
       <div className="mt-4 grid gap-3 lg:grid-cols-2">
         {logs.map((log) => (
-          <div key={`${log.time}-${log.label}`} className="min-w-0 rounded-[16px] border border-white/8 bg-white/[0.03] p-3">
+          <div key={`${log.time}-${log.label}`} className="min-w-0 rounded-[16px] border border-line bg-panel p-3">
             <div className="flex items-center justify-between gap-3">
               <span className={`rounded-full border px-2 py-1 text-xs font-semibold ${TONE_CLASS[log.tone]}`}>
                 {log.label}
               </span>
-              <span className="font-mono text-xs text-slate-500">{log.time}</span>
+              <span className="font-mono text-xs text-muted">{log.time}</span>
             </div>
-            <p className="mt-2 text-sm leading-5 text-slate-400">{log.detail}</p>
+            <p className="mt-2 text-sm leading-5 text-muted">{log.detail}</p>
           </div>
         ))}
       </div>
@@ -726,30 +726,30 @@ function ArchitectureVisual({
     scanState === "running" ? "AI Scan running" : scanState === "complete" ? "Evidence packet ready" : "Architecture";
 
   return (
-    <section className="min-w-0 max-w-full overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(8,12,18,0.96),rgba(5,8,12,0.92))] p-4 shadow-[0_28px_100px_rgba(0,0,0,0.24)] lg:rounded-[30px] lg:p-6">
+    <section className="min-w-0 max-w-full overflow-hidden rounded-[24px] border border-line bg-[linear-gradient(180deg,var(--panel-solid-strong),var(--panel-solid-strong))] p-4 shadow-[0_28px_100px_rgba(0,0,0,0.24)] lg:rounded-[30px] lg:p-6">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div className="min-w-0">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-cyan-100/60">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-primary/60">
             AI Scan architecture
           </p>
-          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-white lg:text-3xl">
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight text-foreground lg:text-3xl">
             From target to transparent evidence.
           </h2>
         </div>
-        <span className="inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-300">
+        <span className="inline-flex w-fit items-center gap-2 rounded-full border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-muted">
           {scanState === "running" ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-100" />
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
           ) : scanState === "complete" ? (
-            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-100" />
+            <CheckCircle2 className="h-3.5 w-3.5 text-green" />
           ) : (
-            <Archive className="h-3.5 w-3.5 text-slate-400" />
+            <Archive className="h-3.5 w-3.5 text-muted" />
           )}
           {statusLabel}
         </span>
       </div>
 
-      <div className="relative mt-5 overflow-hidden rounded-[24px] border border-white/8 bg-black/20 p-3 lg:p-5">
-        <div className="pointer-events-none absolute inset-0 opacity-60 [background-image:linear-gradient(rgba(255,255,255,0.045)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] [background-size:32px_32px]" />
+      <div className="relative mt-5 overflow-hidden rounded-[24px] border border-line bg-background/20 p-3 lg:p-5">
+        <div className="pointer-events-none absolute inset-0 opacity-60 [background-image:linear-gradient(var(--line)_1px,transparent_1px),linear-gradient(90deg,var(--line)_1px,transparent_1px)] [background-size:32px_32px]" />
         <div className="relative grid gap-3 xl:grid-cols-[minmax(0,1fr)_auto_minmax(0,1.05fr)_auto_minmax(0,1.05fr)_auto_minmax(0,1fr)_auto_minmax(0,1fr)_auto_minmax(0,1fr)] xl:items-stretch">
           {ARCHITECTURE_STEPS.map((step, index) => {
             const active = scanState === "running" && activeStepIndex === index;
@@ -809,12 +809,12 @@ function ArchitectureNode({
 }) {
   const Icon = step.icon;
   const stateClass = active
-    ? "border-cyan-200/40 bg-cyan-300/[0.1] shadow-[0_0_42px_rgba(30,232,197,0.12)]"
+    ? "border-primary/40 bg-primary/10 shadow-[0_0_42px_rgba(30,232,197,0.12)]"
     : done
-      ? "border-emerald-300/22 bg-emerald-300/[0.06]"
+      ? "border-green/20 bg-green/10"
       : modeRelated
-        ? "border-cyan-200/30 bg-cyan-200/[0.075]"
-        : "border-white/8 bg-[#0b1117]/85";
+        ? "border-primary/30 bg-primary/10"
+        : "border-line bg-panel-solid-strong/85";
 
   return (
     <>
@@ -822,20 +822,20 @@ function ArchitectureNode({
         className={`min-w-0 rounded-[20px] border p-4 transition-[background-color,border-color,box-shadow,transform] duration-300 ${stateClass}`}
       >
         <div className="flex items-start justify-between gap-3">
-          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] border border-white/10 bg-black/25 text-cyan-100">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] border border-line bg-background/25 text-primary">
             <Icon className="h-4 w-4" />
           </span>
-          <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 font-mono text-[11px] text-slate-400">
+          <span className="rounded-full border border-line bg-panel px-2 py-1 font-mono text-[11px] text-muted">
             0{index + 1}
           </span>
         </div>
-        <h3 className="mt-4 text-base font-semibold text-white">{step.label}</h3>
-        <p className="mt-2 text-sm leading-5 text-slate-400">{step.detail}</p>
+        <h3 className="mt-4 text-base font-semibold text-foreground">{step.label}</h3>
+        <p className="mt-2 text-sm leading-5 text-muted">{step.detail}</p>
       </div>
 
       {showConnector ? (
         <div className="flex min-h-8 items-center justify-center xl:min-h-0 xl:w-7">
-          <span className="h-8 w-px bg-[linear-gradient(180deg,transparent,rgba(30,232,197,0.55),transparent)] xl:h-px xl:w-full xl:bg-[linear-gradient(90deg,transparent,rgba(30,232,197,0.55),transparent)]" />
+          <span className="h-8 w-px bg-[linear-gradient(180deg,transparent,var(--primary),transparent)] xl:h-px xl:w-full xl:bg-[linear-gradient(90deg,transparent,var(--primary),transparent)]" />
         </div>
       ) : null}
     </>
@@ -852,12 +852,12 @@ function ArchitecturePrinciple({
   text: string;
 }) {
   return (
-    <div className="min-w-0 rounded-[18px] border border-white/8 bg-white/[0.035] p-3">
-      <div className="flex items-center gap-2 text-cyan-100">
+    <div className="min-w-0 rounded-[18px] border border-line bg-panel p-3">
+      <div className="flex items-center gap-2 text-primary">
         {icon}
-        <h3 className="text-sm font-semibold text-white">{label}</h3>
+        <h3 className="text-sm font-semibold text-foreground">{label}</h3>
       </div>
-      <p className="mt-2 text-sm leading-5 text-slate-400">{text}</p>
+      <p className="mt-2 text-sm leading-5 text-muted">{text}</p>
     </div>
   );
 }

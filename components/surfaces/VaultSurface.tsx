@@ -99,7 +99,6 @@ export function VaultSurface() {
         <div className="mx-auto grid w-full max-w-7xl gap-5 xl:grid-cols-[minmax(0,1fr)_24rem]">
           <div className="flex min-w-0 flex-col gap-5">
             <FundRouteHeader network={network} />
-            <FundNetworkSelector activeId={network.id} onSelect={setNetworkId} />
             <FundBalanceGrid
               ownerBalanceLabel={readOwnerBalanceLabel({
                 balance: ownerBalance.data,
@@ -145,22 +144,22 @@ export function VaultSurface() {
 
 function FundRouteHeader({ network }: { network: OgNetworkConfig }) {
   return (
-    <section className="overflow-hidden rounded-[24px] border border-white/8 bg-[linear-gradient(135deg,rgba(13,18,25,0.96),rgba(7,10,15,0.9)_54%,rgba(91,65,10,0.36))] px-4 py-5 shadow-[0_28px_100px_rgba(0,0,0,0.24)] sm:px-6 lg:rounded-[30px] lg:px-8">
+    <section className="overflow-hidden rounded-[24px] border border-line bg-panel-solid-strong px-4 py-5 shadow-[0_28px_100px_rgba(0,0,0,0.24)] sm:px-6 lg:rounded-[30px] lg:px-8">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
         <div className="max-w-3xl space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-amber-300/18 bg-amber-300/[0.08] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.24em] text-amber-100/80">
+            <span className="rounded-full border border-amber/18 bg-amber/[0.08] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.24em] text-amber/80">
               {network.networkName}
             </span>
-            <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-xs font-medium text-emerald-100">
-              {network.id === "mainnet" ? "Real-gated" : "Mock-labeled"}
+            <span className="rounded-full border border-green/20 bg-green/10 px-3 py-1 text-xs font-medium text-green">
+              Real-gated
             </span>
           </div>
           <div>
-            <h1 className="font-heading text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+            <h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
               Fund
             </h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400 sm:text-base">
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-muted sm:text-base">
               Manage 0G funding for the Policy Vault on {network.networkName}. Deposits, withdrawals, pause, and revoke stay owner-bound.
             </p>
           </div>
@@ -172,7 +171,7 @@ function FundRouteHeader({ network }: { network: OgNetworkConfig }) {
           <HeaderMetric
             icon={<ShieldCheck className="h-4 w-4" />}
             label="Routes"
-            value={network.id === "mainnet" ? `${CURATED_MAINNET_POLICY_VAULT_ROUTES.length} curated` : "Vault ready"}
+            value={`${CURATED_MAINNET_POLICY_VAULT_ROUTES.length} curated`}
           />
         </div>
       </div>
@@ -192,67 +191,13 @@ function HeaderMetric({
   value: string;
 }) {
   return (
-    <div className="rounded-[20px] border border-white/8 bg-black/20 px-4 py-3">
-      <div className="flex items-center gap-2 text-slate-500">
+    <div className="rounded-[20px] border border-line bg-background/20 px-4 py-3">
+      <div className="flex items-center gap-2 text-muted">
         {icon}
         <span className="text-[10px] uppercase tracking-[0.22em]">{label}</span>
       </div>
-      <p className={`mt-2 font-semibold ${tone === "amber" ? "text-amber-100" : "text-white"}`}>{value}</p>
+      <p className={`mt-2 font-semibold ${tone === "amber" ? "text-amber" : "text-foreground"}`}>{value}</p>
     </div>
-  );
-}
-
-function FundNetworkSelector({
-  activeId,
-  onSelect,
-}: {
-  activeId: "mainnet" | "testnet";
-  onSelect: (id: "mainnet" | "testnet") => void;
-}) {
-  const options = [
-    {
-      description: "Default demo network for UI and future smoke paths.",
-      id: "testnet",
-      label: "0G Galileo Testnet",
-      symbol: "16602",
-    },
-    {
-      description: "Uses reviewed mainnet vault config when available.",
-      id: "mainnet",
-      label: "0G Mainnet",
-      symbol: "16661",
-    },
-  ] as const;
-
-  return (
-    <section className="rounded-[22px] border border-white/8 bg-white/[0.035] p-3">
-      <div className="grid gap-2 md:grid-cols-2">
-        {options.map((option) => {
-          const selected = option.id === activeId;
-          return (
-            <button
-              key={option.id}
-              type="button"
-              aria-pressed={selected}
-              onClick={() => onSelect(option.id)}
-              className={`flex min-h-[74px] items-center justify-between gap-3 rounded-[16px] border px-4 py-3 text-left transition-colors ${
-                selected
-                  ? "border-cyan-200/35 bg-cyan-200/[0.12] text-cyan-50"
-                  : "border-white/8 bg-black/20 text-slate-300 hover:border-white/16 hover:bg-white/[0.05]"
-              }`}
-            >
-              <span className="min-w-0">
-                <span className="block text-sm font-semibold text-white">{option.label}</span>
-                <span className="mt-1 block text-xs leading-5 text-slate-400">{option.description}</span>
-              </span>
-              <span className="shrink-0 rounded-full border border-white/10 bg-black/20 px-2.5 py-1 text-xs font-semibold">
-                {option.symbol}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </section>
   );
 }
 
@@ -297,20 +242,20 @@ function FundBalanceTile({
   value: string;
 }) {
   return (
-    <article className="min-w-0 rounded-[20px] border border-white/8 bg-white/[0.035] p-3.5 transition-colors hover:border-white/14 hover:bg-white/[0.05] sm:p-4 lg:rounded-[24px]">
-      <div className="flex items-center gap-2 text-slate-500">
+    <article className="min-w-0 rounded-[20px] border border-line bg-panel p-3.5 transition-colors hover:border-line-strong hover:bg-panel sm:p-4 lg:rounded-[24px]">
+      <div className="flex items-center gap-2 text-muted">
         {icon}
         <span className="text-[11px] font-medium uppercase tracking-[0.2em]">{label}</span>
       </div>
       <p
         className={`mt-3 truncate text-lg font-semibold tracking-tight ${
-          tone === "amber" ? "text-amber-100" : "text-emerald-100"
+          tone === "amber" ? "text-amber" : "text-green"
         }`}
         title={value}
       >
         {value}
       </p>
-      <p className="mt-1.5 text-sm leading-5 text-slate-400">{detail}</p>
+      <p className="mt-1.5 text-sm leading-5 text-muted">{detail}</p>
     </article>
   );
 }
@@ -368,20 +313,20 @@ function FundManualDepositPanel({
   }
 
   return (
-    <section className="rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(12,17,24,0.94),rgba(8,12,18,0.88))] p-4 shadow-[0_24px_80px_rgba(0,0,0,0.22)] sm:p-6 lg:rounded-[30px]">
+    <section className="rounded-[24px] border border-line bg-panel-solid-strong p-4 shadow-[0_24px_80px_rgba(0,0,0,0.22)] sm:p-6 lg:rounded-[30px]">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="space-y-2">
-          <h2 className="font-heading text-xl font-semibold tracking-tight text-white">
+          <h2 className="font-heading text-xl font-semibold tracking-tight text-foreground">
             Manual deposit
           </h2>
-          <p className="max-w-2xl text-sm leading-6 text-slate-400">
+          <p className="max-w-2xl text-sm leading-6 text-muted">
             Send 0G only after this page shows your Policy Vault address. Keep the transfer on {network.networkName}.
           </p>
         </div>
         <button
           type="button"
           onClick={() => void onRefreshVaultAddress()}
-          className="inline-flex h-10 items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 text-sm text-slate-200 transition-colors hover:bg-white/[0.07]"
+          className="inline-flex h-10 items-center gap-2 rounded-full border border-line bg-panel px-3 text-sm text-foreground transition-colors hover:bg-panel-strong"
         >
           <RefreshCcw className="h-4 w-4" />
           Refresh
@@ -407,28 +352,28 @@ function FundManualDepositPanel({
       </div>
 
       {vaultAddress === null ? (
-        <div className="mt-5 rounded-[24px] border border-amber-300/16 bg-amber-300/[0.06] p-4 text-sm leading-6 text-amber-100">
+        <div className="mt-5 rounded-[24px] border border-amber/16 bg-amber/[0.06] p-4 text-sm leading-6 text-amber">
           <div className="flex flex-col gap-4">
             <div className="flex min-w-0 items-start gap-3">
               <AlertTriangle className="mt-1 h-4 w-4 shrink-0" />
               <div className="min-w-0">
                 <p>Create a wallet vault from the factory before funding controls are enabled.</p>
-                <p className="mt-1 text-xs text-amber-100/70">
+                <p className="mt-1 text-xs text-amber/70">
                   {creationReady ? "No deployed vault address is configured." : creationStatus}
                 </p>
               </div>
             </div>
-            <div className="rounded-[20px] border border-white/10 bg-black/20 p-3">
+            <div className="rounded-[20px] border border-line bg-background/20 p-3">
               <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                 <div>
-                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-amber-100/70">
+                  <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-amber/70">
                     Vault policy
                   </p>
-                  <p className="mt-1 text-xs leading-5 text-amber-100/70">
+                  <p className="mt-1 text-xs leading-5 text-amber/70">
                     Limits are enforced by the vault at creation time.
                   </p>
                 </div>
-                <p className="font-mono text-xs tabular-nums text-amber-50/80">
+                <p className="font-mono text-xs tabular-nums text-amber/80">
                   {readPolicySummary(policyMode, customPolicyForm)}
                 </p>
               </div>
@@ -513,7 +458,7 @@ function FundManualDepositPanel({
               {policyDraft.ok ? <PolicyPreview policy={policyDraft.policy} /> : null}
 
               {displayedPolicyError !== null ? (
-                <p className="mt-3 rounded-full border border-red-300/20 bg-red-400/[0.08] px-3 py-2 text-xs font-medium text-red-100">
+                <p className="mt-3 rounded-full border border-rose/20 bg-rose/[0.08] px-3 py-2 text-xs font-medium text-rose">
                   {displayedPolicyError}
                 </p>
               ) : null}
@@ -524,7 +469,7 @@ function FundManualDepositPanel({
                 type="button"
                 disabled={createVaultDisabled}
                 onClick={() => void createVaultWithPolicy()}
-                className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-full border border-amber-300/18 bg-amber-300/[0.08] px-4 text-sm font-semibold text-amber-100 transition-[background-color,transform,opacity] hover:bg-amber-300/14 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
+                className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-full border border-amber/18 bg-amber/[0.08] px-4 text-sm font-semibold text-amber transition-[background-color,transform,opacity] hover:bg-amber/14 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
               >
                 {isCreatingVault ? <Loader2 className="h-4 w-4 animate-spin" /> : <WalletCards className="h-4 w-4" />}
                 {isCreatingVault ? "Creating Vault" : "Create Wallet Vault"}
@@ -533,18 +478,18 @@ function FundManualDepositPanel({
           </div>
         </div>
       ) : (
-        <div className="mt-5 rounded-[24px] border border-amber-300/18 bg-amber-300/[0.07] p-4">
+        <div className="mt-5 rounded-[24px] border border-amber/18 bg-amber/[0.07] p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
-              <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-amber-100/70">
+              <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-amber/70">
                 Policy Vault address
               </p>
-              <p className="mt-2 break-all font-mono text-sm text-amber-50">{vaultAddress}</p>
+              <p className="mt-2 break-all font-mono text-sm text-amber">{vaultAddress}</p>
             </div>
             <button
               type="button"
               onClick={copyVaultAddress}
-              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-full bg-amber-300 px-4 text-sm font-semibold text-[#171006] transition-[background-color,transform] hover:bg-amber-200 active:scale-[0.96]"
+              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-full bg-amber px-4 text-sm font-semibold text-background transition-[background-color,transform] hover:bg-amber/90 active:scale-[0.96]"
             >
               <Copy className="h-4 w-4" />
               Copy
@@ -574,12 +519,12 @@ function PolicyModeButton({
       onClick={onClick}
       className={`min-h-16 rounded-[16px] border px-3 py-2.5 text-left transition-[background-color,border-color,transform] active:scale-[0.96] ${
         active
-          ? "border-amber-200/35 bg-amber-300/[0.1] text-amber-50"
-          : "border-white/8 bg-white/[0.035] text-slate-300 hover:border-white/16 hover:bg-white/[0.055]"
+          ? "border-amber/35 bg-amber/[0.1] text-amber"
+          : "border-line bg-panel text-muted hover:border-line-strong hover:bg-panel"
       }`}
     >
       <span className="block text-sm font-semibold">{label}</span>
-      <span className="mt-1 block text-xs leading-4 text-slate-400">{detail}</span>
+      <span className="mt-1 block text-xs leading-4 text-muted">{detail}</span>
     </button>
   );
 }
@@ -598,8 +543,8 @@ function PolicyInput({
   value: string;
 }) {
   return (
-    <label className="block rounded-[14px] border border-white/8 bg-white/[0.035] px-3 py-2">
-      <span className="block text-[10px] font-medium uppercase tracking-[0.18em] text-amber-100/60">
+    <label className="block rounded-[14px] border border-line bg-panel px-3 py-2">
+      <span className="block text-[10px] font-medium uppercase tracking-[0.18em] text-amber/60">
         {label}
       </span>
       <span className="mt-1 flex items-center gap-2">
@@ -608,9 +553,9 @@ function PolicyInput({
           value={value}
           placeholder={placeholder}
           onChange={(event) => onChange(event.target.value)}
-          className="h-8 min-w-0 flex-1 bg-transparent font-mono text-sm tabular-nums text-amber-50 outline-none placeholder:text-slate-600"
+          className="h-8 min-w-0 flex-1 bg-transparent font-mono text-sm tabular-nums text-amber outline-none placeholder:text-muted"
         />
-        <span className="shrink-0 font-mono text-[11px] tabular-nums text-slate-500">{suffix}</span>
+        <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted">{suffix}</span>
       </span>
     </label>
   );
@@ -631,12 +576,12 @@ function PolicyPreview({ policy }: { policy: PolicyVaultPolicy }) {
       {rows.map((row) => (
         <div
           key={row.label}
-          className="min-h-14 rounded-[14px] border border-white/8 bg-white/[0.03] px-3 py-2"
+          className="min-h-14 rounded-[14px] border border-line bg-panel px-3 py-2"
         >
-          <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-slate-500">
+          <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted">
             {row.label}
           </p>
-          <p className="mt-1 truncate font-mono text-sm tabular-nums text-amber-50" title={row.value}>
+          <p className="mt-1 truncate font-mono text-sm tabular-nums text-amber" title={row.value}>
             {row.value}
           </p>
         </div>
@@ -655,12 +600,12 @@ function ManualDepositStep({
   value: string;
 }) {
   return (
-    <div className="rounded-[18px] border border-white/8 bg-white/[0.035] p-4">
-      <div className="flex items-center gap-2 text-slate-500">
+    <div className="rounded-[18px] border border-line bg-panel p-4">
+      <div className="flex items-center gap-2 text-muted">
         {icon}
         <span className="text-[11px] font-medium uppercase tracking-[0.22em]">{label}</span>
       </div>
-      <p className="mt-3 text-sm leading-6 text-slate-300">
+      <p className="mt-3 text-sm leading-6 text-muted">
         {value}
       </p>
     </div>

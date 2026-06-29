@@ -157,23 +157,23 @@ function AgentRouteTradePanelBody({
     (networkId !== "mainnet" || operatorKey.trim().length > 0);
 
   return (
-    <section className="rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(12,17,24,0.96),rgba(7,10,15,0.88))] p-4 shadow-[0_22px_72px_rgba(0,0,0,0.22)] lg:rounded-[30px] lg:p-5">
+    <section className="rounded-[24px] border border-line bg-panel-solid-strong p-4 shadow-[0_22px_72px_rgba(0,0,0,0.22)] lg:rounded-[30px] lg:p-5">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="flex h-9 w-9 items-center justify-center rounded-full border border-cyan-300/16 bg-cyan-300/10 text-cyan-100">
+            <span className="flex h-9 w-9 items-center justify-center rounded-full border border-primary/20 bg-primary/10 text-primary">
               <Play className="h-4 w-4" />
             </span>
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-500">Agent executor</p>
-              <h2 className="text-xl font-semibold text-white">Route trade preview</h2>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-muted">Agent executor</p>
+              <h2 className="text-xl font-semibold text-foreground">Route trade preview</h2>
             </div>
           </div>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400">
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted">
             Server route stages quote, policy hash, and audit proof data before any vault executor action.
           </p>
         </div>
-        <span className="shrink-0 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-300">
+        <span className="shrink-0 rounded-full border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-muted">
           {networkLabel}
         </span>
       </div>
@@ -182,14 +182,14 @@ function AgentRouteTradePanelBody({
         <div className="grid gap-3">
           <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_9rem]">
             <label className="grid gap-2">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-500">Route</span>
+              <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted">Route</span>
               <select
                 value={selectedRoute?.id ?? ""}
                 onChange={(event) => handleRouteChange(event.target.value)}
-                className="h-11 min-w-0 rounded-full border border-white/10 bg-[#0d151c] px-4 text-sm font-semibold text-white outline-none transition-colors focus:border-cyan-200/35"
+                className="h-11 min-w-0 rounded-full border border-line bg-panel-solid-strong px-4 text-sm font-semibold text-foreground outline-none transition-colors focus:border-primary/40"
               >
                 {networkRoutes.map((route) => (
-                  <option key={route.id} value={route.id} className="bg-[#0d151c] text-white">
+                  <option key={route.id} value={route.id} className="bg-panel-solid-strong text-foreground">
                     {route.label}
                   </option>
                 ))}
@@ -197,7 +197,7 @@ function AgentRouteTradePanelBody({
             </label>
 
             <label className="grid gap-2">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-500">Amount</span>
+              <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted">Amount</span>
               <input
                 value={amountIn}
                 onChange={(event) => {
@@ -206,7 +206,7 @@ function AgentRouteTradePanelBody({
                 }}
                 inputMode="decimal"
                 autoComplete="off"
-                className="h-11 min-w-0 rounded-full border border-white/10 bg-white/[0.04] px-4 font-mono text-sm font-semibold text-white outline-none transition-colors placeholder:text-slate-600 focus:border-cyan-200/35"
+                className="h-11 min-w-0 rounded-full border border-line bg-panel px-4 font-mono text-sm font-semibold text-foreground outline-none transition-colors placeholder:text-muted focus:border-primary/40"
                 placeholder="0.05"
               />
             </label>
@@ -214,8 +214,8 @@ function AgentRouteTradePanelBody({
 
           <div className="grid gap-3 md:grid-cols-[auto_minmax(0,1fr)_auto] md:items-end">
             <div className="grid gap-2">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-500">Side</span>
-              <div className="inline-flex rounded-full border border-white/8 bg-white/[0.04] p-1">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted">Side</span>
+              <div className="inline-flex rounded-full border border-line bg-panel p-1">
                 {(["buy", "sell"] as const).map((value) => (
                   <button
                     key={value}
@@ -226,7 +226,7 @@ function AgentRouteTradePanelBody({
                       clearPreview();
                     }}
                     className={`h-9 rounded-full px-4 text-sm font-semibold capitalize transition-colors ${
-                      side === value ? "bg-cyan-300/14 text-cyan-100" : "text-slate-400 hover:text-white"
+                      side === value ? "bg-primary/15 text-primary" : "text-muted hover:text-foreground"
                     }`}
                   >
                     {value}
@@ -236,7 +236,7 @@ function AgentRouteTradePanelBody({
             </div>
 
             <label className="grid gap-2">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-500">Slippage bps</span>
+              <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted">Slippage bps</span>
               <input
                 value={slippageBps}
                 onChange={(event) => {
@@ -246,13 +246,13 @@ function AgentRouteTradePanelBody({
                 min={1}
                 max={500}
                 type="number"
-                className="h-11 min-w-0 rounded-full border border-white/10 bg-white/[0.04] px-4 font-mono text-sm font-semibold text-white outline-none transition-colors focus:border-cyan-200/35"
+                className="h-11 min-w-0 rounded-full border border-line bg-panel px-4 font-mono text-sm font-semibold text-foreground outline-none transition-colors focus:border-primary/40"
               />
             </label>
 
             {networkId === "mainnet" ? (
               <label className="grid gap-2 md:col-span-3">
-                <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted">
                   Operator key
                 </span>
                 <input
@@ -260,7 +260,7 @@ function AgentRouteTradePanelBody({
                   onChange={(event) => setOperatorKey(event.target.value)}
                   type="password"
                   autoComplete="off"
-                  className="h-11 min-w-0 rounded-full border border-white/10 bg-white/[0.04] px-4 font-mono text-sm font-semibold text-white outline-none transition-colors placeholder:text-slate-600 focus:border-cyan-200/35"
+                  className="h-11 min-w-0 rounded-full border border-line bg-panel px-4 font-mono text-sm font-semibold text-foreground outline-none transition-colors placeholder:text-muted focus:border-primary/40"
                   placeholder="Required only for live execute"
                 />
               </label>
@@ -271,7 +271,7 @@ function AgentRouteTradePanelBody({
                 type="button"
                 onClick={() => void requestTrade("preview")}
                 disabled={!selectedRoute || isPreviewing || isExecuting}
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-4 text-sm font-semibold text-slate-100 transition-colors hover:bg-white/[0.07] disabled:cursor-not-allowed disabled:opacity-45"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-full border border-line bg-panel px-4 text-sm font-semibold text-foreground transition-colors hover:bg-panel-strong disabled:cursor-not-allowed disabled:opacity-45"
               >
                 {isPreviewing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
                 Quote
@@ -280,7 +280,7 @@ function AgentRouteTradePanelBody({
                 type="button"
                 onClick={() => void requestTrade("execute")}
                 disabled={!canExecute}
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[var(--pulse-teal)] px-4 text-sm font-semibold text-[#041015] transition-[filter,transform] hover:brightness-105 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-primary px-4 text-sm font-semibold text-on-primary transition-[filter,transform] hover:brightness-105 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
               >
                 {isExecuting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
                 Trigger trade
@@ -288,14 +288,14 @@ function AgentRouteTradePanelBody({
             </div>
           </div>
 
-          <div className="rounded-[18px] border border-white/8 bg-black/18 px-3 py-2.5">
+          <div className="rounded-[18px] border border-line bg-panel-solid-strong/20 px-3 py-2.5">
             <div className="flex items-center gap-2">
               {preview?.proofBundle.policyDecision === "allow" ? (
-                <ShieldCheck className="h-4 w-4 text-emerald-300" />
+                <ShieldCheck className="h-4 w-4 text-green" />
               ) : (
-                <AlertTriangle className="h-4 w-4 text-amber-200" />
+                <AlertTriangle className="h-4 w-4 text-amber" />
               )}
-              <p className="text-sm leading-6 text-slate-300">{statusText}</p>
+              <p className="text-sm leading-6 text-muted">{statusText}</p>
             </div>
           </div>
         </div>
@@ -316,17 +316,17 @@ function RouteProofPreview({
   const decision = preview?.proofBundle.policyDecision ?? route?.readiness ?? "review";
   const decisionClass =
     decision === "allow" || decision === "ready"
-      ? "border-emerald-300/20 bg-emerald-300/10 text-emerald-100"
+      ? "border-green/20 bg-green/10 text-green"
       : decision === "reject" || decision === "blocked"
-        ? "border-rose-300/20 bg-rose-300/10 text-rose-100"
-        : "border-amber-300/20 bg-amber-300/10 text-amber-100";
+        ? "border-rose/20 bg-rose/10 text-rose"
+        : "border-amber/20 bg-amber/10 text-amber";
 
   return (
-    <aside className="grid gap-3 rounded-[22px] border border-white/8 bg-white/[0.03] p-3">
+    <aside className="grid gap-3 rounded-[22px] border border-line bg-panel p-3">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-500">Quote and proof</p>
-          <h3 className="mt-1 text-base font-semibold text-white">{preview?.quote.routeLabel ?? route?.label ?? "No route"}</h3>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-muted">Quote and proof</p>
+          <h3 className="mt-1 text-base font-semibold text-foreground">{preview?.quote.routeLabel ?? route?.label ?? "No route"}</h3>
         </div>
         <span className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold capitalize ${decisionClass}`}>
           {String(decision)}
@@ -362,7 +362,7 @@ function RouteProofPreview({
         />
       </div>
 
-      <div className="grid gap-2 border-t border-white/8 pt-3">
+      <div className="grid gap-2 border-t border-line pt-3">
         <HashLine label="Route hash" value={preview?.quote.routeHash ?? "--"} />
         <HashLine label="Quote hash" value={preview?.quote.quoteHash ?? "--"} />
         <HashLine label="Proof tx" value={preview?.proofBundle.proofTxHash ?? "pending"} />
@@ -373,12 +373,12 @@ function RouteProofPreview({
 
 function ProofMetric({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
-    <div className="min-w-0 rounded-[16px] border border-white/8 bg-black/20 px-3 py-2">
-      <div className="flex items-center gap-1.5 text-slate-500">
+    <div className="min-w-0 rounded-[16px] border border-line bg-panel-solid-strong/20 px-3 py-2">
+      <div className="flex items-center gap-1.5 text-muted">
         {icon}
         <span className="text-[10px] uppercase tracking-[0.18em]">{label}</span>
       </div>
-      <p className="mt-1 truncate font-mono text-xs font-semibold text-slate-100" title={value}>
+      <p className="mt-1 truncate font-mono text-xs font-semibold text-foreground" title={value}>
         {shortHash(value)}
       </p>
     </div>
@@ -387,9 +387,9 @@ function ProofMetric({ icon, label, value }: { icon: React.ReactNode; label: str
 
 function HashLine({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex min-w-0 items-center justify-between gap-3 rounded-[14px] bg-black/18 px-3 py-2">
-      <span className="text-xs text-slate-500">{label}</span>
-      <span className="min-w-0 truncate text-right font-mono text-xs font-semibold text-slate-200" title={value}>
+    <div className="flex min-w-0 items-center justify-between gap-3 rounded-[14px] bg-panel-solid-strong/20 px-3 py-2">
+      <span className="text-xs text-muted">{label}</span>
+      <span className="min-w-0 truncate text-right font-mono text-xs font-semibold text-foreground" title={value}>
         {shortHash(value)}
       </span>
     </div>

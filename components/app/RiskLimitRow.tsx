@@ -9,14 +9,14 @@ export function RiskLimitRow({
 }) {
   const toneClass =
     tone === "blocked"
-      ? "text-rose-200"
+      ? "text-rose"
       : tone === "warning"
-        ? "text-amber-100"
-        : "text-emerald-100";
+        ? "text-amber"
+        : "text-green";
 
   return (
-    <div className="flex items-center justify-between gap-3 border-b border-white/8 py-2 last:border-b-0">
-      <span className="text-sm text-slate-400">{label}</span>
+    <div className="flex items-center justify-between gap-3 border-b border-line py-2 last:border-b-0">
+      <span className="text-sm text-muted">{label}</span>
       <span className={`font-mono text-sm ${toneClass}`}>{value}</span>
     </div>
   );

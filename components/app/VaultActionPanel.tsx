@@ -30,7 +30,7 @@ import { policyVaultAbi } from "@/lib/contracts/policy-vault";
 import type { OgNetworkConfig } from "@/lib/types";
 
 const inputShellClass =
-  "flex h-11 items-center rounded-full border border-white/10 bg-white/[0.04] px-4 transition-colors focus-within:border-amber-200/40 focus-within:bg-white/[0.06]";
+  "flex h-11 items-center rounded-full border border-line bg-panel px-4 transition-colors focus-within:border-amber/40 focus-within:bg-panel";
 
 const buttonClass =
   "inline-flex h-11 items-center justify-center gap-2 rounded-full px-4 text-sm font-semibold transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-45";
@@ -72,8 +72,8 @@ export function VaultActionPanel({
   const panelStateLabel = vaultAddress === null ? "Pending" : "Active";
   const panelStateClass =
     vaultAddress === null
-      ? "border-amber-300/18 bg-amber-300/10 text-amber-100"
-      : "border-emerald-300/20 bg-emerald-300/10 text-emerald-100";
+      ? "border-amber/20 bg-amber/10 text-amber"
+      : "border-green/20 bg-green/10 text-green";
   const walletStatus = getWalletStatus({
     connectedAddress: walletAccount.address,
     expectedChainId: network.chainId,
@@ -187,11 +187,11 @@ export function VaultActionPanel({
   }
 
   return (
-    <aside className="rounded-[24px] border border-white/8 bg-[linear-gradient(180deg,rgba(12,17,24,0.96),rgba(7,10,15,0.9))] p-4 shadow-[0_24px_80px_rgba(0,0,0,0.24)] sm:p-5 lg:rounded-[30px] xl:sticky xl:top-8 xl:self-start">
+    <aside className="rounded-[24px] border border-line bg-panel-solid-strong p-4 sm:p-5 lg:rounded-[30px] xl:sticky xl:top-8 xl:self-start">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-slate-500">Actions</p>
-          <h2 className="mt-2 font-heading text-xl font-semibold tracking-tight text-white">Funding control</h2>
+          <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted">Actions</p>
+          <h2 className="mt-2 font-heading text-xl font-semibold tracking-tight text-foreground">Funding control</h2>
         </div>
         <span className={`shrink-0 rounded-full border px-3 py-1 text-xs font-medium ${panelStateClass}`}>
           {panelStateLabel}
@@ -201,13 +201,13 @@ export function VaultActionPanel({
       <div className="mt-5 grid gap-2">
         <VaultRailStatus status={railSetupStatus} />
         {statusTxHash ? (
-          <p className="px-1 text-xs text-slate-400">
+          <p className="px-1 text-xs text-muted">
             Tx:{" "}
             <a
               href={`${network.explorerUrl}/tx/${statusTxHash}`}
               target="_blank"
               rel="noreferrer"
-              className="font-medium text-cyan-200 underline decoration-cyan-200/40 underline-offset-4 transition-colors hover:text-cyan-100"
+              className="font-medium text-primary underline decoration-primary/40 underline-offset-4 transition-colors hover:text-primary"
             >
               View on 0G ChainScan
             </a>
@@ -215,7 +215,7 @@ export function VaultActionPanel({
         ) : null}
 
         <label className="grid gap-2">
-          <span className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">Add 0G</span>
+          <span className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted">Add 0G</span>
           <div className={inputShellClass}>
             <input
               type="text"
@@ -224,10 +224,10 @@ export function VaultActionPanel({
               value={deposit}
               disabled={ownerControlDisabled}
               onChange={(event) => setDeposit(event.target.value)}
-              className="min-w-0 flex-1 bg-transparent text-sm font-semibold tabular-nums text-white outline-none placeholder:text-slate-600 disabled:cursor-not-allowed"
+              className="min-w-0 flex-1 bg-transparent text-sm font-semibold tabular-nums text-foreground outline-none placeholder:text-muted disabled:cursor-not-allowed"
               placeholder="0.01"
             />
-            <span className="pl-3 text-xs font-semibold text-amber-100">0G</span>
+            <span className="pl-3 text-xs font-semibold text-amber">0G</span>
           </div>
         </label>
 
@@ -247,15 +247,15 @@ export function VaultActionPanel({
               return walletClient.writeContract(simulation.request);
             })
           }
-          className={`${buttonClass} w-full bg-amber-300 text-[#171006] hover:bg-amber-200`}
+          className={`${buttonClass} w-full bg-amber text-background hover:bg-amber`}
         >
           {busyAction === "deposit" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowDownToLine className="h-4 w-4" />}
           {busyAction === "deposit" ? "Depositing" : "Deposit"}
         </button>
 
         <label className="mt-2 grid gap-2">
-          <span className="text-[11px] font-medium uppercase tracking-[0.22em] text-slate-500">Withdraw 0G</span>
-          <div className="flex h-11 items-center rounded-full border border-white/10 bg-white/[0.04] px-3 transition-colors focus-within:border-cyan-200/40 focus-within:bg-white/[0.06]">
+          <span className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted">Withdraw 0G</span>
+          <div className="flex h-11 items-center rounded-full border border-line bg-panel px-3 transition-colors focus-within:border-primary/40 focus-within:bg-panel">
             <input
               type="text"
               inputMode="decimal"
@@ -263,18 +263,18 @@ export function VaultActionPanel({
               value={withdraw}
               disabled={ownerControlDisabled}
               onChange={(event) => setWithdraw(event.target.value)}
-              className="min-w-0 flex-1 bg-transparent px-1 text-sm font-semibold tabular-nums text-white outline-none placeholder:text-slate-600 disabled:cursor-not-allowed"
+              className="min-w-0 flex-1 bg-transparent px-1 text-sm font-semibold tabular-nums text-foreground outline-none placeholder:text-muted disabled:cursor-not-allowed"
               placeholder="0.01"
             />
             <button
               type="button"
               disabled={!canSetWithdrawAll}
               onClick={() => setWithdraw(normalizeBalanceInput(vaultBalance))}
-              className="mr-2 rounded-full border border-cyan-200/15 bg-cyan-200/10 px-2.5 py-1 text-[11px] font-semibold text-cyan-100 transition-colors hover:border-cyan-200/35 hover:bg-cyan-200/18 disabled:cursor-not-allowed disabled:border-white/8 disabled:bg-white/[0.03] disabled:text-slate-600"
+              className="mr-2 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-semibold text-primary transition-colors hover:border-primary/35 hover:bg-primary/18 disabled:cursor-not-allowed disabled:border-line disabled:bg-panel disabled:text-muted"
             >
               All
             </button>
-            <span className="text-xs font-semibold text-cyan-100">0G</span>
+            <span className="text-xs font-semibold text-primary">0G</span>
           </div>
         </label>
 
@@ -299,7 +299,7 @@ export function VaultActionPanel({
               return walletClient.writeContract(simulation.request);
             })
           }
-          className={`${buttonClass} w-full bg-cyan-300 text-[#031014] hover:bg-cyan-200`}
+          className={`${buttonClass} w-full bg-primary text-background hover:bg-primary`}
         >
           {busyAction === "withdraw" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUpFromLine className="h-4 w-4" />}
           {busyAction === "withdraw" ? "Withdrawing" : "Withdraw"}
@@ -311,7 +311,7 @@ export function VaultActionPanel({
           onClick={() => {
             void Promise.all([refreshVault(), onRefreshVaultAddress()]).then(() => onVaultStateChange?.());
           }}
-          className={`${buttonClass} w-full border border-white/10 bg-white/[0.04] text-slate-100 hover:border-cyan-200/20 hover:bg-white/[0.07]`}
+          className={`${buttonClass} w-full border border-line bg-panel text-foreground hover:border-primary/20 hover:bg-panel-strong`}
         >
           {isDiscoveringVault ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
           Refresh status
@@ -319,8 +319,8 @@ export function VaultActionPanel({
 
         <section className="mt-3 grid gap-2">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-[10px] font-medium uppercase tracking-[0.22em] text-slate-500">Owner safety</span>
-            <span className="text-xs font-semibold text-slate-500">agent scope</span>
+            <span className="text-[10px] font-medium uppercase tracking-[0.22em] text-muted">Owner safety</span>
+            <span className="text-xs font-semibold text-muted">agent scope</span>
           </div>
           <div className="grid grid-cols-2 gap-2">
             <button
@@ -341,8 +341,8 @@ export function VaultActionPanel({
               }
               className={`${buttonClass} border ${
                 paused
-                  ? "border-amber-300/24 bg-amber-300/12 text-amber-100 hover:bg-amber-300/16"
-                  : "border-white/10 bg-white/[0.04] text-slate-100 hover:border-white/16 hover:bg-white/[0.07]"
+                  ? "border-amber/24 bg-amber/12 text-amber hover:bg-amber/16"
+                  : "border-line bg-panel text-foreground hover:border-line-strong hover:bg-panel-strong"
               }`}
             >
               {busyAction === "pause" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pause className="h-4 w-4" />}
@@ -365,8 +365,8 @@ export function VaultActionPanel({
               }
               className={`${buttonClass} border ${
                 revoked
-                  ? "border-rose-300/24 bg-rose-300/12 text-rose-100 hover:bg-rose-300/16"
-                  : "border-white/10 bg-white/[0.04] text-slate-100 hover:border-white/16 hover:bg-white/[0.07]"
+                  ? "border-rose/24 bg-rose/12 text-rose hover:bg-rose/16"
+                  : "border-line bg-panel text-foreground hover:border-line-strong hover:bg-panel-strong"
               }`}
             >
               {busyAction === "revoke" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldOff className="h-4 w-4" />}
@@ -376,7 +376,7 @@ export function VaultActionPanel({
         </section>
       </div>
 
-      <div className="mt-5 space-y-2 border-t border-white/8 pt-5">
+      <div className="mt-5 space-y-2 border-t border-line pt-5">
         <RailStatus
           icon={<Wallet className="h-4 w-4" />}
           label="Wallet"
@@ -425,7 +425,7 @@ function VaultRailStatus({
 }) {
   if (status.variant === "session") {
     return (
-      <div className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-emerald-300 px-4 text-sm font-semibold text-[#03140d]">
+      <div className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-green px-4 text-sm font-semibold text-background">
         <ShieldCheck className="h-4 w-4" />
         {status.label}
       </div>
@@ -434,14 +434,14 @@ function VaultRailStatus({
 
   const toneClass =
     status.tone === "emerald"
-      ? "border-emerald-300/18 bg-emerald-300/[0.08] text-emerald-100"
+      ? "border-green/20 bg-green/10 text-green"
       : status.tone === "amber"
-        ? "border-amber-300/18 bg-amber-300/[0.08] text-amber-100"
+        ? "border-amber/20 bg-amber/10 text-amber"
         : status.tone === "rose"
-          ? "border-rose-300/18 bg-rose-300/[0.08] text-rose-100"
+          ? "border-rose/20 bg-rose/10 text-rose"
           : status.tone === "cyan"
-            ? "border-cyan-300/18 bg-cyan-300/[0.08] text-cyan-100"
-            : "border-white/10 bg-white/[0.04] text-slate-200";
+            ? "border-teal/20 bg-teal/10 text-teal"
+            : "border-line bg-panel text-foreground";
   const icon =
     status.icon === "loader" ? (
       <Loader2 className="h-4 w-4 animate-spin" />
@@ -464,7 +464,7 @@ function VaultRailStatus({
         </span>
         <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] opacity-70">Vault</span>
       </div>
-      <p className="mt-1 truncate text-xs leading-5 text-slate-500">{status.detail}</p>
+      <p className="mt-1 truncate text-xs leading-5 text-muted">{status.detail}</p>
     </div>
   );
 }
@@ -482,18 +482,18 @@ function RailStatus({
 }) {
   const toneClass =
     tone === "emerald"
-      ? "text-emerald-200"
+      ? "text-green"
       : tone === "amber"
-        ? "text-amber-200"
+        ? "text-amber"
         : tone === "rose"
-          ? "text-rose-200"
+          ? "text-rose"
           : tone === "cyan"
-            ? "text-cyan-100"
-            : "text-slate-300";
+            ? "text-teal"
+            : "text-muted";
 
   return (
-    <div className="flex min-h-10 items-center justify-between gap-3 rounded-[14px] bg-white/[0.025] px-3 py-2.5">
-      <span className="inline-flex min-w-0 items-center gap-2 text-xs text-slate-500">
+    <div className="flex min-h-10 items-center justify-between gap-3 rounded-[14px] bg-panel px-3 py-2.5">
+      <span className="inline-flex min-w-0 items-center gap-2 text-xs text-muted">
         {icon}
         <span className="truncate">{label}</span>
       </span>

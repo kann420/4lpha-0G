@@ -1,11 +1,51 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { network } from "hardhat";
-import { keccak256, stringToBytes, stringToHex, type Hex } from "viem";
+import { artifacts, network } from "hardhat";
+import { keccak256, slice, stringToBytes, stringToHex, type Hex } from "viem";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
+const ERC165_INTERFACE_ID = "0x01ffc9a7" as Hex;
+const INVALID_INTERFACE_ID = "0xffffffff" as Hex;
+
+function selector(signature: string): Hex {
+  return slice(keccak256(stringToBytes(signature)), 0, 4);
+}
+
+function xorBytes4(values: Hex[]): Hex {
+  const result = values.reduce((acc, value) => acc ^ BigInt(value), 0n);
+  return `0x${result.toString(16).padStart(8, "0")}` as Hex;
+}
+
+// Expand an ABI input type to its canonical signature form. Structs become
+// expanded tuples (matching how solc computes function selectors); enums appear
+// as uint8 in the compiled ABI. This keeps the interfaceId computation in sync
+// with the contract's `type(I).interfaceId` without hand-maintaining signatures.
+interface AbiInput {
+  type: string;
+  name: string;
+  internalType?: string;
+  components?: AbiInput[];
+}
+function canonicalType(input: AbiInput): string {
+  if (input.components && (input.type === "tuple" || input.type === "tuple[]")) {
+    const inner = input.components.map(canonicalType).join(",");
+    const suffix = input.type.endsWith("[]") ? "[]" : "";
+    return `(${inner})${suffix}`;
+  }
+  return input.type;
+}
+function functionSignature(fn: { name: string; inputs: AbiInput[] }): string {
+  return `${fn.name}(${fn.inputs.map(canonicalType).join(",")})`;
+}
+async function interfaceIdOf(contractName: string): Promise<Hex> {
+  const { abi } = await artifacts.readArtifact(contractName);
+  const selectors = abi
+    .filter((item) => item.type === "function")
+    .map((fn) => selector(functionSignature(fn as unknown as { name: string; inputs: AbiInput[] })));
+  return xorBytes4(selectors);
+}
 
 describe("0G AgenticID", async function () {
   const { viem, networkHelpers } = await network.create();
@@ -155,5 +195,75 @@ describe("0G AgenticID", async function () {
         { account: agentOwner.account },
       ),
     );
+  });
+
+  it("clones an Agentic ID to a new owner with a fresh data hash", async function () {
+    const { agentOwner, executor, receiver, identity } = await networkHelpers.loadFixture(deployFixture);
+    const data = [iData("Agent metadata", "metadata-root")];
+    await identity.write.mintAgent([
+      agentOwner.account.address,
+      data,
+      "0g-storage:root:tx:0xabc",
+      "agentic-id:clone-test",
+      "0x000000000000000000000000000000000000dEaD",
+      executor.account.address,
+    ]);
+
+    const newHash = keccak256(stringToBytes("metadata-root-cloned"));
+    await identity.write.iClone(
+      [receiver.account.address, 1n, [proof(data[0].dataHash, newHash)]],
+      { account: agentOwner.account },
+    );
+
+    assert.equal((await identity.read.ownerOf([2n])).toLowerCase(), receiver.account.address.toLowerCase());
+    const clonedData = await identity.read.intelligentDataOf([2n]);
+    assert.equal(clonedData[0].dataHash, newHash);
+    assert.equal(await identity.read.balanceOf([receiver.account.address]), 1n);
+    // The original token is preserved by iClone.
+    assert.equal((await identity.read.ownerOf([1n])).toLowerCase(), agentOwner.account.address.toLowerCase());
+  });
+
+  it("delegates access to a hot-wallet assistant", async function () {
+    const { agentOwner, receiver, identity } = await networkHelpers.loadFixture(deployFixture);
+    await identity.write.delegateAccess([receiver.account.address], { account: agentOwner.account });
+    assert.equal(
+      (await identity.read.getDelegateAccess([agentOwner.account.address])).toLowerCase(),
+      receiver.account.address.toLowerCase(),
+    );
+  });
+
+  it("manages per-token approvals and operator approvals", async function () {
+    const { agentOwner, receiver, identity } = await networkHelpers.loadFixture(deployFixture);
+    const data = [iData("Agent metadata", "metadata-root")];
+    await identity.write.mintAgent([
+      agentOwner.account.address,
+      data,
+      "0g-storage:root:tx:0xabc",
+      "agentic-id:approval-test",
+      "0x000000000000000000000000000000000000dEaD",
+      agentOwner.account.address,
+    ]);
+
+    await identity.write.approve([receiver.account.address, 1n], { account: agentOwner.account });
+    assert.equal(
+      (await identity.read.getApproved([1n])).toLowerCase(),
+      receiver.account.address.toLowerCase(),
+    );
+
+    await identity.write.setApprovalForAll([receiver.account.address, true], { account: agentOwner.account });
+    assert.equal(await identity.read.isApprovedForAll([agentOwner.account.address, receiver.account.address]), true);
+  });
+
+  it("reports ERC-165 support for the canonical ERC-7857 interfaces only", async function () {
+    const { identity } = await networkHelpers.loadFixture(deployFixture);
+    const ierc7857Id = await interfaceIdOf("IERC7857");
+    const metadataId = await interfaceIdOf("IERC7857Metadata");
+    const verifierId = await interfaceIdOf("IERC7857DataVerifier");
+    assert.equal(await identity.read.supportsInterface([ERC165_INTERFACE_ID]), true);
+    assert.equal(await identity.read.supportsInterface([ierc7857Id]), true);
+    assert.equal(await identity.read.supportsInterface([metadataId]), true);
+    // AgenticID is not a verifier; it must not claim IERC7857DataVerifier support.
+    assert.equal(await identity.read.supportsInterface([verifierId]), false);
+    assert.equal(await identity.read.supportsInterface([INVALID_INTERFACE_ID]), false);
   });
 });

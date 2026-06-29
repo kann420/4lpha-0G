@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
+// TEST ONLY — this verifier echoes input hashes back as "proofs" and must NEVER
+// be deployed or wired as the live mainnet AgenticID verifier. It exists solely
+// for unit tests in test/AgenticID.ts. A real TEE/ZKP verifier is required before
+// the iTransfer/iClone server path may be enabled (see AGENTS.md).
 import {
     IERC7857DataVerifier,
     TransferValidityProof,
     TransferValidityProofOutput
-} from "../AgenticID.sol";
+} from "../interfaces/IERC7857DataVerifier.sol";
 
 contract MockAgentDataVerifier is IERC7857DataVerifier {
     function verifyTransferValidity(TransferValidityProof[] calldata proofs)

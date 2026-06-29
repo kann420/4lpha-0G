@@ -103,7 +103,7 @@ const output = {
   agenticId,
   chainId,
   deployer: deployerAddress,
-  standard: "ERC-7857-inspired MVP",
+  standard: "ERC-7857",
   txHash,
 };
 const outputPath = join(".data", "deployments", "mainnet-agentic-id.json");

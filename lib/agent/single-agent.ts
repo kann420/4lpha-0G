@@ -34,7 +34,7 @@ export interface OgAgentDeploymentRecord {
   identityAddress: Address;
   name: string;
   owner: Address;
-  standard: "ERC-7857-inspired MVP";
+  standard: "ERC-7857";
   standardNote: string;
   storageRef: string;
   storageRoot: Hex;
@@ -139,7 +139,7 @@ export interface OgAgentWorkspace {
     address?: Address;
     configured: boolean;
     deployArtifact: boolean;
-    label: "ERC-7857-inspired MVP";
+    label: "ERC-7857";
     note: string;
   };
   multiAgent: {

@@ -100,10 +100,10 @@ export function WalletConnectButton({
         onClick={handleButtonClick}
         className={`animate-nav-in inline-flex h-10 items-center gap-2 rounded-full text-sm font-medium hit-area-40 interaction-transition ${
           wallet.isConnected && !wallet.isWrongChain
-            ? "border border-emerald-300/20 bg-emerald-300/10 text-emerald-100 hover:bg-emerald-300/14"
+            ? "border border-green/20 bg-green/10 text-green hover:bg-green/14"
             : wallet.isWrongChain
-              ? "border border-amber-300/20 bg-amber-300/10 text-amber-100 hover:bg-amber-300/14"
-              : "bg-[var(--pulse-teal)] text-[#041015] shadow-[0_0_0_1px_rgba(30,232,197,0.28),0_14px_36px_rgba(30,232,197,0.12)] hover:-translate-y-0.5 hover:shadow-[0_0_0_3px_rgba(30,232,197,0.2),0_18px_46px_rgba(30,232,197,0.22)] hover:brightness-110"
+              ? "border border-amber/20 bg-amber/10 text-amber hover:bg-amber/14"
+              : "bg-[var(--pulse-teal)] text-on-primary shadow-[0_0_0_1px_rgba(30,232,197,0.28),0_14px_36px_rgba(30,232,197,0.12)] hover:-translate-y-0.5 hover:shadow-[0_0_0_3px_rgba(30,232,197,0.2),0_18px_46px_rgba(30,232,197,0.22)] hover:brightness-110"
         } ${compact ? "px-3" : "px-4"}`}
       >
         {icon}
@@ -114,18 +114,18 @@ export function WalletConnectButton({
       {wallet.isConnected ? (
         <div
           role="menu"
-          className="absolute right-0 top-[calc(100%+0.5rem)] z-[9999] w-64 overflow-hidden rounded-[16px] border border-white/10 bg-[#0b1117]/95 p-2 text-sm text-slate-200 opacity-100 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+          className="absolute right-0 top-[calc(100%+0.5rem)] z-[9999] w-64 overflow-hidden rounded-[16px] border border-line bg-panel-solid-strong/95 p-2 text-sm text-foreground opacity-100 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl"
           hidden={!menuOpen}
         >
-          <div className="border-b border-white/8 px-3 py-2.5">
-            <p className="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">
+          <div className="border-b border-line px-3 py-2.5">
+            <p className="text-xs font-medium uppercase tracking-[0.16em] text-muted">
               Connected wallet
             </p>
-            <p className="mt-1 truncate font-mono text-[13px] text-white">
+            <p className="mt-1 truncate font-mono text-[13px] text-foreground">
               {wallet.maskedAddress ?? wallet.address}
             </p>
             {wallet.connectorName ? (
-              <p className="mt-1 truncate text-xs text-slate-400">{wallet.connectorName}</p>
+              <p className="mt-1 truncate text-xs text-muted">{wallet.connectorName}</p>
             ) : null}
           </div>
 
@@ -135,7 +135,7 @@ export function WalletConnectButton({
               role="menuitem"
               disabled={wallet.isSwitchingChain}
               onClick={() => void switchToOg()}
-              className="mt-2 flex w-full items-center justify-between rounded-[12px] px-3 py-2.5 text-left text-amber-100 interaction-transition hover:bg-amber-300/10 disabled:cursor-wait disabled:opacity-70"
+              className="mt-2 flex w-full items-center justify-between rounded-[12px] px-3 py-2.5 text-left text-amber interaction-transition hover:bg-amber/10 disabled:cursor-wait disabled:opacity-70"
             >
               <span>Switch to {wallet.targetNetworkName}</span>
               {wallet.isSwitchingChain ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -146,7 +146,7 @@ export function WalletConnectButton({
             type="button"
             role="menuitem"
             onClick={disconnect}
-            className="mt-2 flex w-full items-center gap-2 rounded-[12px] px-3 py-2.5 text-left text-rose-100 interaction-transition hover:bg-rose-300/10"
+            className="mt-2 flex w-full items-center gap-2 rounded-[12px] px-3 py-2.5 text-left text-rose interaction-transition hover:bg-rose/10"
           >
             <LogOut className="h-4 w-4" />
             Disconnect

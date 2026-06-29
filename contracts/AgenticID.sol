@@ -2,58 +2,19 @@
 pragma solidity ^0.8.19;
 
 import {Ownable} from "./utils/Ownable.sol";
+import {IERC7857, TransferValidityProof} from "./interfaces/IERC7857.sol";
+import {IERC7857Metadata, IntelligentData} from "./interfaces/IERC7857Metadata.sol";
+import {IERC7857DataVerifier, TransferValidityProofOutput} from "./interfaces/IERC7857DataVerifier.sol";
 
-enum OracleType {
-    TEE,
-    ZKP
-}
-
-struct AccessProof {
-    bytes32 oldDataHash;
-    bytes32 newDataHash;
-    bytes nonce;
-    bytes encryptedPubKey;
-    bytes proof;
-}
-
-struct OwnershipProof {
-    OracleType oracleType;
-    bytes32 oldDataHash;
-    bytes32 newDataHash;
-    bytes sealedKey;
-    bytes encryptedPubKey;
-    bytes nonce;
-    bytes proof;
-}
-
-struct TransferValidityProof {
-    AccessProof accessProof;
-    OwnershipProof ownershipProof;
-}
-
-struct TransferValidityProofOutput {
-    bytes32 oldDataHash;
-    bytes32 newDataHash;
-    bytes sealedKey;
-    bytes encryptedPubKey;
-    bytes wantedKey;
-    address accessAssistant;
-    bytes accessProofNonce;
-    bytes ownershipProofNonce;
-}
-
-struct IntelligentData {
-    string dataDescription;
-    bytes32 dataHash;
-}
-
-interface IERC7857DataVerifier {
-    function verifyTransferValidity(TransferValidityProof[] calldata proofs)
-        external
-        returns (TransferValidityProofOutput[] memory);
-}
-
-contract AgenticID is Ownable {
+/// @title AgenticID
+/// @notice Canonical ERC-7857 Agentic ID for 0G. Implements the identity-creation
+///         path (mint, authorizeUsage, revokeAuthorization, delegateAccess, and
+///         IntelligentData hashing) as real on-chain agent identity anchored to
+///         a policy vault and audit root. The re-key transfer/clone paths
+///         (iTransfer/iClone) remain on-chain and callable, but the server/TS
+///         layer must not invoke them until a real TEE/ZKP verifier producing
+///         TransferValidityProofs is wired (see AGENTS.md).
+contract AgenticID is Ownable, IERC7857, IERC7857Metadata {
     struct TokenData {
         address owner;
         address approvedUser;
@@ -76,16 +37,8 @@ contract AgenticID is Ownable {
     error TokenNotFound();
     error VerifierNotConfigured();
 
-    event Approval(address indexed _from, address indexed _to, uint256 indexed _tokenId);
-    event ApprovalForAll(address indexed _owner, address indexed _operator, bool _approved);
-    event Authorization(address indexed _from, address indexed _to, uint256 indexed _tokenId);
-    event AuthorizationRevoked(address indexed _from, address indexed _to, uint256 indexed _tokenId);
-    event Cloned(uint256 indexed _tokenId, uint256 indexed _newTokenId, address _from, address _to);
-    event DelegateAccess(address indexed _user, address indexed _assistant);
-    event PublishedSealedKey(address indexed _to, uint256 indexed _tokenId, bytes[] _sealedKeys);
+    // ERC-721-compatible transfer event (not part of IERC7857).
     event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
-    event Transferred(uint256 _tokenId, address indexed _from, address indexed _to);
-
     event AgentMinted(
         uint256 indexed tokenId,
         address indexed creator,
@@ -123,15 +76,15 @@ contract AgenticID is Ownable {
         emit VerifierUpdated(verifier_);
     }
 
-    function name() external view returns (string memory) {
+    function name() external view override returns (string memory) {
         return _name;
     }
 
-    function symbol() external view returns (string memory) {
+    function symbol() external view override returns (string memory) {
         return _symbol;
     }
 
-    function verifier() external view returns (IERC7857DataVerifier) {
+    function verifier() external view override returns (IERC7857DataVerifier) {
         return _verifier;
     }
 
@@ -181,7 +134,7 @@ contract AgenticID is Ownable {
         emit AgentMinted(tokenId, msg.sender, to, vault, executor, agentRef, storageRef);
     }
 
-    function iTransfer(address to, uint256 tokenId, TransferValidityProof[] calldata proofs) external {
+    function iTransfer(address to, uint256 tokenId, TransferValidityProof[] calldata proofs) external override {
         if (to == address(0)) {
             revert InvalidAddress();
         }
@@ -200,6 +153,7 @@ contract AgenticID is Ownable {
 
     function iClone(address to, uint256 tokenId, TransferValidityProof[] calldata proofs)
         external
+        override
         returns (uint256 newTokenId)
     {
         if (to == address(0)) {
@@ -229,12 +183,12 @@ contract AgenticID is Ownable {
         emit Cloned(tokenId, newTokenId, msg.sender, to);
     }
 
-    function authorizeUsage(uint256 tokenId, address user) external {
+    function authorizeUsage(uint256 tokenId, address user) external override {
         _requireApprovedOrOwner(msg.sender, tokenId);
         _authorize(tokenId, user);
     }
 
-    function revokeAuthorization(uint256 tokenId, address user) external {
+    function revokeAuthorization(uint256 tokenId, address user) external override {
         _requireApprovedOrOwner(msg.sender, tokenId);
         TokenData storage token = _requireToken(tokenId);
         if (!token.isAuthorized[user]) {
@@ -244,7 +198,7 @@ contract AgenticID is Ownable {
         emit AuthorizationRevoked(msg.sender, user, tokenId);
     }
 
-    function approve(address to, uint256 tokenId) external {
+    function approve(address to, uint256 tokenId) external override {
         address tokenOwner = ownerOf(tokenId);
         if (msg.sender != tokenOwner && !_operatorApprovals[tokenOwner][msg.sender]) {
             revert NotApprovedOrOwner();
@@ -253,7 +207,7 @@ contract AgenticID is Ownable {
         emit Approval(tokenOwner, to, tokenId);
     }
 
-    function setApprovalForAll(address operator, bool approved) external {
+    function setApprovalForAll(address operator, bool approved) external override {
         if (operator == address(0) || operator == msg.sender) {
             revert InvalidAddress();
         }
@@ -261,7 +215,7 @@ contract AgenticID is Ownable {
         emit ApprovalForAll(msg.sender, operator, approved);
     }
 
-    function delegateAccess(address assistant) external {
+    function delegateAccess(address assistant) external override {
         if (assistant == address(0)) {
             revert InvalidAddress();
         }
@@ -269,7 +223,7 @@ contract AgenticID is Ownable {
         emit DelegateAccess(msg.sender, assistant);
     }
 
-    function ownerOf(uint256 tokenId) public view returns (address) {
+    function ownerOf(uint256 tokenId) public view override returns (address) {
         return _requireToken(tokenId).owner;
     }
 
@@ -280,7 +234,7 @@ contract AgenticID is Ownable {
         return _balances[account];
     }
 
-    function intelligentDataOf(uint256 tokenId) external view returns (IntelligentData[] memory) {
+    function intelligentDataOf(uint256 tokenId) external view override returns (IntelligentData[] memory) {
         TokenData storage token = _requireToken(tokenId);
         IntelligentData[] memory result = new IntelligentData[](token.iDatas.length);
         for (uint256 i = 0; i < token.iDatas.length; i++) {
@@ -289,7 +243,7 @@ contract AgenticID is Ownable {
         return result;
     }
 
-    function authorizedUsersOf(uint256 tokenId) external view returns (address[] memory) {
+    function authorizedUsersOf(uint256 tokenId) external view override returns (address[] memory) {
         TokenData storage token = _requireToken(tokenId);
         uint256 count;
         for (uint256 i = 0; i < token.authorizedUsers.length; i++) {
@@ -324,16 +278,25 @@ contract AgenticID is Ownable {
         return (token.owner, token.vault, token.executor, token.storageRef, token.agentRef, token.mintedAt);
     }
 
-    function getApproved(uint256 tokenId) external view returns (address) {
+    function getApproved(uint256 tokenId) external view override returns (address) {
         return _requireToken(tokenId).approvedUser;
     }
 
-    function isApprovedForAll(address tokenOwner, address operator) external view returns (bool) {
+    function isApprovedForAll(address tokenOwner, address operator) external view override returns (bool) {
         return _operatorApprovals[tokenOwner][operator];
     }
 
-    function getDelegateAccess(address user) external view returns (address) {
+    function getDelegateAccess(address user) external view override returns (address) {
         return _delegateAccess[user];
+    }
+
+    /// @notice ERC-165 interface discovery. AgenticID implements IERC7857 and
+    ///         IERC7857Metadata. It does NOT implement IERC7857DataVerifier
+    ///         (that is the verifier contract's interface).
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return interfaceId == type(IERC7857).interfaceId
+            || interfaceId == type(IERC7857Metadata).interfaceId
+            || interfaceId == 0x01ffc9a7; // ERC-165
     }
 
     function _applyProofedDataUpdate(

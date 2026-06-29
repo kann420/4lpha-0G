@@ -26,7 +26,7 @@ export const OG_NETWORKS: Record<OgNetworkId, OgNetworkConfig> = {
   },
 };
 
-export const DEFAULT_OG_NETWORK_ID: OgNetworkId = "testnet";
+export const DEFAULT_OG_NETWORK_ID: OgNetworkId = "mainnet";
 export const OG_NETWORK_STORAGE_KEY = "4lpha-0g:selected-network";
 
 export function isOgNetworkId(value: unknown): value is OgNetworkId {

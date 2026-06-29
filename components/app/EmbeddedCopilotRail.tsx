@@ -587,40 +587,40 @@ export function EmbeddedCopilotRail({
 
   return (
     <section
-      className={`relative flex h-full max-h-full min-h-0 flex-col overflow-hidden border border-white/8 bg-[linear-gradient(180deg,rgba(10,18,23,0.96),rgba(8,13,18,0.98))] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] ${
+      className={`relative flex h-full max-h-full min-h-0 flex-col overflow-hidden border border-line bg-panel-solid-strong shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] ${
         isMobile ? "rounded-[28px]" : "rounded-[24px]"
       }`}
     >
       <div className="pointer-events-none absolute inset-x-0 top-0 h-28 bg-[radial-gradient(circle_at_top,rgba(30,232,197,0.14),transparent_58%)]" />
 
-      <header className="relative z-20 shrink-0 border-b border-white/8 bg-white/[0.02] px-4 py-3.5">
+      <header className="relative z-20 shrink-0 border-b border-line bg-panel px-4 py-3.5">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
-              <span className="flex h-9 w-9 items-center justify-center rounded-full border border-cyan-300/15 bg-cyan-300/12 text-cyan-200">
+              <span className="flex h-9 w-9 items-center justify-center rounded-full border border-primary/20 bg-primary/15 text-primary">
                 <Bot className="h-4 w-4" />
               </span>
               <div className="min-w-0 flex-1">
-                <h2 className="truncate text-lg font-bold text-white">4lpha Agent</h2>
-                <p className="text-sm leading-5 text-slate-400">{description}</p>
+                <h2 className="truncate text-lg font-bold text-foreground">4lpha Agent</h2>
+                <p className="text-sm leading-5 text-muted">{description}</p>
               </div>
             </div>
             <div className="mt-3 flex items-center gap-2">
-              <div className="inline-flex rounded-[10px] border border-white/10 bg-[#0d151c] p-0.5">
-                <button type="button" className="rounded-[8px] bg-white/10 px-2.5 py-1 text-xs font-semibold text-white">
+              <div className="inline-flex rounded-[10px] border border-line bg-panel-solid-strong p-0.5">
+                <button type="button" className="rounded-[8px] bg-panel-strong px-2.5 py-1 text-xs font-semibold text-foreground">
                   0G Router
                 </button>
-                <button type="button" className="rounded-[8px] px-2.5 py-1 text-xs font-semibold text-slate-500">
+                <button type="button" className="rounded-[8px] px-2.5 py-1 text-xs font-semibold text-muted">
                   Server only
                 </button>
               </div>
-              <span className="min-w-0 flex-1 truncate rounded-[10px] border border-white/10 bg-[#0d151c] px-2.5 py-1.5 text-xs font-semibold text-slate-100">
+              <span className="min-w-0 flex-1 truncate rounded-[10px] border border-line bg-panel-solid-strong px-2.5 py-1.5 text-xs font-semibold text-foreground">
                 {networkLabel}
               </span>
             </div>
             <div className="mt-2 grid grid-cols-[minmax(0,1fr)] gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-              <label className="relative flex h-10 min-w-0 items-center gap-2 rounded-[12px] border border-white/10 bg-[#0d151c] px-3 text-xs font-semibold text-slate-200">
-                <BrainCircuit className="h-3.5 w-3.5 shrink-0 text-cyan-100" />
+              <label className="relative flex h-10 min-w-0 items-center gap-2 rounded-[12px] border border-line bg-panel-solid-strong px-3 text-xs font-semibold text-foreground">
+                <BrainCircuit className="h-3.5 w-3.5 shrink-0 text-primary" />
                 <span className="sr-only">LLM model</span>
                 <select
                   value={selectedModel}
@@ -628,25 +628,25 @@ export function EmbeddedCopilotRail({
                     setSelectedModelByNetwork((current) => ({ ...current, [networkId]: event.target.value }))
                   }
                   disabled={modelCatalog.status === "loading"}
-                  className="min-w-0 flex-1 appearance-none truncate bg-transparent pr-6 text-xs font-semibold text-slate-100 outline-none disabled:text-slate-500"
+                  className="min-w-0 flex-1 appearance-none truncate bg-transparent pr-6 text-xs font-semibold text-foreground outline-none disabled:text-muted"
                   aria-label="LLM model"
                 >
-                  <option className="bg-[#0d151c] text-slate-100" value="">
+                  <option className="bg-panel-solid-strong text-foreground" value="">
                     {modelCatalog.defaultModel ? `Auto: ${shortModelLabel(modelCatalog.defaultModel)}` : "Auto Router model"}
                   </option>
                   {modelCatalog.models.map((model) => (
-                    <option key={model.id} className="bg-[#0d151c] text-slate-100" value={model.id}>
+                    <option key={model.id} className="bg-panel-solid-strong text-foreground" value={model.id}>
                       {model.label}
                     </option>
                   ))}
                 </select>
-                <ChevronDown className="pointer-events-none absolute right-3 h-3.5 w-3.5 text-slate-500" />
+                <ChevronDown className="pointer-events-none absolute right-3 h-3.5 w-3.5 text-muted" />
               </label>
               <span
                 className={`inline-flex h-10 items-center rounded-[12px] border px-2.5 text-xs font-semibold ${
                   modelCatalog.status === "error"
-                    ? "border-amber-300/16 bg-amber-300/[0.08] text-amber-100"
-                    : "border-white/10 bg-[#0d151c] text-slate-400"
+                    ? "border-amber/20 bg-amber/10 text-amber"
+                    : "border-line bg-panel-solid-strong text-muted"
                 }`}
                 title={modelCatalog.error}
               >
@@ -654,10 +654,10 @@ export function EmbeddedCopilotRail({
               </span>
             </div>
             {chatLocked ? (
-              <div className="mt-3 flex flex-col gap-3 rounded-[14px] border border-amber-300/18 bg-amber-300/[0.08] px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="mt-3 flex flex-col gap-3 rounded-[14px] border border-amber/20 bg-amber/10 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex min-w-0 gap-2">
-                  <LockKeyhole className="mt-0.5 h-4 w-4 shrink-0 text-amber-100" />
-                  <p className="text-sm leading-5 text-amber-50">
+                  <LockKeyhole className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
+                  <p className="text-sm leading-5 text-amber">
                     {lockMessage}
                   </p>
                 </div>
@@ -670,7 +670,7 @@ export function EmbeddedCopilotRail({
             <button
               type="button"
               onClick={onClose}
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-slate-400 transition-colors hover:border-white/16 hover:text-white"
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-panel text-muted transition-colors hover:border-line-strong hover:text-foreground"
               aria-label="Close copilot"
             >
               <X className="h-4 w-4" />
@@ -686,15 +686,15 @@ export function EmbeddedCopilotRail({
               key={`${message.role}-${index}`}
               className={`rounded-[18px] border p-3 text-sm leading-6 ${
                 message.role === "operator"
-                  ? "ml-8 border-cyan-300/18 bg-cyan-300/10 text-cyan-50"
+                  ? "ml-8 border-primary/20 bg-primary/10 text-primary"
                   : message.status === "error"
-                    ? "mr-8 border-rose-300/20 bg-rose-300/10 text-rose-50"
-                    : "mr-8 border-white/8 bg-[#101922] text-slate-300"
+                    ? "mr-8 border-rose/20 bg-rose/10 text-rose"
+                    : "mr-8 border-line bg-panel-solid-strong text-muted"
               }`}
             >
               <div className="flex gap-2">
                 {message.status === "pending" ? (
-                  <Loader2 className="mt-1 h-4 w-4 shrink-0 animate-spin text-cyan-100" />
+                  <Loader2 className="mt-1 h-4 w-4 shrink-0 animate-spin text-primary" />
                 ) : null}
                 <p className="whitespace-pre-line">{message.content}</p>
               </div>
@@ -714,8 +714,8 @@ export function EmbeddedCopilotRail({
         </div>
       </div>
 
-      <div className="shrink-0 border-t border-white/8 bg-[#0a1015] px-4 py-3">
-        <div className="rounded-[22px] border border-white/10 bg-[linear-gradient(180deg,#111920,#0c1319)] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+      <div className="shrink-0 border-t border-line bg-panel-solid-strong px-4 py-3">
+        <div className="rounded-[22px] border border-line bg-panel-solid-strong p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
           <div className="mb-3 flex flex-wrap gap-2">
             {COPILOT_QUICK_PROMPTS.map((item) => (
               <button
@@ -723,7 +723,7 @@ export function EmbeddedCopilotRail({
                 type="button"
                 onClick={() => void submitPrompt(item.prompt)}
                 disabled={chatLocked || isSending}
-                className="inline-flex min-h-10 items-center gap-2 rounded-full border border-cyan-300/14 bg-cyan-300/[0.07] px-3 text-xs font-semibold text-cyan-100 transition-[background-color,border-color,color,transform] hover:border-cyan-200/28 hover:bg-cyan-300/[0.12] hover:text-white active:scale-[0.96] disabled:cursor-not-allowed disabled:border-white/8 disabled:bg-white/[0.03] disabled:text-slate-500"
+                className="inline-flex min-h-10 items-center gap-2 rounded-full border border-primary/20 bg-primary/10 px-3 text-xs font-semibold text-primary transition-[background-color,border-color,color,transform] hover:border-primary/30 hover:bg-primary/15 hover:text-foreground active:scale-[0.96] disabled:cursor-not-allowed disabled:border-line disabled:bg-panel disabled:text-muted"
               >
                 <MessageSquare className="h-3.5 w-3.5" />
                 {item.prompt}
@@ -731,7 +731,7 @@ export function EmbeddedCopilotRail({
             ))}
           </div>
           <label className="block">
-            <span className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-slate-500">
+            <span className="mb-2 block text-xs font-bold uppercase tracking-[0.18em] text-muted">
               Operator request
             </span>
             <textarea
@@ -740,11 +740,11 @@ export function EmbeddedCopilotRail({
               onKeyDown={handleDraftKeyDown}
               placeholder={chatLocked ? "Connect wallet to use 0G Copilot chat..." : placeholder}
               disabled={chatLocked}
-              className="min-h-[72px] w-full resize-none bg-transparent text-base leading-7 text-white placeholder:text-slate-500 focus:outline-none disabled:cursor-not-allowed disabled:text-slate-500"
+              className="min-h-[72px] w-full resize-none bg-transparent text-base leading-7 text-foreground placeholder:text-muted focus:outline-none disabled:cursor-not-allowed disabled:text-muted"
             />
           </label>
 
-          <div className="mt-3 flex items-center justify-between gap-3 border-t border-white/8 pt-3">
+          <div className="mt-3 flex items-center justify-between gap-3 border-t border-line pt-3">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <PermissionModeDropdown
                 mode={permissionMode}
@@ -755,7 +755,7 @@ export function EmbeddedCopilotRail({
               type="button"
               onClick={() => void submitPrompt(draft)}
               disabled={chatLocked || !draft.trim() || isSending}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[var(--pulse-teal)] text-[#041015] transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[var(--pulse-teal)] text-background transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40"
               aria-label="Send"
             >
               {isSending ? (
@@ -835,8 +835,8 @@ function PermissionModeDropdown({
         onClick={() => setOpen((value) => !value)}
         className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold transition-[background-color,border-color,color,transform] active:scale-[0.96] ${
           isFullAccess
-            ? "border-amber-300/30 bg-amber-300/10 text-amber-200 hover:bg-amber-300/16"
-            : "border-white/10 bg-white/[0.04] text-slate-400 hover:border-white/16 hover:text-slate-200"
+            ? "border-amber/30 bg-amber/10 text-amber hover:bg-amber/20"
+            : "border-line bg-panel text-muted hover:border-line-strong hover:text-foreground"
         }`}
       >
         {isFullAccess ? <ShieldAlert className="h-3 w-3" /> : <ShieldCheck className="h-3 w-3" />}
@@ -845,38 +845,38 @@ function PermissionModeDropdown({
       </button>
 
       {open ? (
-        <div className="absolute bottom-full left-0 z-50 mb-1.5 w-56 overflow-hidden rounded-[14px] border border-white/10 bg-[#0d151c] shadow-[0_16px_48px_rgba(0,0,0,0.5)]">
+        <div className="absolute bottom-full left-0 z-50 mb-1.5 w-56 overflow-hidden rounded-[14px] border border-line bg-panel-solid-strong shadow-[0_16px_48px_rgba(0,0,0,0.5)]">
           <button
             type="button"
             onClick={() => {
               onChange("default");
               setOpen(false);
             }}
-            className={`flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-white/[0.05] ${
-              !isFullAccess ? "text-white" : "text-slate-400"
+            className={`flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-panel ${
+              !isFullAccess ? "text-foreground" : "text-muted"
             }`}
           >
-            <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-300" />
+            <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-green" />
             <span>
               <span className="block text-[11px] font-semibold leading-none">Default Approvals</span>
-              <span className="mt-1 block text-[10px] leading-4 text-slate-500">Confirm before execution</span>
+              <span className="mt-1 block text-[10px] leading-4 text-muted">Confirm before execution</span>
             </span>
           </button>
-          <div className="mx-3 border-t border-white/6" />
+          <div className="mx-3 border-t border-line" />
           <button
             type="button"
             onClick={() => {
               onChange("full_access");
               setOpen(false);
             }}
-            className={`flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-white/[0.05] ${
-              isFullAccess ? "text-amber-100" : "text-slate-400"
+            className={`flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-panel ${
+              isFullAccess ? "text-amber" : "text-muted"
             }`}
           >
-            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" />
+            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber" />
             <span>
               <span className="block text-[11px] font-semibold leading-none">Bypass Approvals</span>
-              <span className="mt-1 block text-[10px] leading-4 text-slate-500">Auto-execute allowed previews</span>
+              <span className="mt-1 block text-[10px] leading-4 text-muted">Auto-execute allowed previews</span>
             </span>
           </button>
         </div>
@@ -903,14 +903,14 @@ function TradeReviewCardView({
   const quote = card.preview.quote;
 
   return (
-    <div className="mt-3 rounded-[18px] border border-cyan-300/12 bg-[linear-gradient(180deg,rgba(16,24,30,0.96),rgba(10,16,22,0.92))] p-3">
+    <div className="mt-3 rounded-[18px] border border-primary/20 bg-panel-solid-strong p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[11px] uppercase tracking-[0.22em] text-cyan-200/70">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-primary/70">
             {card.request.side === "buy" ? "Buy review" : "Sell review"}
           </p>
-          <p className="mt-1 truncate text-sm font-semibold text-white">{quote.routeLabel}</p>
-          <p className="mt-1 truncate text-xs text-slate-400">
+          <p className="mt-1 truncate text-sm font-semibold text-foreground">{quote.routeLabel}</p>
+          <p className="mt-1 truncate text-xs text-muted">
             {quote.venue} · {card.preview.route.outputToken}
           </p>
         </div>
@@ -919,7 +919,7 @@ function TradeReviewCardView({
         </span>
       </div>
 
-      <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+      <div className="mt-3 grid gap-2 text-xs text-muted sm:grid-cols-2">
         <TradeMetric label="Input" value={`${quote.amountIn} ${quote.inputToken}`} />
         <TradeMetric label="Expected out" value={`${quote.expectedAmountOut} ${quote.outputToken}`} />
         <TradeMetric label="Min out" value={`${quote.amountOutMin} ${quote.outputToken}`} />
@@ -928,14 +928,14 @@ function TradeReviewCardView({
         <TradeMetric label="Price impact" value={formatBps(quote.priceImpactBps)} />
       </div>
 
-      <div className="mt-3 rounded-[16px] border border-white/8 bg-white/[0.03] px-3 py-2 text-xs text-slate-300">
+      <div className="mt-3 rounded-[16px] border border-line bg-panel px-3 py-2 text-xs text-muted">
         <ProofLine label="Policy hash" value={card.preview.proofBundle.policyDecisionHash} />
         <ProofLine label="Storage root" value={card.preview.proofBundle.storageRoot} />
         <ProofLine label="Route hash" value={quote.routeHash} />
       </div>
 
       {quote.warnings.length > 0 || decision !== "allow" ? (
-        <div className="mt-3 flex gap-2 rounded-[16px] border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-xs leading-5 text-amber-100">
+        <div className="mt-3 flex gap-2 rounded-[16px] border border-amber/20 bg-amber/10 px-3 py-2 text-xs leading-5 text-amber">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>{quote.warnings[0] ?? "Policy decision is not allow; execution requires review."}</span>
         </div>
@@ -946,7 +946,7 @@ function TradeReviewCardView({
           type="button"
           disabled={!canConfirm}
           onClick={() => void onConfirm(card.draftId)}
-          className="inline-flex min-h-9 items-center gap-1.5 rounded-full bg-[var(--pulse-teal)] px-3 py-1.5 text-xs font-semibold text-[#041015] transition-[filter,transform] hover:brightness-105 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex min-h-9 items-center gap-1.5 rounded-full bg-[var(--pulse-teal)] px-3 py-1.5 text-xs font-semibold text-background transition-[filter,transform] hover:brightness-105 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
         >
           {isSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
           Confirm
@@ -955,12 +955,12 @@ function TradeReviewCardView({
           type="button"
           disabled={isSubmitting || isExpired}
           onClick={() => onCancel(card.draftId)}
-          className="inline-flex min-h-9 items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-300 transition-[background-color,border-color,color,transform] hover:border-white/16 hover:text-white active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex min-h-9 items-center gap-1.5 rounded-full border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-muted transition-[background-color,border-color,color,transform] hover:border-line-strong hover:text-foreground active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
         >
           Cancel
         </button>
         {card.mode === "full_access" && decision !== "allow" ? (
-          <span className="inline-flex min-h-9 items-center gap-1.5 rounded-full border border-amber-300/20 bg-amber-300/10 px-3 py-1.5 text-[11px] text-amber-100">
+          <span className="inline-flex min-h-9 items-center gap-1.5 rounded-full border border-amber/20 bg-amber/10 px-3 py-1.5 text-[11px] text-amber">
             <CircleAlert className="h-3.5 w-3.5" />
             Bypass blocked by policy
           </span>
@@ -983,29 +983,29 @@ function TradeResultCardView({ card }: { card: CopilotTradeResultCard }) {
     <div
       className={`mt-3 rounded-[18px] border p-3 ${
         success
-          ? "border-emerald-300/12 bg-[linear-gradient(180deg,rgba(8,28,20,0.95),rgba(8,18,16,0.92))]"
+          ? "border-green/20 bg-panel-solid-strong"
           : cancelled
-            ? "border-white/10 bg-white/[0.03]"
-            : "border-rose-300/12 bg-[linear-gradient(180deg,rgba(34,14,19,0.95),rgba(16,10,12,0.92))]"
+            ? "border-line bg-panel"
+            : "border-rose/20 bg-panel-solid-strong"
       }`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">Trade result</p>
-          <p className="mt-1 text-sm font-semibold text-white">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-muted">Trade result</p>
+          <p className="mt-1 text-sm font-semibold text-foreground">
             {success ? "Accepted" : cancelled ? "Canceled" : "Failed"}
           </p>
-          <p className="mt-1 truncate text-xs text-slate-400">
+          <p className="mt-1 truncate text-xs text-muted">
             {quote?.routeLabel ?? shortHash(card.request.routeId)}
           </p>
         </div>
         <span
           className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] uppercase tracking-[0.16em] ${
             success
-              ? "border-emerald-300/20 bg-emerald-300/10 text-emerald-100"
+              ? "border-green/20 bg-green/10 text-green"
               : cancelled
-                ? "border-white/10 bg-white/[0.03] text-slate-300"
-                : "border-rose-300/20 bg-rose-300/10 text-rose-100"
+                ? "border-line bg-panel text-muted"
+                : "border-rose/20 bg-rose/10 text-rose"
           }`}
         >
           {success ? card.execution?.status ?? "success" : cancelled ? "canceled" : "blocked"}
@@ -1013,19 +1013,19 @@ function TradeResultCardView({ card }: { card: CopilotTradeResultCard }) {
       </div>
 
       {card.error ? (
-        <div className="mt-3 rounded-[14px] border border-white/8 bg-white/[0.03] px-3 py-2 text-xs leading-5 text-slate-300">
+        <div className="mt-3 rounded-[14px] border border-line bg-panel px-3 py-2 text-xs leading-5 text-muted">
           {card.error}
         </div>
       ) : null}
 
-      <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
+      <div className="mt-3 grid gap-2 text-xs text-muted sm:grid-cols-2">
         <TradeMetric label="Amount" value={quote ? `${quote.amountIn} ${quote.inputToken}` : card.request.amountIn ?? "--"} />
         <TradeMetric label="Receive" value={quote ? `${quote.expectedAmountOut} ${quote.outputToken}` : "--"} />
         <TradeMetric label="Policy" value={card.execution?.proofBundle.policyDecision ?? card.preview?.proofBundle.policyDecision ?? "--"} />
         <TradeMetric label="Submitted" value={card.execution?.submittedAt ? formatDateTime(card.execution.submittedAt) : "--"} />
       </div>
 
-      <div className="mt-3 rounded-[16px] border border-white/8 bg-white/[0.03] px-3 py-2 text-xs text-slate-300">
+      <div className="mt-3 rounded-[16px] border border-line bg-panel px-3 py-2 text-xs text-muted">
         <ProofLine label="Proof tx" value={proofTxHash} href={proofTxUrl} />
         <ProofLine label="Quote hash" value={card.execution?.proofBundle.quoteHash ?? card.preview?.proofBundle.quoteHash ?? "--"} />
         <ProofLine label="Tx hash" value={executionTxHash ?? "--"} href={executionTxUrl} />
@@ -1043,9 +1043,9 @@ function TradeResultCardView({ card }: { card: CopilotTradeResultCard }) {
 
 function TradeMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 rounded-[14px] border border-white/8 bg-black/20 px-3 py-2">
-      <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{label}</span>
-      <p className="mt-1 truncate font-mono text-xs font-semibold text-slate-100" title={value}>
+    <div className="min-w-0 rounded-[14px] border border-line bg-panel px-3 py-2">
+      <span className="text-[10px] uppercase tracking-[0.18em] text-muted">{label}</span>
+      <p className="mt-1 truncate font-mono text-xs font-semibold text-foreground" title={value}>
         {value}
       </p>
     </div>
@@ -1057,20 +1057,20 @@ function ProofLine({ href, label, value }: { href?: string; label: string; value
 
   return (
     <div className="flex min-w-0 items-center justify-between gap-3 py-1">
-      <span className="text-slate-500">{label}</span>
+      <span className="text-muted">{label}</span>
       {href ? (
         <a
           href={href}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex min-w-0 items-center justify-end gap-1.5 truncate text-right font-mono font-semibold text-cyan-100 hover:text-white"
+          className="inline-flex min-w-0 items-center justify-end gap-1.5 truncate text-right font-mono font-semibold text-primary hover:text-foreground"
           title={value}
         >
           <span className="truncate">{display}</span>
           <ExternalLink className="h-3 w-3 shrink-0" />
         </a>
       ) : (
-        <span className="min-w-0 truncate text-right font-mono font-semibold text-slate-100" title={value}>
+        <span className="min-w-0 truncate text-right font-mono font-semibold text-foreground" title={value}>
           {display}
         </span>
       )}
@@ -1084,7 +1084,7 @@ function ExplorerLink({ href, label }: { href: string; label: string }) {
       href={href}
       target="_blank"
       rel="noreferrer"
-      className="inline-flex min-h-8 items-center gap-1.5 rounded-full border border-cyan-300/16 bg-cyan-300/[0.08] px-3 py-1 text-xs font-semibold text-cyan-100 transition-colors hover:border-cyan-200/30 hover:bg-cyan-300/[0.14] hover:text-white"
+      className="inline-flex min-h-8 items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-xs font-semibold text-primary transition-colors hover:border-primary/30 hover:bg-primary/15 hover:text-foreground"
     >
       <ExternalLink className="h-3.5 w-3.5" />
       {label}
@@ -1355,14 +1355,14 @@ function isSuccessfulTradeExecution(execution: AgentTradeExecution | undefined):
 
 function tradeDecisionTone(decision: AgentTradePreview["proofBundle"]["policyDecision"], isExpired: boolean): string {
   if (isExpired || decision === "reject") {
-    return "border-rose-300/20 bg-rose-300/10 text-rose-100";
+    return "border-rose/20 bg-rose/10 text-rose";
   }
 
   if (decision === "review") {
-    return "border-amber-300/20 bg-amber-300/10 text-amber-100";
+    return "border-amber/20 bg-amber/10 text-amber";
   }
 
-  return "border-cyan-300/20 bg-cyan-300/10 text-cyan-100";
+  return "border-primary/20 bg-primary/10 text-primary";
 }
 
 function formatBps(value: number): string {

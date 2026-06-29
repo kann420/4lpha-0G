@@ -59,9 +59,16 @@ const LEGACY_AGENT_TRADE_EXECUTION_PATH = join(".data", "agents", "trade-executi
 const LEGACY_AGENT_SELL_EXECUTION_PATH = join(".data", "agents", "sell-execution-response.json");
 const AGENTIC_ID_DEPLOYMENT_PATH = join(".data", "deployments", "mainnet-agentic-id.json");
 const MAX_STORAGE_SYNC_LAG_BLOCKS = 120n;
-const STANDARD_LABEL = "ERC-7857-inspired MVP" as const;
+const STANDARD_LABEL = "ERC-7857" as const;
 const STANDARD_NOTE =
-  "Implements ERC-7857 identity, encrypted metadata hash anchoring, and authorized usage. Re-key transfer still requires a reviewed TEE/ZKP verifier before it should be called a production Agentic ID.";
+  "Implements the canonical ERC-7857 Agentic ID: identity minting, encrypted metadata hash anchoring, and authorized usage are real on-chain identity anchored to the policy vault and audit root. Re-key transfer (iTransfer/iClone) requires a real TEE/ZKP verifier producing TransferValidityProofs; it is intentionally disabled in the server path until such a verifier is wired.";
+
+// TRANSFER PATH GUARD: do NOT call AgenticID.iTransfer/iClone from this server.
+// They require real TEE/ZKP TransferValidityProofs; no such verifier is wired and
+// MockAgentDataVerifier must never be used as the live mainnet verifier (see
+// AGENTS.md). These functions remain callable on-chain but are not part of any
+// production write path here. Any future verifier wiring must route through
+// assertMainnetDeployEnv / chainId === 16661.
 
 const erc20DecimalsAbi = [
   {
@@ -1083,12 +1090,22 @@ function clampInteger(value: number | undefined, min: number, max: number, fallb
 }
 
 async function resolveAgenticIdAddress(): Promise<{ address?: Address; fromArtifact: boolean }> {
-  const fromEnv = readAddress(process.env.AGENT_IDENTITY_ADDRESS)
+  // Prefer the mainnet-scoped env vars; keep the legacy names as a fallback so
+  // existing setups keep working. Agentic ID is mainnet-only (chain 16661);
+  // there is no Galileo/testnet Agentic ID path.
+  const fromEnv = readAddress(process.env.AGENT_IDENTITY_MAINNET_ADDRESS)
+    ?? readAddress(process.env.NEXT_PUBLIC_AGENT_IDENTITY_MAINNET_ADDRESS)
+    ?? readAddress(process.env.AGENT_IDENTITY_ADDRESS)
     ?? readAddress(process.env.NEXT_PUBLIC_AGENT_IDENTITY_ADDRESS);
   if (fromEnv) {
     return { address: fromEnv, fromArtifact: false };
   }
   const artifact = await readJsonArtifact<AgenticIdDeploymentArtifact>(AGENTIC_ID_DEPLOYMENT_PATH);
+  // Reject any artifact that is not anchored to mainnet. A non-mainnet artifact
+  // must never be presented as a configured Agentic ID.
+  if (artifact?.chainId !== undefined && artifact.chainId !== MAINNET_CHAIN_ID) {
+    return { address: undefined, fromArtifact: false };
+  }
   const fromArtifact = readAddress(artifact?.agenticId) ?? readAddress(artifact?.address);
   return { address: fromArtifact ?? undefined, fromArtifact: Boolean(fromArtifact) };
 }
