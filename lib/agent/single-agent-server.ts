@@ -60,9 +60,18 @@ const LEGACY_AGENT_TRADE_EXECUTION_PATH = join(".data", "agents", "trade-executi
 const LEGACY_AGENT_SELL_EXECUTION_PATH = join(".data", "agents", "sell-execution-response.json");
 const AGENTIC_ID_DEPLOYMENT_PATH = join(".data", "deployments", "mainnet-agentic-id.json");
 const MAX_STORAGE_SYNC_LAG_BLOCKS = 120n;
+const STORAGE_SNAPSHOT_CACHE_TTL_MS = 60_000;
 const STANDARD_LABEL = "ERC-7857-inspired MVP" as const;
 const STANDARD_NOTE =
   "Implements ERC-7857 identity, encrypted metadata hash anchoring, and authorized usage. Re-key transfer still requires a reviewed TEE/ZKP verifier before it should be called a production Agentic ID.";
+
+let storageSnapshotCache:
+  | {
+      expiresAt: number;
+      key: string;
+      promise: Promise<OgAgentStorageSnapshot>;
+    }
+  | null = null;
 
 const tradeExecutedEvent = parseAbiItem(
   "event TradeExecuted(bytes32 indexed actionHash, bool indexed isBuy, address indexed token, uint256 amountIn, uint256 amountOut, bytes32 auditRoot, bytes32 policySnapshotHash)",
@@ -616,8 +625,33 @@ async function readSellablePositions(
 }
 
 async function readStorageSnapshot(client?: PublicClient): Promise<OgAgentStorageSnapshot> {
+  if (client) {
+    return readFreshStorageSnapshot(client);
+  }
+
   const rpcUrl = process.env.OG_STORAGE_RPC_URL?.trim() || process.env.OG_RPC_URL?.trim();
   const indexerUrl = process.env.OG_STORAGE_INDEXER_URL?.trim();
+  const cacheKey = `${rpcUrl ?? ""}|${indexerUrl ?? ""}`;
+  const now = Date.now();
+  if (storageSnapshotCache?.key === cacheKey && storageSnapshotCache.expiresAt > now) {
+    return storageSnapshotCache.promise;
+  }
+
+  const promise = readFreshStorageSnapshot(undefined, { indexerUrl, rpcUrl });
+  storageSnapshotCache = {
+    expiresAt: now + STORAGE_SNAPSHOT_CACHE_TTL_MS,
+    key: cacheKey,
+    promise,
+  };
+  return promise;
+}
+
+async function readFreshStorageSnapshot(
+  client?: PublicClient,
+  config: { indexerUrl?: string; rpcUrl?: string } = {},
+): Promise<OgAgentStorageSnapshot> {
+  const rpcUrl = config.rpcUrl ?? process.env.OG_STORAGE_RPC_URL?.trim() ?? process.env.OG_RPC_URL?.trim();
+  const indexerUrl = config.indexerUrl ?? process.env.OG_STORAGE_INDEXER_URL?.trim();
   if (!rpcUrl || !indexerUrl) {
     return {
       nodesChecked: 0,
@@ -1235,7 +1269,7 @@ async function readAgentDeploymentRoster(
     ...(registry?.agents ?? []),
   ]);
   const removedCandidates = mergeAgentDeploymentRecords([...onChainRecords, ...appDeployments]);
-  const removedAgents = buildRemovedAgentRecords(registry, removedCandidates)
+  const removedAgents = buildRemovedAgentRecords(registry, removedCandidates, readEnvRemovedAgentIds())
     .filter((deployment) => deploymentMatchesFilter(deployment, filter));
   const removedAgentIds = new Set(removedAgents.map((deployment) => deployment.id));
 
@@ -1251,12 +1285,14 @@ async function readAgentDeploymentRoster(
     return { active: [], removed: removedAgents };
   }
 
-  const activeOnChainDeployments = mergeAgentDeploymentRecords(onChainRecords).filter((deployment) => {
-    if (removedAgentIds.has(deployment.id)) return false;
-    return deploymentMatchesFilter(deployment, filter);
-  });
+  const latestOnChainDeployment = latestDeploymentOnly(
+    mergeAgentDeploymentRecords(onChainRecords).filter((deployment) => deploymentMatchesFilter(deployment, filter)),
+  ).at(0);
+  if (!latestOnChainDeployment || removedAgentIds.has(latestOnChainDeployment.id)) {
+    return { active: [], removed: removedAgents };
+  }
 
-  return { active: latestDeploymentOnly(activeOnChainDeployments), removed: removedAgents };
+  return { active: [latestOnChainDeployment], removed: removedAgents };
 }
 
 function latestDeploymentOnly(deployments: OgAgentDeploymentRecord[]): OgAgentDeploymentRecord[] {
@@ -1315,6 +1351,7 @@ function mergeAgentDeploymentRecords(records: Array<OgAgentDeploymentRecord | nu
 function buildRemovedAgentRecords(
   registry: AgentDeploymentRegistryArtifact | null,
   candidateRecords: OgAgentDeploymentRecord[],
+  extraRemovedIds: Set<string> = new Set(),
 ): OgRemovedAgentRecord[] {
   const candidatesById = new Map(candidateRecords.map((deployment) => [deployment.id, deployment]));
   const removedRecords = (registry?.removedAgents ?? [])
@@ -1324,7 +1361,7 @@ function buildRemovedAgentRecords(
   const registryUpdatedAt = registry?.updatedAt;
   const removedAt = registryUpdatedAt && isValidDateString(registryUpdatedAt) ? registryUpdatedAt : new Date().toISOString();
 
-  for (const removedId of registry?.removedAgentIds ?? []) {
+  for (const removedId of [...(registry?.removedAgentIds ?? []), ...extraRemovedIds]) {
     if (removedById.has(removedId)) continue;
     const candidate = candidatesById.get(removedId);
     if (!candidate) continue;
@@ -1333,6 +1370,18 @@ function buildRemovedAgentRecords(
   }
 
   return mergeRemovedAgentRecords(Array.from(removedById.values()));
+}
+
+function readEnvRemovedAgentIds(): Set<string> {
+  const raw = [process.env.OG_AGENT_REMOVED_AGENT_IDS, process.env.OG_AGENT_DISABLED_AGENT_IDS]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join(",");
+  return new Set(
+    raw
+      .split(/[\s,]+/u)
+      .map((value) => value.trim())
+      .filter((value) => /^agent-0g-mainnet-\d+$/u.test(value)),
+  );
 }
 
 function mergeRemovedAgentRecords(records: Array<OgRemovedAgentRecord | null | undefined>): OgRemovedAgentRecord[] {
