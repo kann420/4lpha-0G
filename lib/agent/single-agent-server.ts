@@ -13,6 +13,7 @@ import {
   isAddress,
   isHex,
   keccak256,
+  parseAbiItem,
   toBytes,
   type Address,
   type Chain,
@@ -59,6 +60,7 @@ const LEGACY_AGENT_TRADE_EXECUTION_PATH = join(".data", "agents", "trade-executi
 const LEGACY_AGENT_SELL_EXECUTION_PATH = join(".data", "agents", "sell-execution-response.json");
 const AGENTIC_ID_DEPLOYMENT_PATH = join(".data", "deployments", "mainnet-agentic-id.json");
 const MAX_STORAGE_SYNC_LAG_BLOCKS = 120n;
+const STORAGE_SNAPSHOT_CACHE_TTL_MS = 60_000;
 const STANDARD_LABEL = "ERC-7857" as const;
 const STANDARD_NOTE =
   "Implements the canonical ERC-7857 Agentic ID: identity minting, encrypted metadata hash anchoring, and authorized usage are real on-chain identity anchored to the policy vault and audit root. Re-key transfer (iTransfer/iClone) requires a real TEE/ZKP verifier producing TransferValidityProofs; it is intentionally disabled in the server path until such a verifier is wired.";
@@ -69,6 +71,18 @@ const STANDARD_NOTE =
 // AGENTS.md). These functions remain callable on-chain but are not part of any
 // production write path here. Any future verifier wiring must route through
 // assertMainnetDeployEnv / chainId === 16661.
+
+let storageSnapshotCache:
+  | {
+      expiresAt: number;
+      key: string;
+      promise: Promise<OgAgentStorageSnapshot>;
+    }
+  | null = null;
+
+const tradeExecutedEvent = parseAbiItem(
+  "event TradeExecuted(bytes32 indexed actionHash, bool indexed isBuy, address indexed token, uint256 amountIn, uint256 amountOut, bytes32 auditRoot, bytes32 policySnapshotHash)",
+);
 
 const erc20DecimalsAbi = [
   {
@@ -618,8 +632,33 @@ async function readSellablePositions(
 }
 
 async function readStorageSnapshot(client?: PublicClient): Promise<OgAgentStorageSnapshot> {
+  if (client) {
+    return readFreshStorageSnapshot(client);
+  }
+
   const rpcUrl = process.env.OG_STORAGE_RPC_URL?.trim() || process.env.OG_RPC_URL?.trim();
   const indexerUrl = process.env.OG_STORAGE_INDEXER_URL?.trim();
+  const cacheKey = `${rpcUrl ?? ""}|${indexerUrl ?? ""}`;
+  const now = Date.now();
+  if (storageSnapshotCache?.key === cacheKey && storageSnapshotCache.expiresAt > now) {
+    return storageSnapshotCache.promise;
+  }
+
+  const promise = readFreshStorageSnapshot(undefined, { indexerUrl, rpcUrl });
+  storageSnapshotCache = {
+    expiresAt: now + STORAGE_SNAPSHOT_CACHE_TTL_MS,
+    key: cacheKey,
+    promise,
+  };
+  return promise;
+}
+
+async function readFreshStorageSnapshot(
+  client?: PublicClient,
+  config: { indexerUrl?: string; rpcUrl?: string } = {},
+): Promise<OgAgentStorageSnapshot> {
+  const rpcUrl = config.rpcUrl ?? process.env.OG_STORAGE_RPC_URL?.trim() ?? process.env.OG_RPC_URL?.trim();
+  const indexerUrl = config.indexerUrl ?? process.env.OG_STORAGE_INDEXER_URL?.trim();
   if (!rpcUrl || !indexerUrl) {
     return {
       nodesChecked: 0,
@@ -880,6 +919,13 @@ async function readAgentLogEntries({
   if (buyLog && (!buyLog.txHash || !runtimeTradeTxHashes.has(buyLog.txHash))) logs.push(buyLog);
   const sellLog = buildTradeLogEntry(sellArtifact, "sell");
   if (sellLog && (!sellLog.txHash || !runtimeTradeTxHashes.has(sellLog.txHash))) logs.push(sellLog);
+  const knownTradeTxHashes = new Set(logs.map((log) => log.txHash).filter((hash): hash is string => Boolean(hash)));
+  const onChainTradeLogs = deployment ? await readOnChainTradeLogEntries(deployment).catch(() => []) : [];
+  for (const log of onChainTradeLogs) {
+    if (!log.txHash || !knownTradeTxHashes.has(log.txHash)) {
+      logs.push(log);
+    }
+  }
 
   if (deployment) {
     logs.push({
@@ -1050,6 +1096,100 @@ function buildTradeLogEntry(
   };
 }
 
+async function readOnChainTradeLogEntries(deployment: OgAgentDeploymentRecord): Promise<OgAgentLogEntry[]> {
+  const rpcUrl = process.env.OG_RPC_URL?.trim();
+  if (!rpcUrl) return [];
+
+  const publicClient = createPublicClient({ chain: make0GMainnetChain(rpcUrl), transport: http(rpcUrl) });
+  const chainId = await publicClient.getChainId();
+  if (chainId !== MAINNET_CHAIN_ID) return [];
+
+  const deployReceipt = await publicClient.getTransactionReceipt({ hash: deployment.deployTxHash }).catch(() => null);
+  const fromBlock = deployReceipt?.blockNumber ?? 0n;
+  const logs = await publicClient.getLogs({
+    address: deployment.vault,
+    event: tradeExecutedEvent,
+    fromBlock,
+    toBlock: "latest",
+  });
+
+  const blockTimestamps = new Map<bigint, string>();
+  const entries = await Promise.all(
+    logs.map(async (log): Promise<OgAgentLogEntry | null> => {
+      const args = log.args as {
+        actionHash?: Hex;
+        amountIn?: bigint;
+        amountOut?: bigint;
+        auditRoot?: Hex;
+        isBuy?: boolean;
+        policySnapshotHash?: Hex;
+        token?: Address;
+      };
+      if (
+        args.actionHash === undefined ||
+        args.amountIn === undefined ||
+        args.amountOut === undefined ||
+        args.auditRoot === undefined ||
+        args.isBuy === undefined ||
+        !args.token ||
+        !log.transactionHash
+      ) {
+        return null;
+      }
+
+      const blockNumber = log.blockNumber ?? undefined;
+      let createdAt = new Date().toISOString();
+      if (blockNumber !== undefined) {
+        const cached = blockTimestamps.get(blockNumber);
+        if (cached) {
+          createdAt = cached;
+        } else {
+          const block = await publicClient.getBlock({ blockNumber }).catch(() => null);
+          if (block?.timestamp) {
+            createdAt = new Date(Number(block.timestamp) * 1000).toISOString();
+            blockTimestamps.set(blockNumber, createdAt);
+          }
+        }
+      }
+
+      const symbol = tokenSymbolForAddress(args.token);
+      const side = args.isBuy ? "buy" : "sell";
+      const amount = trimDecimal(formatUnits(args.isBuy ? args.amountOut : args.amountIn, decimalsForToken(symbol)));
+      return {
+        action: side,
+        createdAt,
+        filter: "executed",
+        id: `vault-trade-${log.transactionHash}-${log.logIndex ?? 0}`,
+        label: symbol,
+        notes: [
+          `${side === "buy" ? "Bought" : "Sold"} ${amount} ${symbol} through the Policy Vault.`,
+          `Vault action ${shortHash(args.actionHash)} was accepted with audit root ${shortHash(args.auditRoot)}.`,
+          "Source: on-chain PolicyVault TradeExecuted event.",
+        ],
+        proofTxHash: undefined,
+        reason: `${side === "buy" ? "Buy" : "Sell"} submitted on-chain by the agent executor.`,
+        status: "executed",
+        storageRoot: args.auditRoot,
+        summary: `${side === "buy" ? "Bought" : "Sold"} ${symbol} via Policy Vault.`,
+        txHash: log.transactionHash,
+      };
+    }),
+  );
+
+  return entries.filter((entry): entry is OgAgentLogEntry => entry !== null);
+}
+
+function tokenSymbolForAddress(token: Address): string {
+  const route = CURATED_MAINNET_POLICY_VAULT_ROUTES.find(
+    (candidate) => candidate.tokenOut.toLowerCase() === token.toLowerCase(),
+  );
+  return route?.symbol.replace(/-direct|-oku/u, "") ?? "TOKEN";
+}
+
+function decimalsForToken(symbol: string): number {
+  return symbol === "USDC.e" || symbol === "oUSDT" ? 6 : symbol === "WBTC" || symbol === "cbBTC" ? 8 : 18;
+}
+
 function shortHash(value: string): string {
   if (!value.startsWith("0x") || value.length <= 14) {
     return value;
@@ -1140,20 +1280,41 @@ async function readAgentDeploymentRoster(
     readLegacyDeployResponseRecord(),
     readJsonArtifact<OgAgentDeploymentRecord>(LEGACY_AGENT_DEPLOYMENT_PATH),
   ]);
-  const allDeployments = mergeAgentDeploymentRecords([
-    ...onChainRecords,
+  const appDeployments = mergeAgentDeploymentRecords([
     ...(legacyDeployResponse ? [legacyDeployResponse] : []),
     ...(legacySingleRecord ? [legacySingleRecord] : []),
     ...(registry?.agents ?? []),
   ]);
-  const removedAgents = buildRemovedAgentRecords(registry, allDeployments)
+  const removedCandidates = mergeAgentDeploymentRecords([...onChainRecords, ...appDeployments]);
+  const removedAgents = buildRemovedAgentRecords(registry, removedCandidates, readEnvRemovedAgentIds())
     .filter((deployment) => deploymentMatchesFilter(deployment, filter));
   const removedAgentIds = new Set(removedAgents.map((deployment) => deployment.id));
-  const active = allDeployments.filter((deployment) => {
+
+  const activeAppDeployments = appDeployments.filter((deployment) => {
     if (removedAgentIds.has(deployment.id)) return false;
     return deploymentMatchesFilter(deployment, filter);
   });
-  return { active, removed: removedAgents };
+  if (activeAppDeployments.length > 0) {
+    return { active: latestDeploymentOnly(activeAppDeployments), removed: removedAgents };
+  }
+
+  if (!filter.ownerAddress && !filter.vaultAddress) {
+    return { active: [], removed: removedAgents };
+  }
+
+  const latestOnChainDeployment = latestDeploymentOnly(
+    mergeAgentDeploymentRecords(onChainRecords).filter((deployment) => deploymentMatchesFilter(deployment, filter)),
+  ).at(0);
+  if (!latestOnChainDeployment || removedAgentIds.has(latestOnChainDeployment.id)) {
+    return { active: [], removed: removedAgents };
+  }
+
+  return { active: [latestOnChainDeployment], removed: removedAgents };
+}
+
+function latestDeploymentOnly(deployments: OgAgentDeploymentRecord[]): OgAgentDeploymentRecord[] {
+  const latest = deployments.at(-1);
+  return latest ? [latest] : [];
 }
 
 function deploymentMatchesFilter(
@@ -1207,6 +1368,7 @@ function mergeAgentDeploymentRecords(records: Array<OgAgentDeploymentRecord | nu
 function buildRemovedAgentRecords(
   registry: AgentDeploymentRegistryArtifact | null,
   candidateRecords: OgAgentDeploymentRecord[],
+  extraRemovedIds: Set<string> = new Set(),
 ): OgRemovedAgentRecord[] {
   const candidatesById = new Map(candidateRecords.map((deployment) => [deployment.id, deployment]));
   const removedRecords = (registry?.removedAgents ?? [])
@@ -1216,7 +1378,7 @@ function buildRemovedAgentRecords(
   const registryUpdatedAt = registry?.updatedAt;
   const removedAt = registryUpdatedAt && isValidDateString(registryUpdatedAt) ? registryUpdatedAt : new Date().toISOString();
 
-  for (const removedId of registry?.removedAgentIds ?? []) {
+  for (const removedId of [...(registry?.removedAgentIds ?? []), ...extraRemovedIds]) {
     if (removedById.has(removedId)) continue;
     const candidate = candidatesById.get(removedId);
     if (!candidate) continue;
@@ -1225,6 +1387,18 @@ function buildRemovedAgentRecords(
   }
 
   return mergeRemovedAgentRecords(Array.from(removedById.values()));
+}
+
+function readEnvRemovedAgentIds(): Set<string> {
+  const raw = [process.env.OG_AGENT_REMOVED_AGENT_IDS, process.env.OG_AGENT_DISABLED_AGENT_IDS]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join(",");
+  return new Set(
+    raw
+      .split(/[\s,]+/u)
+      .map((value) => value.trim())
+      .filter((value) => /^agent-0g-mainnet-\d+$/u.test(value)),
+  );
 }
 
 function mergeRemovedAgentRecords(records: Array<OgRemovedAgentRecord | null | undefined>): OgRemovedAgentRecord[] {
