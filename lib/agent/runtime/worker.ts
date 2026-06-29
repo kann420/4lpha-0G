@@ -73,7 +73,10 @@ export async function runOgAgentWorkerOnce(config: OgAgentWorkerConfig): Promise
 async function selectDeploymentsForCycle(config: OgAgentWorkerConfig): Promise<OgAgentDeploymentRecord[]> {
   const workspace = await loadOgAgentWorkspace(config.agentId);
   if (config.agentId) {
-    return workspace.agent.deployment ? [workspace.agent.deployment] : [];
+    if (workspace.agent.status !== "armed" || !workspace.agent.deployment) {
+      return [];
+    }
+    return [workspace.agent.deployment];
   }
 
   const armed = workspace.agents.filter(
