@@ -51,7 +51,7 @@ type PositionRowView = {
   balance: string;
   canSell: boolean;
   id: string;
-  lastActive: string;
+  lastActive?: string;
   pnl: string;
   routeId?: string;
   token: string;
@@ -757,7 +757,7 @@ function PositionsPanel({
           <table className="w-full min-w-[560px] border-separate border-spacing-0">
             <thead>
               <tr>
-                {["Token / Last Active", "Unrealized", "Total P&L", "Balance", "Actions"].map((column) => (
+                {["Token", "Unrealized", "Total P&L", "Balance", "Actions"].map((column) => (
                   <th key={column} className="border-b border-white/8 px-3 py-2.5 text-left text-[10px] font-medium uppercase tracking-[0.22em] text-slate-600 first:pl-0 last:pr-0 last:text-right">
                     {column}
                   </th>
@@ -800,10 +800,10 @@ function normalizeVaultPositionRow(position: OgAgentVaultPosition): PositionRowV
     balance: `${formatTokenAmount(position.amount)} ${position.symbol}`,
     canSell: BigInt(position.amountRaw) > 0n,
     id: `position-${position.tokenAddress.toLowerCase()}`,
-    lastActive: "Live",
+    lastActive: undefined,
     pnl: "--",
     routeId: position.routeId,
-    token: position.label,
+    token: position.symbol,
     total: "Open",
   };
 }
@@ -857,7 +857,7 @@ function PositionRow({
           </span>
           <div className="min-w-0">
             <p className="truncate text-[13px] font-semibold text-white">{row.token}</p>
-            <p className="text-[12px] text-slate-500">{row.lastActive}</p>
+            {row.lastActive ? <p className="text-[12px] text-slate-500">{row.lastActive}</p> : null}
           </div>
         </div>
       </td>

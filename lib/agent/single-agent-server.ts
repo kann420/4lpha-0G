@@ -13,6 +13,7 @@ import {
   isAddress,
   isHex,
   keccak256,
+  parseAbiItem,
   toBytes,
   type Address,
   type Chain,
@@ -62,6 +63,10 @@ const MAX_STORAGE_SYNC_LAG_BLOCKS = 120n;
 const STANDARD_LABEL = "ERC-7857-inspired MVP" as const;
 const STANDARD_NOTE =
   "Implements ERC-7857 identity, encrypted metadata hash anchoring, and authorized usage. Re-key transfer still requires a reviewed TEE/ZKP verifier before it should be called a production Agentic ID.";
+
+const tradeExecutedEvent = parseAbiItem(
+  "event TradeExecuted(bytes32 indexed actionHash, bool indexed isBuy, address indexed token, uint256 amountIn, uint256 amountOut, bytes32 auditRoot, bytes32 policySnapshotHash)",
+);
 
 const erc20DecimalsAbi = [
   {
@@ -873,6 +878,13 @@ async function readAgentLogEntries({
   if (buyLog && (!buyLog.txHash || !runtimeTradeTxHashes.has(buyLog.txHash))) logs.push(buyLog);
   const sellLog = buildTradeLogEntry(sellArtifact, "sell");
   if (sellLog && (!sellLog.txHash || !runtimeTradeTxHashes.has(sellLog.txHash))) logs.push(sellLog);
+  const knownTradeTxHashes = new Set(logs.map((log) => log.txHash).filter((hash): hash is string => Boolean(hash)));
+  const onChainTradeLogs = deployment ? await readOnChainTradeLogEntries(deployment).catch(() => []) : [];
+  for (const log of onChainTradeLogs) {
+    if (!log.txHash || !knownTradeTxHashes.has(log.txHash)) {
+      logs.push(log);
+    }
+  }
 
   if (deployment) {
     logs.push({
@@ -1041,6 +1053,100 @@ function buildTradeLogEntry(
         : execution.reason ?? `${side} route did not submit.`,
     txHash: execution.txHash,
   };
+}
+
+async function readOnChainTradeLogEntries(deployment: OgAgentDeploymentRecord): Promise<OgAgentLogEntry[]> {
+  const rpcUrl = process.env.OG_RPC_URL?.trim();
+  if (!rpcUrl) return [];
+
+  const publicClient = createPublicClient({ chain: make0GMainnetChain(rpcUrl), transport: http(rpcUrl) });
+  const chainId = await publicClient.getChainId();
+  if (chainId !== MAINNET_CHAIN_ID) return [];
+
+  const deployReceipt = await publicClient.getTransactionReceipt({ hash: deployment.deployTxHash }).catch(() => null);
+  const fromBlock = deployReceipt?.blockNumber ?? 0n;
+  const logs = await publicClient.getLogs({
+    address: deployment.vault,
+    event: tradeExecutedEvent,
+    fromBlock,
+    toBlock: "latest",
+  });
+
+  const blockTimestamps = new Map<bigint, string>();
+  const entries = await Promise.all(
+    logs.map(async (log): Promise<OgAgentLogEntry | null> => {
+      const args = log.args as {
+        actionHash?: Hex;
+        amountIn?: bigint;
+        amountOut?: bigint;
+        auditRoot?: Hex;
+        isBuy?: boolean;
+        policySnapshotHash?: Hex;
+        token?: Address;
+      };
+      if (
+        args.actionHash === undefined ||
+        args.amountIn === undefined ||
+        args.amountOut === undefined ||
+        args.auditRoot === undefined ||
+        args.isBuy === undefined ||
+        !args.token ||
+        !log.transactionHash
+      ) {
+        return null;
+      }
+
+      const blockNumber = log.blockNumber ?? undefined;
+      let createdAt = new Date().toISOString();
+      if (blockNumber !== undefined) {
+        const cached = blockTimestamps.get(blockNumber);
+        if (cached) {
+          createdAt = cached;
+        } else {
+          const block = await publicClient.getBlock({ blockNumber }).catch(() => null);
+          if (block?.timestamp) {
+            createdAt = new Date(Number(block.timestamp) * 1000).toISOString();
+            blockTimestamps.set(blockNumber, createdAt);
+          }
+        }
+      }
+
+      const symbol = tokenSymbolForAddress(args.token);
+      const side = args.isBuy ? "buy" : "sell";
+      const amount = trimDecimal(formatUnits(args.isBuy ? args.amountOut : args.amountIn, decimalsForToken(symbol)));
+      return {
+        action: side,
+        createdAt,
+        filter: "executed",
+        id: `vault-trade-${log.transactionHash}-${log.logIndex ?? 0}`,
+        label: symbol,
+        notes: [
+          `${side === "buy" ? "Bought" : "Sold"} ${amount} ${symbol} through the Policy Vault.`,
+          `Vault action ${shortHash(args.actionHash)} was accepted with audit root ${shortHash(args.auditRoot)}.`,
+          "Source: on-chain PolicyVault TradeExecuted event.",
+        ],
+        proofTxHash: undefined,
+        reason: `${side === "buy" ? "Buy" : "Sell"} submitted on-chain by the agent executor.`,
+        status: "executed",
+        storageRoot: args.auditRoot,
+        summary: `${side === "buy" ? "Bought" : "Sold"} ${symbol} via Policy Vault.`,
+        txHash: log.transactionHash,
+      };
+    }),
+  );
+
+  return entries.filter((entry): entry is OgAgentLogEntry => entry !== null);
+}
+
+function tokenSymbolForAddress(token: Address): string {
+  const route = CURATED_MAINNET_POLICY_VAULT_ROUTES.find(
+    (candidate) => candidate.tokenOut.toLowerCase() === token.toLowerCase(),
+  );
+  return route?.symbol.replace(/-direct|-oku/u, "") ?? "TOKEN";
+}
+
+function decimalsForToken(symbol: string): number {
+  return symbol === "USDC.e" || symbol === "oUSDT" ? 6 : symbol === "WBTC" || symbol === "cbBTC" ? 8 : 18;
 }
 
 function shortHash(value: string): string {
