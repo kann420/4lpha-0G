@@ -39,6 +39,7 @@ async function main(): Promise<void> {
   await acquireLocalWorkerLockIfNeeded(config.once);
   logWorkerEvent("started", {
     agentId: config.agentId,
+    allowConfiguredAgent: config.allowConfiguredAgent,
     buyAmount0G: config.buyAmount0G,
     dryRun: config.dryRun,
     intervalMs: config.intervalMs,

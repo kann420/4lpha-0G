@@ -40,7 +40,7 @@ interface ResolvedAgentRuntimeSettings extends OgAgentRuntimeSettings {
 
 export async function runOgAgentWorkerOnce(config: OgAgentWorkerConfig): Promise<OgAgentWorkerRunSummary> {
   const startedAt = new Date().toISOString();
-  const selected = await selectDeploymentsForCycle(config);
+  const selected = config.killSwitchEnabled ? [] : await selectDeploymentsForCycle(config);
   const summary: OgAgentWorkerRunSummary = {
     agentsErrored: 0,
     agentsProcessed: 0,
@@ -73,6 +73,9 @@ export async function runOgAgentWorkerOnce(config: OgAgentWorkerConfig): Promise
 async function selectDeploymentsForCycle(config: OgAgentWorkerConfig): Promise<OgAgentDeploymentRecord[]> {
   const workspace = await loadOgAgentWorkspace(config.agentId);
   if (config.agentId) {
+    if (!config.allowConfiguredAgent) {
+      return [];
+    }
     if (workspace.agent.status !== "armed" || !workspace.agent.deployment) {
       return [];
     }
