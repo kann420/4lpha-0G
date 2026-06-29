@@ -158,10 +158,13 @@ async function processDeployment(
       return appendAndReturn(buildRunRecord({ candidates, decision, deployment, request, startedAt, status: "dry_run" }));
     }
 
-    const { execution } = await executeAgentTrade({
-      ...request,
-      intent: "execute",
-    });
+    const { execution } = await executeAgentTrade(
+      {
+        ...request,
+        intent: "execute",
+      },
+      { workspace },
+    );
     const status = execution.status === "submitted" ? "executed" : "blocked";
     return appendAndReturn(
       buildRunRecord({ candidates, decision, deployment, execution, request, startedAt, status }),

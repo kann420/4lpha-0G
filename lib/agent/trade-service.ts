@@ -12,6 +12,7 @@ import { AGENT_TRADE_ROUTES, canAgentUseTradeRoute, getAgentTradeRoute } from "@
 import { hashText } from "@/lib/copilot/audit";
 import { auditEvidence } from "@/lib/mock-data";
 import { getOgNetwork } from "@/lib/og/networks";
+import type { OgAgentWorkspace } from "@/lib/agent/single-agent";
 import type {
   AgentAuditProofPreview,
   AgentRouteQuote,
@@ -45,7 +46,10 @@ export async function buildAgentTradePreview(request: AgentTradeRequest): Promis
   return buildStubAgentTradePreview(request, route);
 }
 
-export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
+export async function executeAgentTrade(
+  request: AgentTradeRequest,
+  options?: { workspace?: OgAgentWorkspace },
+): Promise<{
   execution: AgentTradeExecution;
   preview: AgentTradePreview;
 }> {
@@ -56,10 +60,12 @@ export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
 
   const preview = await buildMainnetTradePreview(request, route);
   const now = new Date().toISOString();
-  const workspace = await loadOgAgentWorkspace({
-    agentId: request.agentId,
-    ownerAddress: request.ownerAddress,
-  });
+  const workspace =
+    options?.workspace ??
+    (await loadOgAgentWorkspace({
+      agentId: request.agentId,
+      ownerAddress: request.ownerAddress,
+    }));
   const resolvedRequest = workspace.agent.deployment
     ? {
         ...request,
