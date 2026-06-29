@@ -3,6 +3,7 @@ import { maxScriptTrade0G } from "@/lib/agent/curated-trade";
 
 export interface OgAgentWorkerConfig {
   agentId?: string;
+  allowConfiguredAgent: boolean;
   buyAmount0G: string;
   concurrency: number;
   dryRun: boolean;
@@ -32,6 +33,9 @@ export function loadOgAgentWorkerConfig(argv: string[] = process.argv.slice(2)):
 
   return {
     agentId: readValue(argv, "--agent-id") ?? readEnv("OG_AGENT_WORKER_AGENT_ID"),
+    allowConfiguredAgent:
+      hasFlag(argv, "--allow-configured-agent") ||
+      readBoolEnv("OG_AGENT_WORKER_ALLOW_CONFIGURED_AGENT", false),
     buyAmount0G,
     concurrency: Number.isFinite(concurrencyArg)
       ? clamp(Math.trunc(concurrencyArg), 1, 5)
