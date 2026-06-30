@@ -88,14 +88,14 @@ export function OgAgentWorkspace() {
   const scopedWorkspace = isMainnetAgentScope ? workspace : null;
   const agentDeployments = scopedWorkspace?.agents ?? [];
   const removedDeployments = scopedWorkspace?.removedAgents ?? [];
-  const rosterStatus = scopedWorkspace?.agent.status ?? "draft";
 
   const visibleDeployments = useMemo(() => {
     if (!scopedWorkspace) return [];
     if (activeFilter === "removed") return removedDeployments;
-    return agentDeployments.filter(() => activeFilter === "all" || rosterStatus === activeFilter);
-  }, [activeFilter, agentDeployments, removedDeployments, rosterStatus, scopedWorkspace]);
-  const visibleStatus = activeFilter === "removed" ? "removed" : rosterStatus;
+    return agentDeployments.filter(
+      (deployment) => activeFilter === "all" || getDeploymentRosterStatus(deployment, scopedWorkspace) === activeFilter,
+    );
+  }, [activeFilter, agentDeployments, removedDeployments, scopedWorkspace]);
 
   const health = isMainnetAgentScope ? buildHealth(scopedWorkspace) : buildNetworkEmptyHealth(network.label);
   const copilotContext = useMemo(
@@ -237,13 +237,13 @@ export function OgAgentWorkspace() {
                       logs={scopedWorkspace.logs}
                       key={deployment.id}
                       networkLabel="0G Mainnet"
-                      status={visibleStatus}
+                      status={getDeploymentRosterStatus(deployment, scopedWorkspace)}
                       vault={scopedWorkspace.vault}
                     />
                   ))}
                 </div>
               ) : (
-                <AgentTable deployments={visibleDeployments} status={visibleStatus} vault={scopedWorkspace.vault} />
+                <AgentTable deployments={visibleDeployments} workspace={scopedWorkspace} />
               )
             ) : (
               <NetworkEmptyState activeFilter={activeFilter} isMainnet={isMainnetAgentScope} networkLabel={network.label} />
@@ -521,6 +521,16 @@ function HealthStrip({
   );
 }
 
+function getDeploymentRosterStatus(
+  deployment: RosterDeployment,
+  workspace: OgAgentWorkspace,
+): OgAgentWorkspace["agent"]["status"] {
+  if ("removedAt" in deployment) return "removed";
+  if (deployment.paused) return "paused";
+  if (!workspace.vault.ready || workspace.vault.paused || workspace.vault.executorRevoked) return "blocked";
+  return "armed";
+}
+
 function AgentCard({
   deployment,
   identityLabel,
@@ -644,12 +654,10 @@ function AgentCard({
 
 function AgentTable({
   deployments,
-  status,
-  vault,
+  workspace,
 }: {
   deployments: RosterDeployment[];
-  status: OgAgentWorkspace["agent"]["status"];
-  vault: OgAgentWorkspace["vault"];
+  workspace: OgAgentWorkspace;
 }) {
   return (
     <div className="overflow-hidden rounded-[24px] border border-line bg-panel-solid-strong">
@@ -665,8 +673,8 @@ function AgentTable({
             <p className="truncate text-sm font-semibold text-foreground">{deployment.name}</p>
             <p className="truncate text-xs text-muted">{deployment.agentRef}</p>
           </div>
-          <span className="text-sm capitalize text-muted">{status}</span>
-          <span className="truncate font-mono text-xs text-muted">{vault.vault ? shortHash(vault.vault) : "--"}</span>
+          <span className="text-sm capitalize text-muted">{getDeploymentRosterStatus(deployment, workspace)}</span>
+          <span className="truncate font-mono text-xs text-muted">{workspace.vault.vault ? shortHash(workspace.vault.vault) : "--"}</span>
           <Link href={`/agents/${deployment.id}`} className="inline-flex h-9 items-center rounded-full border border-line px-3 text-sm text-foreground hover:bg-panel">
             Open
           </Link>

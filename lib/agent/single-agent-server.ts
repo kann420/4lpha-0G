@@ -1407,24 +1407,29 @@ async function readAgentDeploymentRoster(
     ...(legacySingleRecord ? [legacySingleRecord] : []),
     ...(registry?.agents ?? []),
   ]);
+  const deploymentCandidates = mergeAgentDeploymentRecords([
+    ...((filter.ownerAddress || filter.vaultAddress) ? onChainRecords : []),
+    ...appDeployments,
+  ]);
   const removedCandidates = mergeAgentDeploymentRecords([...onChainRecords, ...appDeployments]);
   const removedAgents = buildRemovedAgentRecords(registry, removedCandidates, readEnvRemovedAgentIds())
     .filter((deployment) => deploymentMatchesFilter(deployment, filter));
   const removedAgentIds = new Set(removedAgents.map((deployment) => deployment.id));
-  const active = mergeAgentDeploymentRecords([...onChainRecords, ...appDeployments]).filter((deployment) => {
+
+  const activeDeployments = deploymentCandidates.filter((deployment) => {
     if (removedAgentIds.has(deployment.id)) return false;
     return deploymentMatchesFilter(deployment, filter);
   });
-  return { active, removed: removedAgents };
+  return { active: activeDeployments, removed: removedAgents };
 }
 
 function deploymentMatchesFilter(
   deployment: OgAgentDeploymentRecord,
   filter: { ownerAddress?: Address; vaultAddress?: Address },
 ): boolean {
-    if (filter.ownerAddress && deployment.owner.toLowerCase() !== filter.ownerAddress.toLowerCase()) return false;
-    if (filter.vaultAddress && deployment.vault.toLowerCase() !== filter.vaultAddress.toLowerCase()) return false;
-    return true;
+  if (filter.ownerAddress && deployment.owner.toLowerCase() !== filter.ownerAddress.toLowerCase()) return false;
+  if (filter.vaultAddress && deployment.vault.toLowerCase() !== filter.vaultAddress.toLowerCase()) return false;
+  return true;
 }
 
 async function readAgentDeploymentRegistryArtifact(): Promise<AgentDeploymentRegistryArtifact | null> {
