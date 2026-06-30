@@ -1,5 +1,7 @@
 param(
   [int]$Port = 3000,
+  [switch]$WithWorker,
+  [switch]$ExecuteWorker,
   [switch]$NoBrowser,
   [switch]$NoInstall
 )
@@ -43,10 +45,17 @@ function Enter-LaunchLock {
 function Test-PortInUse {
   param([int]$TargetPort)
 
+  $listener = $null
   try {
-    return [bool](Get-NetTCPConnection -LocalPort $TargetPort -State Listen -ErrorAction Stop)
-  } catch {
+    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $TargetPort)
+    $listener.Start()
     return $false
+  } catch {
+    return $true
+  } finally {
+    if ($listener) {
+      $listener.Stop()
+    }
   }
 }
 
@@ -167,6 +176,34 @@ function Open-LocalUrl {
   }
 }
 
+function Start-BrowserWhenReady {
+  param(
+    [string]$Url,
+    [int]$TimeoutSeconds = 90
+  )
+
+  $encodedUrl = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Url))
+  $script = @"
+`$url = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('$encodedUrl'))
+`$deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+while ((Get-Date) -lt `$deadline) {
+  try {
+    Invoke-WebRequest -Uri `$url -UseBasicParsing -TimeoutSec 2 | Out-Null
+    Start-Process -FilePath "rundll32.exe" -ArgumentList @("url.dll,FileProtocolHandler", `$url) | Out-Null
+    exit 0
+  } catch {
+    Start-Sleep -Milliseconds 900
+  }
+}
+exit 1
+"@
+
+  Start-Process `
+    -FilePath "powershell.exe" `
+    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", $script) `
+    -WindowStyle Hidden | Out-Null
+}
+
 $launchLock = Enter-LaunchLock -Path $lockPath
 try {
   if (-not (Test-Path (Join-Path $repoRoot "package.json"))) {
@@ -199,41 +236,47 @@ try {
   $listenUrl = "http://127.0.0.1:$selectedPort"
   $openUrl = "http://localhost:$selectedPort"
   $arguments = @("run", "dev:full", "--", "--hostname", "127.0.0.1", "--port", [string]$selectedPort)
+  if (-not $WithWorker) {
+    $arguments += "--no-worker"
+  } elseif ($ExecuteWorker) {
+    $arguments += "--execute"
+  } else {
+    $arguments += "--dry-run"
+  }
 
   Set-Content -Path $logPath -Value ""
   Set-Content -Path $errPath -Value ""
 
-  $process = Start-Process `
-    -FilePath "npm.cmd" `
-    -ArgumentList $arguments `
-    -WorkingDirectory $repoRoot `
-    -RedirectStandardOutput $logPath `
-    -RedirectStandardError $errPath `
-    -PassThru `
-    -WindowStyle Hidden
-
-  Set-Content -Path $pidPath -Value $process.Id
+  Set-Content -Path $pidPath -Value $PID
   Set-Content -Path $portPath -Value $selectedPort
-
-  if (-not (Wait-ForLocalUrl -Url $listenUrl)) {
-    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-    Write-Output "4lpha 0G dev server did not respond within the timeout."
-    Write-Output "PID: $($process.Id)"
-    Write-Output "URL: $openUrl"
-    Write-Output "Logs: $logPath"
-    Write-Output "Errors: $errPath"
-    exit 1
+  if (-not $NoBrowser) {
+    Start-BrowserWhenReady -Url $listenUrl
   }
 
-  Write-Output "4lpha 0G dev server is ready."
-  Write-Output "PID: $($process.Id)"
+  Write-Output "Starting 4lpha 0G dev server..."
+  Write-Output "PID: $PID"
   Write-Output "URL: $openUrl"
+  if ($selectedPort -ne $Port) {
+    Write-Output "Port $Port is busy, using $selectedPort instead."
+  }
+  if ($WithWorker) {
+    $workerMode = if ($ExecuteWorker) { "execute" } else { "dry-run" }
+    Write-Output "Agent worker: $workerMode"
+  } else {
+    Write-Output "Agent worker: disabled"
+  }
   Write-Output "Logs: $logPath"
   Write-Output "Errors: $errPath"
+  Write-Output ""
+  Write-Output "Live logs are shown in this window. Press Ctrl+C to stop."
+  Write-Output ""
 
-  if (-not $NoBrowser) {
-    Open-LocalUrl -Url $openUrl
+  & npm.cmd @arguments 2>&1 | Tee-Object -FilePath $logPath -Append
+  $exitCode = if ($LASTEXITCODE -is [int]) { $LASTEXITCODE } else { 1 }
+  if ($exitCode -ne 0) {
+    Set-Content -Path $errPath -Value "dev-local exited with code $exitCode. See $logPath for the live command output."
   }
+  exit $exitCode
 } finally {
   $launchLock.Dispose()
 }

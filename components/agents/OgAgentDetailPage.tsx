@@ -125,6 +125,7 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
     try {
       const params = new URLSearchParams({
         agentId,
+        live: "1",
         ownerAddress: wallet.address,
       });
       const response = await fetch(`/api/agents?${params.toString()}`, { cache: "no-store" });

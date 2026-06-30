@@ -104,7 +104,7 @@ export interface CopilotModelOption {
 
 export interface CopilotChatResponse {
   data?: {
-    auditBundle: CopilotAuditBundle;
+    auditBundle?: CopilotAuditBundle;
     message: CopilotMessage;
   };
   error?: {
@@ -112,8 +112,75 @@ export interface CopilotChatResponse {
     message: string;
   };
   meta?: {
+    mode?: CopilotSessionMode;
     provider: "0g-compute-router";
   };
+}
+
+/**
+ * Copilot chat session storage mode.
+ * - "saved" (default): the session transcript is encrypted client-side with a
+ *   wallet-derived AES-256-GCM key, uploaded as one ciphertext file to 0G
+ *   Storage, anchored on-chain via ProofRegistry.acceptProof (DEPLOYER pays
+ *   gas), and recorded in a per-wallet registry so the user can retrieve it.
+ * - "privacy": ephemeral. No 0G Storage upload, no on-chain proof, no audit
+ *   bundle returned to the client. Messages live in RAM only and are cleared
+ *   when the session closes. The 0G Compute Router is still called for the LLM
+ *   response, but nothing is retained.
+ */
+export type CopilotSessionMode = "saved" | "privacy";
+
+/**
+ * A single message in a saved Copilot session transcript. Mirrors the
+ * component-local EmbeddedCopilotMessage shape but with an opaque card field so
+ * the storage layer does not depend on the component module.
+ */
+export interface CopilotSessionMessage {
+  content: string;
+  role: "operator" | "assistant";
+  status?: "error" | "pending";
+  card?: unknown;
+}
+
+/**
+ * Plaintext Copilot session bundle, before client-side encryption. This is the
+ * shape that gets serialized (stable JSON) and AES-GCM encrypted before upload
+ * to 0G Storage. The server only ever sees the ciphertext.
+ */
+export interface CopilotSessionBundle {
+  schemaVersion: 1;
+  kind: "copilot-session";
+  sessionId: string;
+  wallet: { address: string; chainId: number; networkId: OgNetworkId };
+  createdAt: string;
+  updatedAt: string;
+  mode: Extract<CopilotSessionMode, "saved">;
+  model: string;
+  networkLabel: string;
+  messages: CopilotSessionMessage[];
+  auditBundles: CopilotAuditBundle[];
+}
+
+/**
+ * Per-wallet registry record for a saved Copilot session. Stored as JSON at
+ * `.data/copilot-sessions/<wallet-lowercase>.json`. The 0G Storage upload itself
+ * is immutable; deleting a record only unlists it from the local registry.
+ */
+export interface CopilotSessionRegistryRecord {
+  sessionId: string;
+  wallet: string;
+  networkId: OgNetworkId;
+  chainId: 16661;
+  createdAt: string;
+  updatedAt: string;
+  mode: Extract<CopilotSessionMode, "saved">;
+  model: string;
+  rootHash: Hex;
+  storageRef: string;
+  proofTxHash: Hex;
+  actionHash: Hex;
+  messageCount: number;
+  label?: string;
 }
 
 export interface CopilotModelsResponse {

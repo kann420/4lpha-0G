@@ -38,6 +38,7 @@ const requestSchema = z.object({
     .min(1)
     .max(16),
   model: z.string().trim().min(1).max(160).regex(/^[a-zA-Z0-9._:/-]+$/).optional(),
+  mode: z.enum(["saved", "privacy"]).optional(),
   networkId: z.string().optional(),
   wallet: z
     .object({
@@ -91,6 +92,10 @@ export async function POST(request: Request) {
 
   const policyContext = buildCopilotPolicyContext(config.network);
   const operatorContext = sanitizeCopilotContext(parsed.data.context);
+  // Privacy mode: ephemeral. The route is already stateless per-request, so
+  // "RAM only, cleared on session close" is satisfied by not returning or
+  // persisting an audit bundle. The 0G Compute Router is still called.
+  const mode = parsed.data.mode ?? "saved";
 
   try {
     const routerResult = await callOgComputeRouter({
@@ -100,6 +105,23 @@ export async function POST(request: Request) {
       policyContext: JSON.stringify(policyContext),
       selectedModel: parsed.data.model,
     });
+
+    if (mode === "privacy") {
+      const response: CopilotChatResponse = {
+        data: {
+          message: {
+            content: routerResult.message,
+            role: "assistant",
+          },
+        },
+        meta: {
+          mode: "privacy",
+          provider: "0g-compute-router",
+        },
+      };
+      return NextResponse.json(response);
+    }
+
     const auditBundle = createCopilotAuditBundle({
       model: routerResult.model,
       network: config.network,
@@ -119,6 +141,7 @@ export async function POST(request: Request) {
         },
       },
       meta: {
+        mode: "saved",
         provider: "0g-compute-router",
       },
     };

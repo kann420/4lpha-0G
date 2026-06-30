@@ -71,7 +71,7 @@ export async function runOgAgentWorkerOnce(config: OgAgentWorkerConfig): Promise
 }
 
 async function selectDeploymentsForCycle(config: OgAgentWorkerConfig): Promise<OgAgentDeploymentRecord[]> {
-  const workspace = await loadOgAgentWorkspace(config.agentId);
+  const workspace = await loadOgAgentWorkspace({ agentId: config.agentId, live: true });
   if (config.agentId) {
     if (!config.allowConfiguredAgent) {
       return [];
@@ -94,7 +94,7 @@ async function selectDeploymentsForCycle(config: OgAgentWorkerConfig): Promise<O
 async function selectReadyAllAgentDeployments(armed: OgAgentDeploymentRecord[]): Promise<OgAgentDeploymentRecord[]> {
   const ready: OgAgentDeploymentRecord[] = [];
   for (const deployment of armed) {
-    const workspace = await loadOgAgentWorkspace(deployment.id);
+    const workspace = await loadOgAgentWorkspace({ agentId: deployment.id, live: true });
     if ((workspace.vault.vaultVersion ?? 1) < 2) {
       return [];
     }
@@ -117,7 +117,7 @@ async function processDeployment(
   let request: AgentTradeRequest | undefined;
 
   try {
-    workspace = await loadOgAgentWorkspace(deployment.id);
+    workspace = await loadOgAgentWorkspace({ agentId: deployment.id, live: true });
     if (config.killSwitchEnabled) {
       decision = holdDecision("Worker kill switch is enabled.");
       return appendAndReturn(buildRunRecord({ candidates, decision, deployment, request, startedAt, status: "blocked" }));

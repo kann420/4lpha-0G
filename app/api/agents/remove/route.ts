@@ -36,7 +36,7 @@ export async function POST(request: Request) {
   if (!ownerAddress) {
     return removeError("invalid_wallet", "Connected wallet address is not valid.", 400);
   }
-  const workspace = await loadOgAgentWorkspace({ agentId: parsed.data.agentId, ownerAddress });
+  const workspace = await loadOgAgentWorkspace({ agentId: parsed.data.agentId, live: true, ownerAddress });
   if (workspace.agent.id !== parsed.data.agentId || !workspace.agent.deployment) {
     return removeError("agent_not_found", "Unknown 0G agent id.", 404);
   }
@@ -50,7 +50,7 @@ export async function POST(request: Request) {
   }
 
   const removed = await removeSingleOgAgentRecord(parsed.data.agentId, workspace.agent.deployment, ownerAddress);
-  const nextWorkspace = await loadOgAgentWorkspace({ ownerAddress });
+  const nextWorkspace = await loadOgAgentWorkspace({ live: true, ownerAddress });
   return NextResponse.json({ data: { removed, workspace: nextWorkspace } });
 }
 

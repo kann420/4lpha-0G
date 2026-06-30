@@ -9,19 +9,33 @@ import {
   ChevronDown,
   CircleAlert,
   ExternalLink,
+  History,
   Loader2,
   LockKeyhole,
   MessageSquare,
+  Save,
   Send,
   ShieldAlert,
   ShieldCheck,
   X,
 } from "lucide-react";
 import { useSignMessage } from "wagmi";
+import { type Hex } from "viem";
 import { WalletConnectButton } from "@/components/wallet";
 import { useWalletConnection } from "@/components/wallet/useWalletConnection";
 import { AGENT_TRADE_ROUTES } from "@/lib/agent/trade-catalog";
-import { buildCopilotWalletAccessMessage } from "@/lib/copilot/wallet-access";
+import {
+  buildCopilotSessionKeyMessage,
+  buildCopilotWalletAccessMessage,
+} from "@/lib/copilot/wallet-access";
+import {
+  bytesToBase64,
+  base64ToBytes,
+  decryptSessionBytes,
+  deriveSessionAesKey,
+  encryptSessionBytes,
+} from "@/lib/copilot/session-key";
+import { parseSessionBundle, serializeSessionBundle } from "@/lib/copilot/session-bundle";
 import { shortHash } from "@/lib/format";
 import type {
   AgentTradeExecution,
@@ -29,11 +43,15 @@ import type {
   AgentTradeRequest,
   AgentTradeResponse,
   AgentTradeRouteOption,
+  CopilotAuditBundle,
   CopilotChatResponse,
   CopilotContextItem,
   CopilotMessage,
   CopilotModelOption,
   CopilotModelsResponse,
+  CopilotSessionBundle,
+  CopilotSessionMessage,
+  CopilotSessionRegistryRecord,
   OgNetworkId,
 } from "@/lib/types";
 
@@ -45,6 +63,10 @@ export interface EmbeddedCopilotMessage extends CopilotMessage {
 }
 
 type CopilotPermissionMode = "default" | "full_access";
+type CopilotSessionMode = "saved" | "privacy";
+
+const SESSION_KEY_STORAGE_PREFIX = "4lpha:copilot:session-key";
+const CHAT_SESSION_MODE_STORAGE_KEY = "4lpha:copilot:session-mode";
 
 type CopilotWalletProof = {
   address: string;
@@ -146,6 +168,15 @@ export function EmbeddedCopilotRail({
   const [activeTradeDraftIdByNetwork, setActiveTradeDraftIdByNetwork] = useState<NetworkScopedState<string>>({});
   const [isTradeSubmittingByNetwork, setIsTradeSubmittingByNetwork] = useState<NetworkScopedState<boolean>>({});
   const [walletAccessByKey, setWalletAccessByKey] = useState<Record<string, string>>({});
+  const [sessionModeByNetwork, setSessionModeByNetwork] = useState<NetworkScopedState<CopilotSessionMode>>({});
+  const [sessionIdByNetwork, setSessionIdByNetwork] = useState<NetworkScopedState<string>>({});
+  const [savedSessionsByNetwork, setSavedSessionsByNetwork] = useState<NetworkScopedState<CopilotSessionRegistryRecord[]>>({});
+  const [auditBundlesByNetwork, setAuditBundlesByNetwork] = useState<NetworkScopedState<CopilotAuditBundle[]>>({});
+  const [isSavingSessionByNetwork, setIsSavingSessionByNetwork] = useState<NetworkScopedState<boolean>>({});
+  const [isLoadingSessionByNetwork, setIsLoadingSessionByNetwork] = useState<NetworkScopedState<boolean>>({});
+  const [sessionKeySignatureByKey, setSessionKeySignatureByKey] = useState<Record<string, string>>({});
+  const [isPastSessionsOpen, setIsPastSessionsOpen] = useState(false);
+  const [saveErrorByNetwork, setSaveErrorByNetwork] = useState<NetworkScopedState<string>>({});
 
   const networkRoutes = useMemo(
     () => AGENT_TRADE_ROUTES.filter((route) => route.networkId === networkId),
@@ -165,10 +196,49 @@ export function EmbeddedCopilotRail({
       ? `Switch wallet to ${wallet.targetNetworkName} before using this ${networkLabel} Copilot.`
       : undefined;
   const walletAccessKey = wallet.address ? `${networkId}:${wallet.chainId}:${wallet.address.toLowerCase()}` : undefined;
+  // Saved Copilot sessions are mainnet-only (0G Storage + ProofRegistry require chain 16661).
+  const savedModeAvailable = networkId === "mainnet";
+  const rawSessionMode = sessionModeByNetwork[networkId] ?? "saved";
+  const sessionMode: CopilotSessionMode = savedModeAvailable ? rawSessionMode : "privacy";
+  const sessionId = sessionIdByNetwork[networkId];
+  const isSavingSession = isSavingSessionByNetwork[networkId] ?? false;
+  const isLoadingSession = isLoadingSessionByNetwork[networkId] ?? false;
+  const saveError = saveErrorByNetwork[networkId];
+  const savedSessions = savedSessionsByNetwork[networkId] ?? [];
+  const hasConversation = (messagesByNetwork[networkId] ?? initialMessages).some(
+    (message) => message.role === "operator" || message.role === "assistant",
+  );
 
   useEffect(() => {
     setMessagesByNetwork((current) => (current[networkId] ? current : { ...current, [networkId]: initialMessages }));
   }, [initialMessages, networkId]);
+
+  // Restore the per-network Saved/Privacy preference from localStorage on mount
+  // and when the network changes. Privacy is forced on testnet regardless.
+  useEffect(() => {
+    if (!savedModeAvailable) {
+      setSessionModeByNetwork((current) => ({ ...current, [networkId]: "privacy" }));
+      return;
+    }
+    try {
+      const stored = window.localStorage.getItem(`${CHAT_SESSION_MODE_STORAGE_KEY}:${networkId}`);
+      if (stored === "privacy" || stored === "saved") {
+        setSessionModeByNetwork((current) => ({ ...current, [networkId]: stored }));
+      }
+    } catch {
+      // localStorage unavailable; default to "saved".
+    }
+  }, [networkId, savedModeAvailable]);
+
+  // When the wallet connects on mainnet, fetch its saved sessions so the Past
+  // Sessions popover is populated immediately.
+  useEffect(() => {
+    if (!savedModeAvailable || chatLocked || !wallet.address) {
+      return;
+    }
+    void refreshSavedSessions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedModeAvailable, networkId, wallet.address, wallet.isConnected, wallet.isWrongChain]);
 
   useEffect(() => {
     let cancelled = false;
@@ -258,6 +328,286 @@ export function EmbeddedCopilotRail({
     };
   }
 
+  // ---- Saved/Privacy Copilot session storage helpers ----
+  // The session-key signature is a CLIENT-ONLY secret (never sent to the server,
+  // never used for auth). It is cached in component state + localStorage so the
+  // same browser can decrypt a past session without re-signing. Cross-device
+  // retrieval requires re-signing the same message (works on deterministic
+  // wallets - viem local signer + MetaMask; may fail on Ledger/some mobile wallets).
+
+  function generateSessionId(): string {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+    return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  function ensureSessionId(): string {
+    const existing = sessionIdByNetwork[networkId];
+    if (existing) {
+      return existing;
+    }
+    const id = generateSessionId();
+    setSessionIdByNetwork((current) => ({ ...current, [networkId]: id }));
+    return id;
+  }
+
+  function sessionKeyStateKey(connectedAddress: string, sessionId: string): string {
+    return `${networkId}:${wallet.chainId}:${connectedAddress.toLowerCase()}:${sessionId}`;
+  }
+
+  function sessionKeyStorageKey(connectedAddress: string, sessionId: string): string {
+    return `${SESSION_KEY_STORAGE_PREFIX}:${networkId}:${connectedAddress.toLowerCase()}:${sessionId}`;
+  }
+
+  async function ensureSessionKeySignature(connectedAddress: string, sessionId: string): Promise<Hex> {
+    const stateKey = sessionKeyStateKey(connectedAddress, sessionId);
+    const cached = sessionKeySignatureByKey[stateKey];
+    if (cached) {
+      return cached as Hex;
+    }
+    let fromStorage: string | undefined;
+    try {
+      fromStorage = window.localStorage.getItem(sessionKeyStorageKey(connectedAddress, sessionId)) ?? undefined;
+    } catch {
+      fromStorage = undefined;
+    }
+    if (fromStorage) {
+      setSessionKeySignatureByKey((current) => ({ ...current, [stateKey]: fromStorage }));
+      return fromStorage as Hex;
+    }
+    const message = buildCopilotSessionKeyMessage({
+      address: connectedAddress,
+      chainId: wallet.chainId,
+      networkId,
+      sessionId,
+    });
+    const signature = await signMessage.signMessageAsync({ message });
+    setSessionKeySignatureByKey((current) => ({ ...current, [stateKey]: signature }));
+    try {
+      window.localStorage.setItem(sessionKeyStorageKey(connectedAddress, sessionId), signature);
+    } catch {
+      // localStorage may be unavailable (private mode); state cache still works for this session.
+    }
+    return signature as Hex;
+  }
+
+  async function refreshSavedSessions() {
+    if (!wallet.address || !savedModeAvailable || chatLocked) {
+      return;
+    }
+    try {
+      const proof = await ensureCopilotWalletProof(wallet.address);
+      const res = await fetch("/api/copilot/sessions/list", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: proof, networkId }),
+      });
+      const payload = (await res.json()) as { data?: { sessions?: CopilotSessionRegistryRecord[] } };
+      if (payload.data?.sessions) {
+        setSavedSessionsByNetwork((current) => ({ ...current, [networkId]: payload.data!.sessions! }));
+      }
+    } catch {
+      // Listing is best-effort; surface nothing on transient failure.
+    }
+  }
+
+  function toSessionMessage(message: EmbeddedCopilotMessage): CopilotSessionMessage {
+    const out: CopilotSessionMessage = { content: message.content, role: message.role };
+    if (message.status) {
+      out.status = message.status;
+    }
+    if (message.card) {
+      out.card = message.card;
+    }
+    return out;
+  }
+
+  function fromSessionMessage(message: CopilotSessionMessage): EmbeddedCopilotMessage {
+    const out: EmbeddedCopilotMessage = { content: message.content, role: message.role };
+    if (message.status) {
+      out.status = message.status;
+    }
+    if (message.card) {
+      out.card = message.card as CopilotTradeCard;
+    }
+    return out;
+  }
+
+  function deriveSessionLabel(messages: EmbeddedCopilotMessage[]): string | undefined {
+    const first = messages.find((message) => message.role === "operator");
+    return first ? first.content.slice(0, 80) : undefined;
+  }
+
+  async function saveCurrentSession() {
+    if (chatLocked || isSavingSession || !wallet.address) {
+      return;
+    }
+    const transcript = messagesByNetwork[networkId] ?? initialMessages;
+    if (!transcript.some((message) => message.role === "operator")) {
+      return;
+    }
+    const id = ensureSessionId();
+    const createdAt = new Date().toISOString();
+    const auditBundles = auditBundlesByNetwork[networkId] ?? [];
+    setIsSavingSessionByNetwork((current) => ({ ...current, [networkId]: true }));
+    setSaveErrorByNetwork((current) => {
+      const next = { ...current };
+      delete next[networkId];
+      return next;
+    });
+    try {
+      const bundle: CopilotSessionBundle = {
+        schemaVersion: 1,
+        kind: "copilot-session",
+        sessionId: id,
+        wallet: { address: wallet.address, chainId: wallet.chainId, networkId },
+        createdAt,
+        updatedAt: createdAt,
+        mode: "saved",
+        model: selectedModel || "auto",
+        networkLabel,
+        messages: transcript.map(toSessionMessage),
+        auditBundles,
+      };
+      const plaintext = serializeSessionBundle(bundle);
+      const signature = await ensureSessionKeySignature(wallet.address, id);
+      const key = await deriveSessionAesKey(signature);
+      const { iv, ciphertext } = await encryptSessionBytes(plaintext, key);
+      const proof = await ensureCopilotWalletProof(wallet.address);
+      const res = await fetch("/api/copilot/sessions/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          wallet: proof,
+          sessionId: id,
+          networkId,
+          ciphertextB64: bytesToBase64(ciphertext),
+          ivB64: bytesToBase64(iv),
+          messageCount: transcript.length,
+          ...(selectedModel ? { model: selectedModel } : {}),
+          ...(deriveSessionLabel(transcript) ? { label: deriveSessionLabel(transcript) } : {}),
+          createdAt,
+        }),
+      });
+      const payload = (await res.json()) as {
+        data?: { rootHash: string; proofTxHash: string; storageRef: string };
+        error?: { message: string };
+      };
+      if (!res.ok || !payload.data) {
+        throw new Error(payload.error?.message ?? "Failed to save Copilot session to 0G Storage.");
+      }
+      appendSaveResultMessage(payload.data);
+      await refreshSavedSessions();
+    } catch (error) {
+      setSaveErrorByNetwork((current) => ({
+        ...current,
+        [networkId]: error instanceof Error ? error.message : "Failed to save Copilot session.",
+      }));
+    } finally {
+      setIsSavingSessionByNetwork((current) => ({ ...current, [networkId]: false }));
+    }
+  }
+
+  function appendSaveResultMessage(result: { rootHash: string; proofTxHash: string; storageRef: string }) {
+    setMessagesByNetwork((current) => ({
+      ...current,
+      [networkId]: [
+        ...(current[networkId] ?? initialMessages),
+        {
+          content:
+            `Saved this session to 0G Storage (encrypted, anchored on-chain).\nStorage root: ${shortHash(result.rootHash)}\nProof tx: ${shortHash(result.proofTxHash)}`,
+          role: "assistant",
+        },
+      ],
+    }));
+  }
+
+  async function loadSavedSession(record: CopilotSessionRegistryRecord) {
+    if (chatLocked || isLoadingSession || !wallet.address) {
+      return;
+    }
+    setIsLoadingSessionByNetwork((current) => ({ ...current, [networkId]: true }));
+    setIsPastSessionsOpen(false);
+    try {
+      const id = record.sessionId;
+      const signature = await ensureSessionKeySignature(wallet.address, id);
+      const key = await deriveSessionAesKey(signature);
+      const proof = await ensureCopilotWalletProof(wallet.address);
+      const res = await fetch("/api/copilot/sessions/load", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: proof, sessionId: id }),
+      });
+      const payload = (await res.json()) as {
+        data?: { ciphertextB64: string; ivB64: string };
+        error?: { message: string };
+      };
+      if (!res.ok || !payload.data) {
+        throw new Error(payload.error?.message ?? "Failed to load Copilot session.");
+      }
+      const ciphertext = base64ToBytes(payload.data.ciphertextB64);
+      const iv = base64ToBytes(payload.data.ivB64);
+      const plaintext = await decryptSessionBytes({ iv, ciphertext }, key);
+      const bundle = parseSessionBundle(plaintext);
+      setSessionIdByNetwork((current) => ({ ...current, [networkId]: bundle.sessionId }));
+      setMessagesByNetwork((current) => ({ ...current, [networkId]: bundle.messages.map(fromSessionMessage) }));
+      setAuditBundlesByNetwork((current) => ({ ...current, [networkId]: bundle.auditBundles }));
+    } catch (error) {
+      setMessagesByNetwork((current) => ({
+        ...current,
+        [networkId]: [
+          ...(current[networkId] ?? initialMessages),
+          {
+            content: error instanceof Error ? error.message : "Failed to decrypt / load this session.",
+            role: "assistant",
+            status: "error",
+          },
+        ],
+      }));
+    } finally {
+      setIsLoadingSessionByNetwork((current) => ({ ...current, [networkId]: false }));
+    }
+  }
+
+  function startNewSession() {
+    setMessagesByNetwork((current) => ({ ...current, [networkId]: initialMessages }));
+    setAuditBundlesByNetwork((current) => {
+      const next = { ...current };
+      delete next[networkId];
+      return next;
+    });
+    setSessionIdByNetwork((current) => {
+      const next = { ...current };
+      delete next[networkId];
+      return next;
+    });
+    setSaveErrorByNetwork((current) => {
+      const next = { ...current };
+      delete next[networkId];
+      return next;
+    });
+  }
+
+  function handleClosePanel() {
+    // Privacy mode is ephemeral: clear the transcript and any collected audit
+    // bundles before closing so nothing persists beyond the session.
+    if (sessionMode === "privacy") {
+      setMessagesByNetwork((current) => ({ ...current, [networkId]: initialMessages }));
+      setAuditBundlesByNetwork((current) => {
+        const next = { ...current };
+        delete next[networkId];
+        return next;
+      });
+      setSessionIdByNetwork((current) => {
+        const next = { ...current };
+        delete next[networkId];
+        return next;
+      });
+    }
+    onClose?.();
+  }
+
   async function requestCopilotTrade(
     intent: "preview" | "execute",
     tradeRequest: CopilotTradeRequestDraft,
@@ -307,6 +657,12 @@ export function EmbeddedCopilotRail({
     const connectedAddress = wallet.address;
     if (!connectedAddress) {
       return;
+    }
+
+    // Saved mode: lazily assign a sessionId for this conversation so per-turn
+    // audit bundles can be associated with the session that gets uploaded.
+    if (savedModeAvailable && sessionMode === "saved") {
+      ensureSessionId();
     }
 
     const quickPromptResponse = resolveQuickPromptResponse(content);
@@ -437,6 +793,7 @@ export function EmbeddedCopilotRail({
         body: JSON.stringify({
           context,
           messages: routeMessages,
+          mode: sessionMode,
           ...(selectedModel ? { model: selectedModel } : {}),
           networkId,
           wallet: {
@@ -457,7 +814,7 @@ export function EmbeddedCopilotRail({
         throw new Error(payload.error?.message ?? "0G Compute Router request failed.");
       }
 
-      const { message } = payload.data;
+      const { message, auditBundle } = payload.data;
       setMessagesByNetwork((current) => ({
         ...current,
         [networkId]: [
@@ -468,6 +825,16 @@ export function EmbeddedCopilotRail({
           },
         ],
       }));
+      // Saved mode: collect the per-turn audit bundle so the saved session
+      // transcript can include the verifiable evidence. Privacy mode: server
+      // omits the audit bundle and we collect nothing.
+      if (sessionMode === "saved" && auditBundle) {
+        const collected = auditBundle;
+        setAuditBundlesByNetwork((current) => ({
+          ...current,
+          [networkId]: [...(current[networkId] ?? []), collected],
+        }));
+      }
     } catch (error) {
       setMessagesByNetwork((current) => ({
         ...current,
@@ -606,18 +973,57 @@ export function EmbeddedCopilotRail({
               </div>
             </div>
             <div className="mt-3 flex items-center gap-2">
-              <div className="inline-flex rounded-[10px] border border-line bg-panel-solid-strong p-0.5">
-                <button type="button" className="rounded-[8px] bg-panel-strong px-2.5 py-1 text-xs font-semibold text-foreground">
-                  0G Router
-                </button>
-                <button type="button" className="rounded-[8px] px-2.5 py-1 text-xs font-semibold text-muted">
-                  Server only
-                </button>
-              </div>
+              <SessionModeToggle
+                mode={sessionMode}
+                disabled={!savedModeAvailable}
+                onChange={(mode) => {
+                  setSessionModeByNetwork((current) => ({ ...current, [networkId]: mode }));
+                  if (savedModeAvailable) {
+                    try {
+                      window.localStorage.setItem(`${CHAT_SESSION_MODE_STORAGE_KEY}:${networkId}`, mode);
+                    } catch {
+                      // localStorage unavailable; keep in-memory default.
+                    }
+                  }
+                  // Switching to privacy drops any collected audit bundles.
+                  if (mode === "privacy") {
+                    setAuditBundlesByNetwork((current) => {
+                      const next = { ...current };
+                      delete next[networkId];
+                      return next;
+                    });
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => setIsPastSessionsOpen((value) => !value)}
+                disabled={chatLocked || !savedModeAvailable || savedSessions.length === 0}
+                title={
+                  !savedModeAvailable
+                    ? "Saved sessions require 0G mainnet storage"
+                    : savedSessions.length === 0
+                      ? "No saved sessions yet"
+                      : "Browse saved Copilot sessions"
+                }
+                className="inline-flex items-center gap-1.5 rounded-[10px] border border-line bg-panel-solid-strong px-2.5 py-1.5 text-xs font-semibold text-muted transition-colors hover:border-line-strong hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="Past sessions"
+              >
+                <History className="h-3.5 w-3.5" />
+                {savedSessions.length > 0 ? savedSessions.length : "Past"}
+              </button>
               <span className="min-w-0 flex-1 truncate rounded-[10px] border border-line bg-panel-solid-strong px-2.5 py-1.5 text-xs font-semibold text-foreground">
                 {networkLabel}
               </span>
             </div>
+            {isPastSessionsOpen && savedModeAvailable ? (
+              <PastSessionsPopover
+                sessions={savedSessions}
+                isLoading={isLoadingSession}
+                onClose={() => setIsPastSessionsOpen(false)}
+                onLoad={loadSavedSession}
+              />
+            ) : null}
             <div className="mt-2 grid grid-cols-[minmax(0,1fr)] gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
               <label className="relative flex h-10 min-w-0 items-center gap-2 rounded-[12px] border border-line bg-panel-solid-strong px-3 text-xs font-semibold text-foreground">
                 <BrainCircuit className="h-3.5 w-3.5 shrink-0 text-primary" />
@@ -669,7 +1075,7 @@ export function EmbeddedCopilotRail({
           {onClose ? (
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleClosePanel}
               className="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-panel text-muted transition-colors hover:border-line-strong hover:text-foreground"
               aria-label="Close copilot"
             >
@@ -744,12 +1150,47 @@ export function EmbeddedCopilotRail({
             />
           </label>
 
+          {(saveError || (sessionMode === "saved" && savedModeAvailable && hasConversation)) ? (
+            <div className="mt-3 rounded-[12px] border border-line bg-panel-solid-strong px-3 py-2 text-xs">
+              {saveError ? (
+                <p className="text-rose">Save failed: {saveError}</p>
+              ) : (
+                <p className="text-muted">
+                  Saved mode: this transcript is encrypted with your wallet key and uploaded to 0G Storage when you press
+                  Save.
+                </p>
+              )}
+            </div>
+          ) : null}
+
           <div className="mt-3 flex items-center justify-between gap-3 border-t border-line pt-3">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <PermissionModeDropdown
                 mode={permissionMode}
                 onChange={(mode) => setPermissionModeByNetwork((current) => ({ ...current, [networkId]: mode }))}
               />
+              {sessionMode === "saved" && savedModeAvailable ? (
+                <button
+                  type="button"
+                  onClick={() => void saveCurrentSession()}
+                  disabled={chatLocked || isSavingSession || !hasConversation}
+                  title="Encrypt this transcript with your wallet key and save it to 0G Storage"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary transition-[background-color,border-color,color,transform] hover:border-primary/30 hover:bg-primary/15 active:scale-[0.96] disabled:cursor-not-allowed disabled:border-line disabled:bg-panel disabled:text-muted"
+                >
+                  {isSavingSession ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                  {isSavingSession ? "Saving..." : "Save to 0G"}
+                </button>
+              ) : null}
+              {hasConversation ? (
+                <button
+                  type="button"
+                  onClick={startNewSession}
+                  disabled={isSavingSession || isSending}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel px-2.5 py-1 text-xs font-semibold text-muted transition-colors hover:border-line-strong hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  New session
+                </button>
+              ) : null}
             </div>
             <button
               type="button"
@@ -885,6 +1326,111 @@ function PermissionModeDropdown({
   );
 }
 
+function SessionModeToggle({
+  mode,
+  disabled,
+  onChange,
+}: {
+  mode: CopilotSessionMode;
+  disabled?: boolean;
+  onChange: (mode: CopilotSessionMode) => void;
+}) {
+  const isSaved = mode === "saved";
+  return (
+    <div
+      className={`inline-flex rounded-[10px] border border-line bg-panel-solid-strong p-0.5 ${
+        disabled ? "opacity-60" : ""
+      }`}
+      title={disabled ? "Saved mode requires 0G mainnet storage" : "Choose how this chat session is handled"}
+    >
+      <button
+        type="button"
+        onClick={() => onChange("saved")}
+        disabled={disabled}
+        className={`rounded-[8px] px-2.5 py-1 text-xs font-semibold transition-colors disabled:cursor-not-allowed ${
+          isSaved ? "bg-panel-strong text-foreground" : "text-muted hover:text-foreground"
+        }`}
+      >
+        Saved
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("privacy")}
+        className={`inline-flex items-center gap-1 rounded-[8px] px-2.5 py-1 text-xs font-semibold transition-colors ${
+          !isSaved ? "bg-panel-strong text-foreground" : "text-muted hover:text-foreground"
+        }`}
+      >
+        Privacy
+      </button>
+    </div>
+  );
+}
+
+function PastSessionsPopover({
+  sessions,
+  isLoading,
+  onClose,
+  onLoad,
+}: {
+  sessions: CopilotSessionRegistryRecord[];
+  isLoading: boolean;
+  onClose: () => void;
+  onLoad: (session: CopilotSessionRegistryRecord) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(event: MouseEvent) {
+      if (ref.current && !ref.current.contains(event.target as Node)) {
+        onClose();
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [onClose]);
+
+  return (
+    <div
+      ref={ref}
+      className="absolute left-0 top-full z-50 mt-1.5 max-h-[60svh] w-80 overflow-hidden rounded-[14px] border border-line bg-panel-solid-strong shadow-[0_16px_48px_rgba(0,0,0,0.5)]"
+    >
+      <div className="flex items-center justify-between border-b border-line px-3 py-2">
+        <span className="text-xs font-bold uppercase tracking-[0.18em] text-muted">Past sessions</span>
+        <span className="text-[10px] text-muted">{sessions.length}</span>
+      </div>
+      <div className="max-h-[52svh] overflow-y-auto">
+        {sessions.length === 0 ? (
+          <p className="px-3 py-4 text-xs text-muted">No saved sessions yet.</p>
+        ) : (
+          sessions.map((session) => (
+            <button
+              key={session.sessionId}
+              type="button"
+              onClick={() => onLoad(session)}
+              disabled={isLoading}
+              className="flex w-full flex-col items-start gap-1 border-b border-line px-3 py-2.5 text-left transition-colors last:border-b-0 hover:bg-panel disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <span className="line-clamp-1 w-full text-xs font-semibold text-foreground">
+                {session.label ?? session.sessionId}
+              </span>
+              <span className="text-[10px] text-muted">
+                {new Date(session.createdAt).toLocaleString()} - {session.messageCount} msgs
+              </span>
+              <span className="text-[10px] text-muted">root {shortHash(session.rootHash)}</span>
+              <span className="text-[10px] text-muted">proof {shortHash(session.proofTxHash)}</span>
+            </button>
+          ))
+        )}
+      </div>
+      {isLoading ? (
+        <div className="flex items-center gap-2 border-t border-line px-3 py-2 text-[10px] text-muted">
+          <Loader2 className="h-3 w-3 animate-spin" /> Decrypting & loading...
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function TradeReviewCardView({
   card,
   isSubmitting,
@@ -911,7 +1457,7 @@ function TradeReviewCardView({
           </p>
           <p className="mt-1 truncate text-sm font-semibold text-foreground">{quote.routeLabel}</p>
           <p className="mt-1 truncate text-xs text-muted">
-            {quote.venue} · {card.preview.route.outputToken}
+            {quote.venue} - {card.preview.route.outputToken}
           </p>
         </div>
         <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] uppercase tracking-[0.16em] ${tradeDecisionTone(decision, isExpired)}`}>

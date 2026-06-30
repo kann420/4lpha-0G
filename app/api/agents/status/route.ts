@@ -37,7 +37,7 @@ export async function POST(request: Request) {
   if (!ownerAddress) {
     return statusError("invalid_wallet", "Connected wallet address is not valid.", 400);
   }
-  const workspace = await loadOgAgentWorkspace({ agentId: parsed.data.agentId, ownerAddress });
+  const workspace = await loadOgAgentWorkspace({ agentId: parsed.data.agentId, live: true, ownerAddress });
   if (workspace.agent.id !== parsed.data.agentId || !workspace.agent.deployment) {
     return statusError("agent_not_found", "Unknown 0G agent id.", 404);
   }
@@ -59,7 +59,7 @@ export async function POST(request: Request) {
     return statusError("agent_not_found", "Unknown 0G agent id.", 404);
   }
 
-  const nextWorkspace = await loadOgAgentWorkspace({ agentId: parsed.data.agentId, ownerAddress });
+  const nextWorkspace = await loadOgAgentWorkspace({ agentId: parsed.data.agentId, live: true, ownerAddress });
   return NextResponse.json({ data: { deployment: updated, workspace: nextWorkspace } });
 }
 

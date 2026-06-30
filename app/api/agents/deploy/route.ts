@@ -46,7 +46,7 @@ export async function POST(request: Request) {
   if (!ownerAddress) {
     return deployError("invalid_wallet", "Connected wallet address is not valid.", 400);
   }
-  const currentWorkspace = await loadOgAgentWorkspace({ ownerAddress });
+  const currentWorkspace = await loadOgAgentWorkspace({ live: true, ownerAddress });
   const owner = currentWorkspace.agent.deployment?.owner ?? currentWorkspace.vault.owner;
   if (!owner) {
     return deployError("owner_unavailable", "Policy Vault owner must be verified before minting Agentic ID.", 409);
@@ -62,7 +62,7 @@ export async function POST(request: Request) {
       ownerAddress,
       runtime: parsed.data.runtime,
     });
-    const workspace = await loadOgAgentWorkspace({ agentId: deployment.id, ownerAddress });
+    const workspace = await loadOgAgentWorkspace({ agentId: deployment.id, live: true, ownerAddress });
     return NextResponse.json({ data: { deployment, workspace } }, { status: 201 });
   } catch (error) {
     if (error instanceof OgAgentDeployError) {

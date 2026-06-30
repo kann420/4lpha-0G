@@ -8,9 +8,11 @@ const argv = process.argv.slice(2);
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const hostname = readValue(argv, "--hostname") ?? "127.0.0.1";
 const port = readValue(argv, "--port") ?? "3000";
+const workerDisabled = hasFlag(argv, "--no-worker");
 const workerAgentId = readValue(argv, "--agent-id") ?? process.env.OG_AGENT_WORKER_AGENT_ID?.trim();
 const workerExecute = shouldExecuteWorker(argv);
-const workerArgs = [
+const strictWorker = readBoolEnv("DEV_LOCAL_STRICT_WORKER", false);
+const workerArgs = workerDisabled ? [] : [
   "run",
   "agent:worker",
   "--",
@@ -23,15 +25,16 @@ let shuttingDown = false;
 const children: ChildProcessWithoutNullStreams[] = [];
 
 const nextProcess = startProcess("app", npmCommand, ["run", "dev:app", "--", "--hostname", hostname, "--port", port]);
-const workerProcess = startProcess("worker", npmCommand, workerArgs);
+const workerProcess = workerDisabled ? null : startProcess("worker", npmCommand, workerArgs);
 
 console.info(
   JSON.stringify({
     app: `http://${hostname}:${port}`,
     timestamp: new Date().toISOString(),
     type: "dev-local-started",
-    worker: workerExecute ? "execute" : "dry-run",
+    worker: workerDisabled ? "disabled" : workerExecute ? "execute" : "dry-run",
     workerAgentId: workerAgentId ?? "latest",
+    strictWorker,
   }),
 );
 
@@ -48,12 +51,18 @@ nextProcess.on("exit", (code, signal) => {
   }
 });
 
-workerProcess.on("exit", (code, signal) => {
-  if (!shuttingDown) {
-    console.info(`[agent:worker] exited with ${signal ?? code ?? 0}`);
-    void shutdown(code ?? 0, "worker-exit");
-  }
-});
+if (workerProcess) {
+  workerProcess.on("exit", (code, signal) => {
+    if (!shuttingDown) {
+      console.info(`[agent:worker] exited with ${signal ?? code ?? 0}`);
+      if (strictWorker) {
+        void shutdown(code ?? 0, "worker-exit");
+        return;
+      }
+      console.info("[dev-local] app remains online after worker exit; set DEV_LOCAL_STRICT_WORKER=true to fail closed.");
+    }
+  });
+}
 
 function startProcess(label: string, command: string, args: string[]): ChildProcessWithoutNullStreams {
   const child =

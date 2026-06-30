@@ -58,6 +58,7 @@ export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
   const now = new Date().toISOString();
   const workspace = await loadOgAgentWorkspace({
     agentId: request.agentId,
+    live: true,
     ownerAddress: request.ownerAddress,
   });
   const resolvedRequest = workspace.agent.deployment
@@ -188,7 +189,7 @@ async function buildMainnetTradePreview(
   }
 
   const workspace = request.ownerAddress
-    ? await loadOgAgentWorkspace({ agentId: request.agentId, ownerAddress: request.ownerAddress }).catch(() => null)
+    ? await loadOgAgentWorkspace({ agentId: request.agentId, live: true, ownerAddress: request.ownerAddress }).catch(() => null)
     : null;
   const vaultAddress = workspace?.vault.vault ?? (
     request.ownerAddress ? await resolveMainnetVaultForOwner(request.ownerAddress).catch(() => null) : null
