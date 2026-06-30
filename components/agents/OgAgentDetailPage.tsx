@@ -230,23 +230,8 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
     try {
       const walletProof = await ensureOwnerWalletProof();
       await setAgentKeyEnabledOnActiveVault(action === "arm");
-      const response = await fetch("/api/agents/status", {
-        body: JSON.stringify({
-          action,
-          agentId,
-          networkId: "mainnet",
-          wallet: walletProof,
-        }),
-        headers: {
-          "Content-Type": "application/json",
-        },
-        method: "POST",
-      });
-      const payload = (await response.json()) as { data?: { workspace: OgAgentWorkspace }; error?: { message: string } };
-      if (!response.ok || !payload.data) {
-        throw new Error(payload.error?.message ?? "Agent status update failed.");
-      }
-      setWorkspace(payload.data.workspace);
+      const nextWorkspace = await updateAgentRuntimeStatus(action, walletProof);
+      setWorkspace(nextWorkspace);
       setActionMessage(action === "pause" ? "Agent runtime paused. Policy Vault funds remain active." : "Agent runtime armed.");
     } catch (actionError) {
       setActionMessage(actionError instanceof Error ? sanitizeWalletError(actionError.message) : "Owner action failed.");
@@ -269,6 +254,9 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
       let submitted = 0;
       const shouldRePauseAfterSell = isAgentPaused && (workspace?.vault.vaultVersion ?? 1) >= 2;
       if (shouldRePauseAfterSell) {
+        setActionMessage("Locking the agent in paused mode before owner-approved exit.");
+        const nextWorkspace = await updateAgentRuntimeStatus("pause", walletProof);
+        setWorkspace(nextWorkspace);
         setActionMessage("Temporarily enabling the paused agent key for owner-approved exit.");
         await setAgentKeyEnabledOnActiveVault(true);
         temporarilyEnabledAgentKey = true;
@@ -309,7 +297,21 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
       } finally {
         if (temporarilyEnabledAgentKey) {
           setActionMessage("Restoring paused agent key after owner-approved exit.");
-          await setAgentKeyEnabledOnActiveVault(false);
+          let restoreError: unknown;
+          try {
+            await setAgentKeyEnabledOnActiveVault(false);
+          } catch (error) {
+            restoreError = error;
+          }
+          try {
+            const nextWorkspace = await updateAgentRuntimeStatus("pause", walletProof);
+            setWorkspace(nextWorkspace);
+          } catch (error) {
+            restoreError ??= error;
+          }
+          if (restoreError) {
+            throw restoreError;
+          }
         }
       }
       await loadWorkspace();
@@ -319,6 +321,29 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
     } finally {
       setActionLoading(null);
     }
+  }
+
+  async function updateAgentRuntimeStatus(
+    action: "arm" | "pause",
+    walletProof: AgentWalletProof,
+  ): Promise<OgAgentWorkspace> {
+    const response = await fetch("/api/agents/status", {
+      body: JSON.stringify({
+        action,
+        agentId,
+        networkId: "mainnet",
+        wallet: walletProof,
+      }),
+      headers: {
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    });
+    const payload = (await response.json()) as { data?: { workspace: OgAgentWorkspace }; error?: { message: string } };
+    if (!response.ok || !payload.data) {
+      throw new Error(payload.error?.message ?? "Agent status update failed.");
+    }
+    return payload.data.workspace;
   }
 
   async function removeAgent() {
