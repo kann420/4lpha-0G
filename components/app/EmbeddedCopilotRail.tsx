@@ -67,6 +67,7 @@ type CopilotSessionMode = "saved" | "privacy";
 
 const SESSION_KEY_STORAGE_PREFIX = "4lpha:copilot:session-key";
 const CHAT_SESSION_MODE_STORAGE_KEY = "4lpha:copilot:session-mode";
+const COPILOT_ACCESS_STORAGE_PREFIX = "4lpha:copilot:access";
 
 type CopilotWalletProof = {
   address: string;
@@ -101,6 +102,17 @@ interface CopilotTradeResultCard {
 }
 
 type CopilotTradeCard = CopilotTradeReviewCard | CopilotTradeResultCard;
+
+/** Pre-encrypted body for a single auto-save, ready to POST to /sessions/save. */
+interface StagedSessionSave {
+  sessionId: string;
+  createdAt: string;
+  ciphertextB64: string;
+  ivB64: string;
+  messageCount: number;
+  model: string;
+  label?: string;
+}
 
 export interface EmbeddedCopilotRailProps {
   context?: CopilotContextItem[];
@@ -177,6 +189,14 @@ export function EmbeddedCopilotRail({
   const [sessionKeySignatureByKey, setSessionKeySignatureByKey] = useState<Record<string, string>>({});
   const [isPastSessionsOpen, setIsPastSessionsOpen] = useState(false);
   const [saveErrorByNetwork, setSaveErrorByNetwork] = useState<NetworkScopedState<string>>({});
+  // Track which sessionIds have already been saved (one save per session — the
+  // ProofRegistry rejects a duplicate actionHash, so updates are not supported).
+  const [savedSessionIdsByNetwork, setSavedSessionIdsByNetwork] = useState<NetworkScopedState<Record<string, true>>>({});
+  // Pre-encrypted save body for the current session, recomputed (debounced) as
+  // the transcript changes. Auto-save on session end sends this via fetch; on
+  // page unload it is sent via navigator.sendBeacon so the save survives F5.
+  const stagedSaveRef = useRef<StagedSessionSave | null>(null);
+  const pendingAutoSaveRef = useRef(false);
 
   const networkRoutes = useMemo(
     () => AGENT_TRADE_ROUTES.filter((route) => route.networkId === networkId),
@@ -208,6 +228,9 @@ export function EmbeddedCopilotRail({
   const hasConversation = (messagesByNetwork[networkId] ?? initialMessages).some(
     (message) => message.role === "operator" || message.role === "assistant",
   );
+  const currentSessionSaved = sessionId
+    ? Boolean(savedSessionIdsByNetwork[networkId]?.[sessionId])
+    : false;
 
   useEffect(() => {
     setMessagesByNetwork((current) => (current[networkId] ? current : { ...current, [networkId]: initialMessages }));
@@ -309,15 +332,34 @@ export function EmbeddedCopilotRail({
       chainId: wallet.chainId,
       networkId,
     });
+    // The access signature is a static, replayable proof of wallet ownership (no
+    // nonce by existing design). Cache it in component state AND localStorage so
+    // a page refresh can re-list/load saved sessions without re-prompting MetaMask.
+    const accessStorageKey = walletAccessKey
+      ? `${COPILOT_ACCESS_STORAGE_PREFIX}:${walletAccessKey}`
+      : undefined;
     const accessSignature = walletAccessKey ? walletAccessByKey[walletAccessKey] : undefined;
-    const signature =
-      accessSignature ??
-      (await signMessage.signMessageAsync({
-        message: accessMessage,
-      }));
+    let signature = accessSignature;
+    if (!signature && accessStorageKey) {
+      try {
+        signature = window.localStorage.getItem(accessStorageKey) ?? undefined;
+      } catch {
+        signature = undefined;
+      }
+    }
+    if (!signature) {
+      signature = await signMessage.signMessageAsync({ message: accessMessage });
+    }
 
     if (walletAccessKey && !accessSignature) {
-      setWalletAccessByKey((current) => ({ ...current, [walletAccessKey]: signature }));
+      setWalletAccessByKey((current) => ({ ...current, [walletAccessKey]: signature as string }));
+      if (accessStorageKey) {
+        try {
+          window.localStorage.setItem(accessStorageKey, signature as string);
+        } catch {
+          // localStorage unavailable; in-memory cache still works for this session.
+        }
+      }
     }
 
     return {
