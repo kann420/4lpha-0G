@@ -32,6 +32,7 @@ import {
   resolveMainnetVaultVersionsForOwner,
 } from "@/lib/agent/mainnet-vault-resolver";
 import { getOgNetwork } from "@/lib/og/networks";
+import { downloadBytesFrom0GStorage } from "@/lib/og/storage-download";
 import { uploadBytesTo0GStorage, type ZeroGStorageProgress } from "@/lib/og/storage-upload";
 import {
   getAgentFilterPreset,
@@ -1687,6 +1688,7 @@ async function agentMintedLogToDeploymentRecord(
   const tokenId = args.tokenId.toString();
   const storageRoot = extractStorageRoot(args.storageRef);
   if (!storageRoot) return null;
+  const metadata = await readStoredAgentMetadata(storageRoot).catch(() => null);
   const block = log.blockNumber
     ? await publicClient.getBlock({ blockNumber: log.blockNumber }).catch(() => null)
     : null;
@@ -1695,10 +1697,10 @@ async function agentMintedLogToDeploymentRecord(
     createdAt: block?.timestamp ? new Date(Number(block.timestamp) * 1000).toISOString() : new Date().toISOString(),
     deployTxHash: log.transactionHash,
     executor: args.executor,
-    filters: ["capital-guard", "proof-strict"],
+    filters: metadata?.filters ?? ["capital-guard", "proof-strict"],
     id: ogAgentIdFromTokenId(tokenId),
     identityAddress,
-    name: `Agentic ID #${tokenId}`,
+    name: metadata?.name ?? `Agentic ID #${tokenId}`,
     owner: args.owner,
     standard: STANDARD_LABEL,
     standardNote: STANDARD_NOTE,
@@ -1706,6 +1708,34 @@ async function agentMintedLogToDeploymentRecord(
     storageRoot,
     tokenId,
     vault: args.vault,
+  };
+}
+
+async function readStoredAgentMetadata(storageRoot: Hex): Promise<{ filters?: OgAgentFilterId[]; name?: string }> {
+  const bytes = await downloadBytesFrom0GStorage(storageRoot);
+  const text = new TextDecoder().decode(bytes).trim();
+  const payload = JSON.parse(text) as unknown;
+  if (!payload || typeof payload !== "object") {
+    return {};
+  }
+  const record = payload as {
+    filters?: Array<{ id?: unknown }>;
+    kind?: unknown;
+    name?: unknown;
+    standard?: unknown;
+  };
+  if (record.kind !== "single-trading-agent-identity" || record.standard !== STANDARD_LABEL) {
+    return {};
+  }
+  const name = typeof record.name === "string" ? record.name.trim() : "";
+  const filters = Array.isArray(record.filters)
+    ? record.filters
+        .map((filter) => String(filter.id ?? ""))
+        .filter((filter): filter is OgAgentFilterId => Boolean(getAgentFilterPreset(filter)))
+    : [];
+  return {
+    ...(name ? { name } : {}),
+    ...(filters.length ? { filters: Array.from(new Set(filters)) } : {}),
   };
 }
 
