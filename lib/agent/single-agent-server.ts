@@ -1285,36 +1285,20 @@ async function readAgentDeploymentRoster(
     ...(legacySingleRecord ? [legacySingleRecord] : []),
     ...(registry?.agents ?? []),
   ]);
+  const deploymentCandidates = mergeAgentDeploymentRecords([
+    ...((filter.ownerAddress || filter.vaultAddress) ? onChainRecords : []),
+    ...appDeployments,
+  ]);
   const removedCandidates = mergeAgentDeploymentRecords([...onChainRecords, ...appDeployments]);
   const removedAgents = buildRemovedAgentRecords(registry, removedCandidates, readEnvRemovedAgentIds())
     .filter((deployment) => deploymentMatchesFilter(deployment, filter));
   const removedAgentIds = new Set(removedAgents.map((deployment) => deployment.id));
 
-  const activeAppDeployments = appDeployments.filter((deployment) => {
+  const activeDeployments = deploymentCandidates.filter((deployment) => {
     if (removedAgentIds.has(deployment.id)) return false;
     return deploymentMatchesFilter(deployment, filter);
   });
-  if (activeAppDeployments.length > 0) {
-    return { active: latestDeploymentOnly(activeAppDeployments), removed: removedAgents };
-  }
-
-  if (!filter.ownerAddress && !filter.vaultAddress) {
-    return { active: [], removed: removedAgents };
-  }
-
-  const latestOnChainDeployment = latestDeploymentOnly(
-    mergeAgentDeploymentRecords(onChainRecords).filter((deployment) => deploymentMatchesFilter(deployment, filter)),
-  ).at(0);
-  if (!latestOnChainDeployment || removedAgentIds.has(latestOnChainDeployment.id)) {
-    return { active: [], removed: removedAgents };
-  }
-
-  return { active: [latestOnChainDeployment], removed: removedAgents };
-}
-
-function latestDeploymentOnly(deployments: OgAgentDeploymentRecord[]): OgAgentDeploymentRecord[] {
-  const latest = deployments.at(-1);
-  return latest ? [latest] : [];
+  return { active: activeDeployments, removed: removedAgents };
 }
 
 function deploymentMatchesFilter(
