@@ -96,10 +96,10 @@ async function selectReadyAllAgentDeployments(armed: OgAgentDeploymentRecord[]):
   for (const deployment of armed) {
     const workspace = await loadOgAgentWorkspace({ agentId: deployment.id, live: true });
     if ((workspace.vault.vaultVersion ?? 1) < 2) {
-      return [];
+      continue;
     }
     if (workspace.agent.status !== "armed" || !workspace.agent.deployment || !isVaultRunnable(workspace)) {
-      return [];
+      continue;
     }
     ready.push(workspace.agent.deployment);
   }
