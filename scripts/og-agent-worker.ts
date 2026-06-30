@@ -46,6 +46,7 @@ async function main(): Promise<void> {
     killSwitchEnabled: config.killSwitchEnabled,
     maxCycles: config.maxCycles,
     once: config.once,
+    ownerAddress: config.ownerAddress,
     processAllAgents: config.processAllAgents,
     sellPercent: config.sellPercent,
     slippageBps: config.slippageBps,

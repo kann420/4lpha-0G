@@ -62,7 +62,11 @@ export function OgAgentWorkspace() {
     setIsLoading(true);
     setError(undefined);
     try {
-      const response = await fetch(`/api/agents?ownerAddress=${encodeURIComponent(wallet.address)}`, { cache: "no-store" });
+      const params = new URLSearchParams({
+        live: "1",
+        ownerAddress: wallet.address,
+      });
+      const response = await fetch(`/api/agents?${params.toString()}`, { cache: "no-store" });
       const payload = (await response.json()) as { data?: OgAgentWorkspace; error?: { message: string } };
       if (!response.ok || !payload.data) {
         throw new Error(payload.error?.message ?? "Unable to load agent workspace.");

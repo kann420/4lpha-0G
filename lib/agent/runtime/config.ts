@@ -1,4 +1,4 @@
-import { parseEther } from "viem";
+import { getAddress, isAddress, parseEther, type Address } from "viem";
 import { maxScriptTrade0G } from "@/lib/agent/curated-trade";
 
 export interface OgAgentWorkerConfig {
@@ -12,6 +12,7 @@ export interface OgAgentWorkerConfig {
   maxCycles?: number;
   maxRouteCandidates: number;
   once: boolean;
+  ownerAddress?: Address;
   processAllAgents: boolean;
   selectedModel?: string;
   sellPercent: number;
@@ -55,6 +56,7 @@ export function loadOgAgentWorkerConfig(argv: string[] = process.argv.slice(2)):
       ? clamp(Math.trunc(routeLimitArg), 1, 8)
       : clamp(readIntegerEnv("OG_AGENT_WORKER_ROUTE_LIMIT", 4), 1, 8),
     once: hasFlag(argv, "--once"),
+    ownerAddress: readAddressValue(readValue(argv, "--owner-address") ?? readEnv("OG_AGENT_WORKER_OWNER_ADDRESS")),
     processAllAgents: hasFlag(argv, "--all-agents") || readBoolEnv("OG_AGENT_WORKER_ALL_AGENTS", false),
     selectedModel: readValue(argv, "--model") ?? readEnv("OG_AGENT_WORKER_MODEL"),
     sellPercent: Number.isFinite(sellPercentArg)
@@ -95,6 +97,14 @@ function readValue(argv: string[], flag: string): string | undefined {
 function readEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
   return value ? value : undefined;
+}
+
+function readAddressValue(value: string | undefined): Address | undefined {
+  if (!value) return undefined;
+  if (!isAddress(value)) {
+    throw new Error("OG_AGENT_WORKER_OWNER_ADDRESS must be a valid EVM address.");
+  }
+  return getAddress(value);
 }
 
 function readBoolEnv(name: string, fallback: boolean): boolean {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { formatUnits } from "viem";
+import { formatUnits, type Address } from "viem";
 import {
   getAgentFilterPreset,
   type OgAgentDeploymentRecord,
@@ -71,7 +71,11 @@ export async function runOgAgentWorkerOnce(config: OgAgentWorkerConfig): Promise
 }
 
 async function selectDeploymentsForCycle(config: OgAgentWorkerConfig): Promise<OgAgentDeploymentRecord[]> {
-  const workspace = await loadOgAgentWorkspace({ agentId: config.agentId, live: true });
+  const workspace = await loadOgAgentWorkspace({
+    agentId: config.agentId,
+    live: true,
+    ownerAddress: config.ownerAddress,
+  });
   if (config.agentId) {
     if (!config.allowConfiguredAgent) {
       return [];
@@ -84,17 +88,24 @@ async function selectDeploymentsForCycle(config: OgAgentWorkerConfig): Promise<O
 
   const armed = workspace.agents.filter((deployment) => !deployment.paused);
   if (config.processAllAgents) {
-    return selectReadyAllAgentDeployments(armed);
+    return selectReadyAllAgentDeployments(armed, config.ownerAddress);
   }
 
   const selected = workspace.agent.deployment ?? armed.at(-1);
   return selected ? [selected] : [];
 }
 
-async function selectReadyAllAgentDeployments(armed: OgAgentDeploymentRecord[]): Promise<OgAgentDeploymentRecord[]> {
+async function selectReadyAllAgentDeployments(
+  armed: OgAgentDeploymentRecord[],
+  ownerAddress?: Address,
+): Promise<OgAgentDeploymentRecord[]> {
   const ready: OgAgentDeploymentRecord[] = [];
   for (const deployment of armed) {
-    const workspace = await loadOgAgentWorkspace({ agentId: deployment.id, live: true });
+    const workspace = await loadOgAgentWorkspace({
+      agentId: deployment.id,
+      live: true,
+      ownerAddress: ownerAddress ?? deployment.owner,
+    });
     if ((workspace.vault.vaultVersion ?? 1) < 2) {
       continue;
     }
@@ -117,7 +128,11 @@ async function processDeployment(
   let request: AgentTradeRequest | undefined;
 
   try {
-    workspace = await loadOgAgentWorkspace({ agentId: deployment.id, live: true });
+    workspace = await loadOgAgentWorkspace({
+      agentId: deployment.id,
+      live: true,
+      ownerAddress: config.ownerAddress ?? deployment.owner,
+    });
     if (config.killSwitchEnabled) {
       decision = holdDecision("Worker kill switch is enabled.");
       return appendAndReturn(buildRunRecord({ candidates, decision, deployment, request, startedAt, status: "blocked" }));
