@@ -53,7 +53,7 @@ export async function POST(request: Request) {
     routeId: parsed.data.routeId,
     side: parsed.data.side,
     slippageBps: parsed.data.slippageBps,
-    vaultAddress: parseAddress(parsed.data.vaultAddress),
+    vaultAddress: networkId === "mainnet" ? undefined : parseAddress(parsed.data.vaultAddress),
   };
 
   try {

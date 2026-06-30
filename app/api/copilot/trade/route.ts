@@ -2,14 +2,14 @@ import { NextResponse } from "next/server";
 import { createPublicClient, formatUnits, getAddress, http, isAddress, type Address } from "viem";
 import { z } from "zod";
 import { canAgentUseTradeRoute, getAgentTradeRoute } from "@/lib/agent/trade-catalog";
-import { loadOgAgentWorkspace } from "@/lib/agent/single-agent-server";
+import { agentKeyForDeployment, loadOgAgentWorkspace } from "@/lib/agent/single-agent-server";
 import {
   AgentTradeError,
   buildAgentTradePreview,
   executeAgentTrade,
 } from "@/lib/agent/trade-service";
 import { validateCopilotWalletGate } from "@/lib/copilot/wallet-gate";
-import { policyVaultAbi } from "@/lib/contracts/policy-vault";
+import { policyVaultAbi, policyVaultAgentKeyAbi } from "@/lib/contracts/policy-vault";
 import { getOgNetwork, isOgNetworkId } from "@/lib/og/networks";
 import type { AgentTradeRequest, AgentTradeResponse, OgNetworkId } from "@/lib/types";
 
@@ -139,7 +139,14 @@ async function resolveTradeRequestAmount(
     throw new AgentTradeError("Selected route is not in the server allowlist.", "route_not_allowed", 404);
   }
 
-  const amountIn = await resolveSellPercentAmount(networkId, ownerAddress, request.sellPercent, route.tokenAddress, route.defaultAmountIn);
+  const amountIn = await resolveSellPercentAmount(
+    networkId,
+    ownerAddress,
+    request.agentId,
+    request.sellPercent,
+    route.tokenAddress,
+    route.defaultAmountIn,
+  );
   if (amountIn === "0") {
     throw new AgentTradeError("The Policy Vault does not hold a sellable balance for that token.", "empty_position", 409);
   }
@@ -160,6 +167,7 @@ async function resolveTradeRequestAmount(
 async function resolveSellPercentAmount(
   networkId: OgNetworkId,
   ownerAddress: Address,
+  agentId: string,
   percent: number,
   tokenAddress: Address | undefined,
   fallbackAmount: string,
@@ -177,21 +185,32 @@ async function resolveSellPercentAmount(
     throw new AgentTradeError("Selected route does not expose a token address for percentage sell.", "route_not_allowed", 409);
   }
 
-  const workspace = await loadOgAgentWorkspace({ ownerAddress });
+  const workspace = await loadOgAgentWorkspace({ agentId, ownerAddress });
   const vault = workspace.vault.vault;
   if (!vault) {
     throw new AgentTradeError("Policy Vault address is required for percentage sell.", "vault_not_ready", 409);
+  }
+  const deployment = workspace.agent.deployment;
+  if (!deployment) {
+    throw new AgentTradeError("Agentic ID deployment is required for percentage sell.", "agent_not_ready", 409);
   }
 
   const network = getOgNetwork(networkId);
   const publicClient = createPublicClient({ transport: http(network.rpcUrl) });
   const [units, decimals] = await Promise.all([
-    publicClient.readContract({
-      address: vault,
-      abi: policyVaultAbi,
-      functionName: "positionUnits",
-      args: [tokenAddress],
-    }),
+    (workspace.vault.vaultVersion ?? 1) >= 2
+      ? publicClient.readContract({
+          address: vault,
+          abi: policyVaultAgentKeyAbi,
+          functionName: "agentPositionUnits",
+          args: [deployment.agentKey ?? agentKeyForDeployment(deployment), tokenAddress],
+        })
+      : publicClient.readContract({
+          address: vault,
+          abi: policyVaultAbi,
+          functionName: "positionUnits",
+          args: [tokenAddress],
+        }),
     publicClient.readContract({
       address: tokenAddress,
       abi: erc20DecimalsAbi,

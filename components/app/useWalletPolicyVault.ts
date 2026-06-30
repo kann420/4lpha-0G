@@ -12,32 +12,56 @@ import {
   type EIP1193Provider,
   type Hex,
   type TransactionReceipt,
+  type WalletClient,
 } from "viem";
 import { useAccount, useChainId, useSwitchChain } from "wagmi";
 import {
   getPolicyVaultCreationConfig,
   getPolicyVaultFactoryAddress,
   getPolicyVaultFactoryFromBlock,
+  getPolicyVaultFactoryVersions,
   getPolicyVaultReadiness,
   policyVaultAbi,
   policyVaultCreatedEvent,
   policyVaultFactoryAbi,
+  type PolicyVaultFactoryVersion,
   type PolicyVaultPolicy,
 } from "@/lib/contracts/policy-vault";
 import type { OgNetworkConfig } from "@/lib/types";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
+export interface VersionedVault {
+  factory: Address;
+  vault: Address;
+  version: number;
+}
+
 export interface WalletPolicyVaultState {
   createVault: (policyOverride?: PolicyVaultPolicy) => Promise<void>;
   factoryAddress: Address | null;
+  activeVaultVersion?: number;
   isCreating: boolean;
   isDiscovering: boolean;
+  legacyVaults: VersionedVault[];
+  migrateVault: () => Promise<void>;
+  migrationRequired: boolean;
   refreshVaultAddress: () => Promise<void>;
   statusText: string;
   vaultAddress: Address | null;
   vaults: Address[];
+  versionedVaults: VersionedVault[];
 }
+
+const erc20BalanceAbi = [
+  {
+    inputs: [{ internalType: "address", name: "account", type: "address" }],
+    name: "balanceOf",
+    outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const;
 
 export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaultState {
   const walletAccount = useAccount();
@@ -45,11 +69,13 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
   const switchChain = useSwitchChain();
   const [vaultAddress, setVaultAddress] = useState<Address | null>(null);
   const [vaults, setVaults] = useState<Address[]>([]);
+  const [versionedVaults, setVersionedVaults] = useState<VersionedVault[]>([]);
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [statusText, setStatusText] = useState("Connect a wallet to resolve its Policy Vault.");
   const requestIdRef = useRef(0);
   const factoryAddress = getPolicyVaultFactoryAddress(network.id);
+  const factoryVersions = useMemo(() => getPolicyVaultFactoryVersions(network.id), [network.id]);
   const creationConfig = getPolicyVaultCreationConfig(network.id);
   const readiness = getPolicyVaultReadiness(network.id);
   const chain = useMemo(() => makeViemChain(network), [network]);
@@ -65,6 +91,7 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
     if (!walletAccount.address) {
       setVaultAddress(null);
       setVaults([]);
+      setVersionedVaults([]);
       setStatusText("Connect a wallet to resolve its Policy Vault.");
       return;
     }
@@ -72,6 +99,7 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
     if (factoryAddress === null) {
       setVaultAddress(null);
       setVaults([]);
+      setVersionedVaults([]);
       setStatusText("PolicyVaultFactory is not configured for this network.");
       return;
     }
@@ -80,8 +108,8 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
     setStatusText("Scanning factory events for this wallet.");
 
     try {
-      const verified = await readVerifiedVaults({
-        factoryAddress,
+      const verified = await readVerifiedVaultVersions({
+        factoryVersions,
         networkId: network.id,
         owner: walletAccount.address,
         publicClient,
@@ -91,17 +119,20 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
         return;
       }
 
-      setVaults(verified);
-      setVaultAddress(verified.at(-1) ?? null);
+      const active = verified.at(-1);
+      setVersionedVaults(verified);
+      setVaults(verified.map((entry) => entry.vault));
+      setVaultAddress(active?.vault ?? null);
       setStatusText(
         verified.length > 0
-          ? `Resolved ${verified.length} owner vault${verified.length === 1 ? "" : "s"} from factory.`
+          ? `Resolved active Policy Vault V${active?.version ?? "?"} for this wallet.`
           : "No Policy Vault found for this wallet yet.",
       );
     } catch {
       if (requestIdRef.current === requestId) {
         setVaultAddress(null);
         setVaults([]);
+        setVersionedVaults([]);
         setStatusText("Could not scan PolicyVaultFactory logs from this RPC.");
       }
     } finally {
@@ -109,7 +140,7 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
         setIsDiscovering(false);
       }
     }
-  }, [factoryAddress, network.id, publicClient, walletAccount.address]);
+  }, [factoryAddress, factoryVersions, network.id, publicClient, walletAccount.address]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -130,7 +161,7 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
       return;
     }
 
-    if (vaultAddress !== null || vaults.length > 0) {
+    if (vaultAddress !== null) {
       setStatusText("This wallet already has a Policy Vault. Use Discover vault instead of creating another one.");
       return;
     }
@@ -217,25 +248,177 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
     walletAccount.isConnected,
   ]);
 
+  const migrateVault = useCallback(async () => {
+    if (!walletAccount.isConnected || !walletAccount.address) {
+      setStatusText("Connect the owner wallet before migrating a vault.");
+      return;
+    }
+    if (creationConfig === null) {
+      setStatusText(readiness.reason);
+      return;
+    }
+    const latestFactoryVersion = factoryVersions.at(-1)?.version;
+    const legacy = latestFactoryVersion === undefined
+      ? undefined
+      : versionedVaults.filter((entry) => entry.version < latestFactoryVersion).at(-1);
+    if (!legacy) {
+      setStatusText("No legacy vault is available for migration.");
+      return;
+    }
+
+    setIsCreating(true);
+    try {
+      if (connectedChainId !== network.chainId) {
+        setStatusText(`Switching wallet to ${network.networkName}.`);
+        await switchChain.switchChainAsync({ chainId: network.chainId });
+      }
+      const walletClient = await getWalletClient(chain);
+      const [account] = await walletClient.getAddresses();
+      if (account.toLowerCase() !== walletAccount.address.toLowerCase()) {
+        throw new Error("Wallet account changed before vault migration.");
+      }
+
+      setStatusText("Checking legacy vault token positions before migration.");
+      await assertLegacyVaultIsNativeOnly(publicClient, legacy.vault, account, creationConfig.allowedTokens);
+
+      setStatusText("Waiting for wallet confirmation to create PolicyVaultV2.");
+      const createSimulation = await publicClient.simulateContract({
+        account,
+        address: creationConfig.factory,
+        abi: policyVaultFactoryAbi,
+        functionName: "createVault",
+        args: [
+          account,
+          creationConfig.executor,
+          creationConfig.adapter,
+          creationConfig.proofRegistry,
+          creationConfig.policy,
+          creationConfig.allowedTokens,
+          creationConfig.allowedPools,
+          creationConfig.allowMockAdapter,
+        ],
+      });
+      const createTxHash = await walletClient.writeContract(createSimulation.request);
+      const createReceipt = await waitForReceipt(publicClient, createTxHash);
+      const createdVault = createReceipt === null ? null : readCreatedVaultFromReceipt(createReceipt, account);
+      if (!createdVault) {
+        throw new Error("PolicyVaultV2 creation did not emit a vault address.");
+      }
+      await verifyVaultOwner(publicClient, createdVault, account);
+
+      const legacyBalance = await publicClient.getBalance({ address: legacy.vault });
+      if (legacyBalance > 0n) {
+        setStatusText("Withdrawing native 0G from legacy vault to owner wallet.");
+        const withdrawSimulation = await publicClient.simulateContract({
+          account,
+          address: legacy.vault,
+          abi: policyVaultAbi,
+          functionName: "withdrawNative",
+          args: [legacyBalance],
+        });
+        const withdrawTxHash = await walletClient.writeContract(withdrawSimulation.request);
+        await waitForReceipt(publicClient, withdrawTxHash);
+
+        setStatusText("Depositing migrated 0G into PolicyVaultV2.");
+        const depositSimulation = await publicClient.simulateContract({
+          account,
+          address: createdVault,
+          abi: policyVaultAbi,
+          functionName: "depositNative",
+          value: legacyBalance,
+        });
+        const depositTxHash = await walletClient.writeContract(depositSimulation.request);
+        await waitForReceipt(publicClient, depositTxHash);
+      }
+
+      setStatusText("Pausing and revoking the legacy vault executor.");
+      await writeBestEffortOwnerTx({ account, address: legacy.vault, functionName: "setPaused", publicClient, walletClient, args: [true] });
+      await writeBestEffortOwnerTx({ account, address: legacy.vault, functionName: "revokeExecutor", publicClient, walletClient, args: [] });
+
+      await discoverVaults();
+      setStatusText("Vault migration to PolicyVaultV2 completed.");
+    } catch (error) {
+      setStatusText(error instanceof Error ? sanitizeWalletError(error.message) : "Vault migration failed.");
+    } finally {
+      setIsCreating(false);
+    }
+  }, [
+    chain,
+    connectedChainId,
+    creationConfig,
+    discoverVaults,
+    factoryVersions,
+    network.chainId,
+    network.networkName,
+    publicClient,
+    readiness.reason,
+    switchChain,
+    versionedVaults,
+    walletAccount.address,
+    walletAccount.isConnected,
+  ]);
+
+  const activeVaultVersion = versionedVaults.at(-1)?.version;
+  const latestFactoryVersion = factoryVersions.at(-1)?.version;
+
   return {
+    activeVaultVersion,
     createVault,
     factoryAddress,
     isCreating,
     isDiscovering,
+    legacyVaults: latestFactoryVersion === undefined
+      ? []
+      : versionedVaults.filter((entry) => entry.version < latestFactoryVersion),
+    migrateVault,
+    migrationRequired:
+      versionedVaults.length > 0 &&
+      latestFactoryVersion !== undefined &&
+      (activeVaultVersion ?? 0) < latestFactoryVersion,
     refreshVaultAddress: discoverVaults,
     statusText,
     vaultAddress,
     vaults,
+    versionedVaults,
   };
+}
+
+async function readVerifiedVaultVersions({
+  factoryVersions,
+  networkId,
+  owner,
+  publicClient,
+}: {
+  factoryVersions: PolicyVaultFactoryVersion[];
+  networkId: OgNetworkConfig["id"];
+  owner: Address;
+  publicClient: ReturnType<typeof createPublicClient>;
+}): Promise<VersionedVault[]> {
+  const results: VersionedVault[] = [];
+  for (const factory of factoryVersions) {
+    const verified = await readVerifiedVaults({
+      factoryAddress: factory.address,
+      fromBlock: factory.fromBlock,
+      networkId,
+      owner,
+      publicClient,
+    });
+    for (const vault of verified) {
+      results.push({ factory: factory.address, vault, version: factory.version });
+    }
+  }
+  return results.sort((left, right) => left.version - right.version);
 }
 
 async function readVerifiedVaults({
   factoryAddress,
+  fromBlock,
   networkId,
   owner,
   publicClient,
 }: {
   factoryAddress: Address;
+  fromBlock?: bigint;
   networkId: OgNetworkConfig["id"];
   owner: Address;
   publicClient: ReturnType<typeof createPublicClient>;
@@ -261,7 +444,7 @@ async function readVerifiedVaults({
     address: factoryAddress,
     args: { owner },
     event: policyVaultCreatedEvent,
-    fromBlock: getPolicyVaultFactoryFromBlock(networkId),
+    fromBlock: fromBlock ?? getPolicyVaultFactoryFromBlock(networkId),
     toBlock: "latest",
   });
   candidates.push(
@@ -328,6 +511,74 @@ async function verifyVaultOwner(
 
   if (owner.toLowerCase() !== expectedOwner.toLowerCase()) {
     throw new Error("Created vault owner did not match the connected wallet.");
+  }
+}
+
+async function assertLegacyVaultIsNativeOnly(
+  publicClient: ReturnType<typeof createPublicClient>,
+  vault: Address,
+  owner: Address,
+  tokens: Address[],
+) {
+  for (const token of tokens) {
+    const [positionUnits, tokenBalance] = await Promise.all([
+      publicClient.readContract({
+        address: vault,
+        abi: policyVaultAbi,
+        functionName: "positionUnits",
+        args: [token],
+      }).catch(() => 0n),
+      publicClient.readContract({
+        address: token,
+        abi: erc20BalanceAbi,
+        functionName: "balanceOf",
+        args: [vault],
+      }).catch(() => 0n),
+    ]);
+    if (positionUnits > 0n) {
+      throw new Error("Legacy vault still has sellable token positions. Sell all positions before migration.");
+    }
+    if (tokenBalance > 0n) {
+      throw new Error("Legacy vault still has token balance dust. Rescue or clear tokens before migration.");
+    }
+  }
+
+  const vaultOwner = await publicClient.readContract({
+    address: vault,
+    abi: policyVaultAbi,
+    functionName: "owner",
+  });
+  if (vaultOwner.toLowerCase() !== owner.toLowerCase()) {
+    throw new Error("Legacy vault owner does not match the connected wallet.");
+  }
+}
+
+async function writeBestEffortOwnerTx({
+  account,
+  address,
+  args,
+  functionName,
+  publicClient,
+  walletClient,
+}: {
+  account: Address;
+  address: Address;
+  args: readonly unknown[];
+  functionName: "revokeExecutor" | "setPaused";
+  publicClient: ReturnType<typeof createPublicClient>;
+  walletClient: WalletClient;
+}) {
+  try {
+    const txHash = await walletClient.writeContract({
+      account,
+      address,
+      abi: policyVaultAbi,
+      functionName,
+      args,
+    } as never);
+    await waitForReceipt(publicClient, txHash);
+  } catch {
+    // Legacy cleanup is best-effort; the V2 vault remains the active vault after migration.
   }
 }
 

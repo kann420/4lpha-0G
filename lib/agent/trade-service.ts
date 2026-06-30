@@ -7,7 +7,7 @@ import {
   quoteCuratedTrade,
 } from "@/lib/agent/curated-trade";
 import { resolveMainnetVaultForOwner } from "@/lib/agent/mainnet-vault-resolver";
-import { loadOgAgentWorkspace, storeAgentTradeArtifact } from "@/lib/agent/single-agent-server";
+import { agentKeyForDeployment, loadOgAgentWorkspace, storeAgentTradeArtifact } from "@/lib/agent/single-agent-server";
 import { AGENT_TRADE_ROUTES, canAgentUseTradeRoute, getAgentTradeRoute } from "@/lib/agent/trade-catalog";
 import { hashText } from "@/lib/copilot/audit";
 import { auditEvidence } from "@/lib/mock-data";
@@ -65,7 +65,7 @@ export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
         ...request,
         agentId: workspace.agent.deployment.id,
         ownerAddress: workspace.agent.deployment.owner,
-        vaultAddress: preview.vaultAddress ?? workspace.agent.deployment.vault,
+        vaultAddress: preview.vaultAddress ?? workspace.vault.vault ?? workspace.agent.deployment.vault,
       }
     : request;
   if (!workspace.agent.deployment) {
@@ -109,6 +109,7 @@ export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
   const execution = await executeCuratedTrade({
     agentRef: workspace.agent.deployment?.agentRef,
     amount: request.amountIn,
+    agentKey: workspace.agent.deployment.agentKey ?? agentKeyForDeployment(workspace.agent.deployment),
     networkId: "mainnet",
     routeId: route.id as Hex,
     side: request.side,
@@ -186,7 +187,10 @@ async function buildMainnetTradePreview(
     );
   }
 
-  const vaultAddress = request.vaultAddress ?? (
+  const workspace = request.ownerAddress
+    ? await loadOgAgentWorkspace({ agentId: request.agentId, ownerAddress: request.ownerAddress }).catch(() => null)
+    : null;
+  const vaultAddress = workspace?.vault.vault ?? (
     request.ownerAddress ? await resolveMainnetVaultForOwner(request.ownerAddress).catch(() => null) : null
   );
   const quote = await quoteCuratedTrade({
@@ -197,7 +201,9 @@ async function buildMainnetTradePreview(
     slippageBps: request.slippageBps,
     vaultAddress: vaultAddress ?? undefined,
   });
-  const status = quote.canExecute ? "ready" : "review";
+  const workspaceWarnings = workspace?.vault.warnings ?? [];
+  const canExecute = quote.canExecute && (workspace?.vault.ready ?? true);
+  const status = canExecute ? "ready" : "review";
   const routeHash = hashJson({
     networkId: request.networkId,
     routeId: quote.route.id,
@@ -227,12 +233,12 @@ async function buildMainnetTradePreview(
     slippageBps: request.slippageBps,
     status,
     venue: quote.route.venue,
-    warnings: quote.warnings,
+    warnings: [...quote.warnings, ...workspaceWarnings],
   };
 
   return {
     backend: {
-      message: quote.canExecute
+      message: canExecute
         ? "Live mainnet route is quote-ready; execute will upload audit evidence, accept proof, and call the vault executor."
         : "Live route quote succeeded, but execution requires a ready vault with matching adapter, executor, proof registry, and allowlists.",
       mode: "wired",
@@ -247,7 +253,7 @@ async function buildMainnetTradePreview(
     proofBundle: buildProofBundle({
       auditId: request.auditId ?? route.auditId,
       networkId: request.networkId,
-      policyDecision: quote.canExecute ? "allow" : "review",
+      policyDecision: canExecute ? "allow" : "review",
       policyDecisionHash: quote.policySnapshotHash ?? hashJson({ quoteHash, routeHash }),
       quote: agentQuote,
       route,

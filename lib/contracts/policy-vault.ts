@@ -13,6 +13,12 @@ export interface PolicyVaultPolicy {
   perTradeCap0G: bigint;
 }
 
+export interface PolicyVaultFactoryVersion {
+  address: Address;
+  fromBlock: bigint;
+  version: number;
+}
+
 export const defaultPolicyVaultPolicy: PolicyVaultPolicy = {
   cooldownSeconds: 0n,
   dailyCap0G: UNBOUNDED_POLICY_LIMIT,
@@ -335,6 +341,130 @@ export const policyVaultFactoryAbi = [
   },
 ] as const;
 
+export const policyVaultAgentKeyAbi = [
+  {
+    inputs: [{ internalType: "bytes32", name: "agentKey", type: "bytes32" }],
+    name: "agentKeyEnabled",
+    outputs: [{ internalType: "bool", name: "", type: "bool" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { internalType: "bytes32", name: "agentKey", type: "bytes32" },
+      { internalType: "bool", name: "enabled", type: "bool" },
+    ],
+    name: "setAgentKeyEnabled",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [
+      { internalType: "bytes32[]", name: "agentKeys", type: "bytes32[]" },
+      { internalType: "bool", name: "enabled", type: "bool" },
+    ],
+    name: "setAgentKeysEnabled",
+    outputs: [],
+    stateMutability: "nonpayable",
+    type: "function",
+  },
+  {
+    inputs: [{ internalType: "bytes32", name: "agentKey", type: "bytes32" }],
+    name: "agentOpenPositionCount",
+    outputs: [{ internalType: "uint256", name: "count", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      { internalType: "bytes32", name: "agentKey", type: "bytes32" },
+      { internalType: "address", name: "token", type: "address" },
+    ],
+    name: "agentPositionUnits",
+    outputs: [{ internalType: "uint256", name: "units", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+] as const;
+
+const policyVaultV2TradeRequestComponents = [
+  { internalType: "address", name: "tokenIn", type: "address" },
+  { internalType: "address", name: "tokenOut", type: "address" },
+  { internalType: "uint256", name: "amountIn", type: "uint256" },
+  { internalType: "uint256", name: "quotedAmountOut", type: "uint256" },
+  { internalType: "uint256", name: "amountOutMin", type: "uint256" },
+  { internalType: "uint256", name: "deadline", type: "uint256" },
+  { internalType: "uint256", name: "nonce", type: "uint256" },
+  { internalType: "bytes32", name: "agentKey", type: "bytes32" },
+  { internalType: "bytes32", name: "poolId", type: "bytes32" },
+  { internalType: "bytes32", name: "vaultActionHash", type: "bytes32" },
+  { internalType: "bytes32", name: "actionHash", type: "bytes32" },
+  { internalType: "bytes32", name: "policySnapshotHash", type: "bytes32" },
+  { internalType: "bytes32", name: "auditRoot", type: "bytes32" },
+] as const;
+
+export const policyVaultV2TradeAbi = [
+  {
+    inputs: [
+      { internalType: "bool", name: "isBuy", type: "bool" },
+      {
+        components: policyVaultV2TradeRequestComponents,
+        internalType: "struct PolicyVaultV2.TradeRequest",
+        name: "request",
+        type: "tuple",
+      },
+    ],
+    name: "vaultActionHashFor",
+    outputs: [{ internalType: "bytes32", name: "", type: "bytes32" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [
+      {
+        components: policyVaultV2TradeRequestComponents,
+        internalType: "struct PolicyVaultV2.TradeRequest",
+        name: "request",
+        type: "tuple",
+      },
+    ],
+    name: "buy",
+    outputs: [{ internalType: "uint256", name: "amountOut", type: "uint256" }],
+    stateMutability: "payable",
+    type: "function",
+  },
+  {
+    inputs: [
+      {
+        components: policyVaultV2TradeRequestComponents,
+        internalType: "struct PolicyVaultV2.TradeRequest",
+        name: "request",
+        type: "tuple",
+      },
+    ],
+    name: "sell",
+    outputs: [{ internalType: "uint256", name: "amountOut", type: "uint256" }],
+    stateMutability: "payable",
+    type: "function",
+  },
+  {
+    anonymous: false,
+    inputs: [
+      { indexed: true, internalType: "bytes32", name: "actionHash", type: "bytes32" },
+      { indexed: true, internalType: "bytes32", name: "agentKey", type: "bytes32" },
+      { indexed: true, internalType: "bool", name: "isBuy", type: "bool" },
+      { indexed: false, internalType: "address", name: "token", type: "address" },
+      { indexed: false, internalType: "uint256", name: "amountIn", type: "uint256" },
+      { indexed: false, internalType: "uint256", name: "amountOut", type: "uint256" },
+      { indexed: false, internalType: "bytes32", name: "auditRoot", type: "bytes32" },
+      { indexed: false, internalType: "bytes32", name: "policySnapshotHash", type: "bytes32" },
+    ],
+    name: "TradeExecutedV2",
+    type: "event",
+  },
+] as const;
+
 export const policyVaultCreatedEvent = parseAbiItem(
   "event VaultCreated(address indexed owner, address indexed executor, address indexed vault, address adapter, address proofRegistry, bool mockAdapterAllowed)",
 );
@@ -346,6 +476,7 @@ export interface PolicyVaultCreationConfig {
   allowedTokens: Address[];
   executor: Address;
   factory: Address;
+  factoryVersion: number;
   policy: PolicyVaultPolicy;
   proofRegistry: Address;
 }
@@ -366,12 +497,19 @@ export function getPolicyVaultAddress(networkId: OgNetworkId): Address | null {
 }
 
 export function getPolicyVaultFactoryAddress(networkId: OgNetworkId): Address | null {
-  const value =
-    networkId === "mainnet"
-      ? process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_MAINNET_ADDRESS
-      : process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_ADDRESS;
+  return getLatestPolicyVaultFactoryVersion(networkId)?.address ?? null;
+}
 
-  return value !== undefined && isAddress(value) ? value : null;
+export function getPolicyVaultFactoryVersions(networkId: OgNetworkId): PolicyVaultFactoryVersion[] {
+  const versions = [
+    readFactoryVersion(networkId, 1),
+    readFactoryVersion(networkId, 2),
+  ].filter((version): version is PolicyVaultFactoryVersion => version !== null);
+  return versions.sort((left, right) => left.version - right.version);
+}
+
+export function getLatestPolicyVaultFactoryVersion(networkId: OgNetworkId): PolicyVaultFactoryVersion | null {
+  return getPolicyVaultFactoryVersions(networkId).at(-1) ?? null;
 }
 
 export function getProofRegistryAddress(networkId: OgNetworkId): Address | null {
@@ -384,7 +522,8 @@ export function getProofRegistryAddress(networkId: OgNetworkId): Address | null 
 }
 
 export function getPolicyVaultCreationConfig(networkId: OgNetworkId): PolicyVaultCreationConfig | null {
-  const factory = getPolicyVaultFactoryAddress(networkId);
+  const factoryVersion = getLatestPolicyVaultFactoryVersion(networkId);
+  const factory = factoryVersion?.address ?? null;
   const proofRegistry = getProofRegistryAddress(networkId);
   const executor =
     networkId === "mainnet"
@@ -404,6 +543,7 @@ export function getPolicyVaultCreationConfig(networkId: OgNetworkId): PolicyVaul
       : compactHexList([readHex32(process.env.NEXT_PUBLIC_POLICY_VAULT_ALLOWED_POOL_ID)]);
 
   if (
+    factoryVersion === null ||
     factory === null ||
     proofRegistry === null ||
     executor === null ||
@@ -421,6 +561,7 @@ export function getPolicyVaultCreationConfig(networkId: OgNetworkId): PolicyVaul
     allowedTokens,
     executor,
     factory,
+    factoryVersion: factoryVersion.version,
     policy: getPolicyVaultPolicy(networkId),
     proofRegistry,
   };
@@ -428,7 +569,8 @@ export function getPolicyVaultCreationConfig(networkId: OgNetworkId): PolicyVaul
 
 export function getPolicyVaultReadiness(networkId: OgNetworkId): PolicyVaultReadiness {
   const missing: string[] = [];
-  if (getPolicyVaultFactoryAddress(networkId) === null) {
+  const latestFactoryVersion = getLatestPolicyVaultFactoryVersion(networkId);
+  if (latestFactoryVersion === null) {
     missing.push(networkId === "mainnet" ? "NEXT_PUBLIC_POLICY_VAULT_FACTORY_MAINNET_ADDRESS" : "NEXT_PUBLIC_POLICY_VAULT_FACTORY_ADDRESS");
   }
   if (getProofRegistryAddress(networkId) === null) {
@@ -458,8 +600,12 @@ export function getPolicyVaultReadiness(networkId: OgNetworkId): PolicyVaultRead
   if (networkId !== "mainnet" && readHex32(process.env.NEXT_PUBLIC_POLICY_VAULT_ALLOWED_POOL_ID) === null) {
     missing.push("NEXT_PUBLIC_POLICY_VAULT_ALLOWED_POOL_ID");
   }
-  if (networkId === "mainnet" && readFactoryFromBlockEnv(networkId) === null) {
-    missing.push("NEXT_PUBLIC_POLICY_VAULT_FACTORY_MAINNET_FROM_BLOCK");
+  if (networkId === "mainnet" && latestFactoryVersion !== null && readFactoryFromBlockEnv(networkId, latestFactoryVersion.version) === null) {
+    missing.push(
+      latestFactoryVersion.version === 1
+        ? "NEXT_PUBLIC_POLICY_VAULT_FACTORY_MAINNET_FROM_BLOCK"
+        : `NEXT_PUBLIC_POLICY_VAULT_FACTORY_V${latestFactoryVersion.version}_MAINNET_FROM_BLOCK`,
+    );
   }
 
   return {
@@ -472,8 +618,8 @@ export function getPolicyVaultReadiness(networkId: OgNetworkId): PolicyVaultRead
   };
 }
 
-export function getPolicyVaultFactoryFromBlock(networkId: OgNetworkId): bigint {
-  const parsed = readFactoryFromBlockEnv(networkId);
+export function getPolicyVaultFactoryFromBlock(networkId: OgNetworkId, version?: number): bigint {
+  const parsed = readFactoryFromBlockEnv(networkId, version ?? getLatestPolicyVaultFactoryVersion(networkId)?.version ?? 1);
   return parsed ?? 0n;
 }
 
@@ -481,11 +627,38 @@ function getPolicyVaultPolicy(networkId: OgNetworkId): PolicyVaultPolicy {
   return networkId === "mainnet" ? defaultMainnetPolicyVaultPolicy : defaultPolicyVaultPolicy;
 }
 
-function readFactoryFromBlockEnv(networkId: OgNetworkId): bigint | null {
-  const value =
-    networkId === "mainnet"
-      ? process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_MAINNET_FROM_BLOCK?.trim()
-      : process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_FROM_BLOCK?.trim();
+function readFactoryVersion(networkId: OgNetworkId, version: number): PolicyVaultFactoryVersion | null {
+  const address = readAddress(readFactoryAddressEnv(networkId, version));
+  const fromBlock = readFactoryFromBlockEnv(networkId, version);
+  if (address === null || fromBlock === null) {
+    return null;
+  }
+  return { address, fromBlock, version };
+}
+
+function readFactoryAddressEnv(networkId: OgNetworkId, version: number): string | undefined {
+  if (networkId === "mainnet") {
+    switch (version) {
+      case 1:
+        return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_MAINNET_ADDRESS;
+      case 2:
+        return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_V2_MAINNET_ADDRESS;
+      default:
+        return undefined;
+    }
+  }
+  switch (version) {
+    case 1:
+      return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_ADDRESS;
+    case 2:
+      return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_V2_ADDRESS;
+    default:
+      return undefined;
+  }
+}
+
+function readFactoryFromBlockEnv(networkId: OgNetworkId, version: number): bigint | null {
+  const value = readFactoryFromBlockValue(networkId, version)?.trim();
   if (value === undefined || value === "") {
     return null;
   }
@@ -495,6 +668,27 @@ function readFactoryFromBlockEnv(networkId: OgNetworkId): bigint | null {
     return parsed >= 0n ? parsed : null;
   } catch {
     return null;
+  }
+}
+
+function readFactoryFromBlockValue(networkId: OgNetworkId, version: number): string | undefined {
+  if (networkId === "mainnet") {
+    switch (version) {
+      case 1:
+        return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_MAINNET_FROM_BLOCK;
+      case 2:
+        return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_V2_MAINNET_FROM_BLOCK;
+      default:
+        return undefined;
+    }
+  }
+  switch (version) {
+    case 1:
+      return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_FROM_BLOCK;
+    case 2:
+      return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_V2_FROM_BLOCK;
+    default:
+      return undefined;
   }
 }
 

@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import {
   createPublicClient,
   createWalletClient,
+  encodeAbiParameters,
   formatEther,
   formatUnits,
   getAddress,
@@ -23,11 +24,12 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { agenticIdAbi, agentMintedEvent, type AgenticIdIntelligentData } from "@/lib/contracts/agentic-id";
 import { CURATED_MAINNET_POLICY_VAULT_ROUTES } from "@/lib/contracts/curated-routes";
-import { policyVaultAbi } from "@/lib/contracts/policy-vault";
+import { policyVaultAbi, policyVaultAgentKeyAbi } from "@/lib/contracts/policy-vault";
 import {
   readConfiguredMainnetVaultAddress,
   readMainnetOwnerAddress,
   resolveMainnetVaultForOwner,
+  resolveMainnetVaultVersionsForOwner,
 } from "@/lib/agent/mainnet-vault-resolver";
 import { getOgNetwork } from "@/lib/og/networks";
 import { uploadBytesTo0GStorage, type ZeroGStorageProgress } from "@/lib/og/storage-upload";
@@ -61,6 +63,9 @@ const LEGACY_AGENT_SELL_EXECUTION_PATH = join(".data", "agents", "sell-execution
 const AGENTIC_ID_DEPLOYMENT_PATH = join(".data", "deployments", "mainnet-agentic-id.json");
 const MAX_STORAGE_SYNC_LAG_BLOCKS = 120n;
 const STORAGE_SNAPSHOT_CACHE_TTL_MS = 60_000;
+const WORKSPACE_READ_TIMEOUT_MS = 6_000;
+const AUXILIARY_READ_TIMEOUT_MS = 2_500;
+const OG_RPC_TIMEOUT_MS = 4_000;
 const STANDARD_LABEL = "ERC-7857" as const;
 const STANDARD_NOTE =
   "Implements the canonical ERC-7857 Agentic ID: identity minting, encrypted metadata hash anchoring, and authorized usage are real on-chain identity anchored to the policy vault and audit root. Re-key transfer (iTransfer/iClone) requires a real TEE/ZKP verifier producing TransferValidityProofs; it is intentionally disabled in the server path until such a verifier is wired.";
@@ -113,6 +118,7 @@ export interface DeploySingleOgAgentInput {
 
 export interface LoadOgAgentWorkspaceInput {
   agentId?: string;
+  live?: boolean;
   ownerAddress?: Address | string | null;
 }
 
@@ -193,38 +199,48 @@ export interface StoredAgentTradeArtifact {
 export type StoredAgentTradeSide = "buy" | "sell";
 
 export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspaceInput): Promise<OgAgentWorkspace> {
-  const { agentId, ownerAddress } = normalizeWorkspaceInput(input);
+  const { agentId, live, ownerAddress } = normalizeWorkspaceInput(input);
   const identity = await resolveAgenticIdAddress();
+  const workspaceTimeoutMs = live ? WORKSPACE_READ_TIMEOUT_MS : AUXILIARY_READ_TIMEOUT_MS;
   let [vault, storage] = await Promise.all([
-    readVaultSnapshot(undefined, { ownerAddress }).catch((error): OgAgentVaultSnapshot => ({
+    withTimeout(readVaultSnapshot(undefined, { ownerAddress }), workspaceTimeoutMs, "Policy Vault state").catch((error): OgAgentVaultSnapshot => ({
       owner: ownerAddress,
       ready: false,
       warnings: [error instanceof Error ? error.message : "Unable to read Policy Vault state."],
     })),
-    readStorageSnapshot().catch((error): OgAgentStorageSnapshot => ({
+    live ? withTimeout(readStorageSnapshot(), WORKSPACE_READ_TIMEOUT_MS, "0G Storage state").catch((error): OgAgentStorageSnapshot => ({
       nodesChecked: 0,
       ready: false,
       uploadReady: false,
       warnings: [error instanceof Error ? error.message : "Unable to read 0G Storage state."],
-    })),
+    })) : Promise.resolve({
+      nodesChecked: 0,
+      ready: false,
+      uploadReady: false,
+      warnings: ["Live 0G Storage check deferred for fast UI load."],
+    } satisfies OgAgentStorageSnapshot),
   ]);
   let roster = await readAgentDeploymentRoster(identity.address, {
+    includeOnChain: live,
     ownerAddress: vault.owner ?? ownerAddress,
-    vaultAddress: vault.vault,
   });
   let deployments = roster.active;
   let removedDeployments = roster.removed;
   let deployment = selectAgentDeployment(deployments, agentId);
   let removedDeployment = selectRemovedAgentDeployment(removedDeployments, agentId);
-  if (!ownerAddress && deployment && vault.vault?.toLowerCase() !== deployment.vault.toLowerCase()) {
-    vault = await readVaultSnapshot(undefined, { ownerAddress: deployment.owner }).catch((error): OgAgentVaultSnapshot => ({
+  if (!ownerAddress && deployment && vault.owner?.toLowerCase() !== deployment.owner.toLowerCase()) {
+    vault = await withTimeout(
+      readVaultSnapshot(undefined, { ownerAddress: deployment.owner }),
+      workspaceTimeoutMs,
+      "Policy Vault state",
+    ).catch((error): OgAgentVaultSnapshot => ({
       owner: deployment?.owner,
       ready: false,
       warnings: [error instanceof Error ? error.message : "Unable to read Policy Vault state."],
     }));
     roster = await readAgentDeploymentRoster(identity.address, {
+      includeOnChain: live,
       ownerAddress: vault.owner ?? deployment.owner,
-      vaultAddress: vault.vault ?? deployment.vault,
     });
     deployments = roster.active;
     removedDeployments = roster.removed;
@@ -232,16 +248,49 @@ export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspace
     removedDeployment = selectRemovedAgentDeployment(removedDeployments, agentId);
   }
   const selectedDeployment = deployment ?? removedDeployment ?? null;
+  const selectedAgentKeyEnabled = live && selectedDeployment && vault.vault && (vault.vaultVersion ?? 1) >= 2
+    ? await withTimeout(
+        readAgentKeyEnabled(vault.vault, selectedDeployment),
+        AUXILIARY_READ_TIMEOUT_MS,
+        "Agent key status",
+      ).catch(() => undefined)
+    : undefined;
+  if (selectedAgentKeyEnabled === false) {
+    vault = {
+      ...vault,
+      ready: false,
+      warnings: [...vault.warnings, "Agent key is disabled on the active Policy Vault V2."],
+    };
+  }
   const status = removedDeployment
     ? "removed"
     : deployment
-      ? deployment.paused
+      ? deployment.paused || selectedAgentKeyEnabled === false
         ? "paused"
         : vault.ready
           ? "armed"
           : "blocked"
       : "draft";
-  const logs = await readAgentLogEntries({ deployment: selectedDeployment, storage, vault });
+  if (live && selectedDeployment && vault.vault && (vault.vaultVersion ?? 1) >= 2) {
+    const rpcUrl = process.env.OG_RPC_URL?.trim();
+    if (rpcUrl) {
+      const publicClient = create0GPublicClient(rpcUrl);
+      const agentKey = selectedDeployment.agentKey ?? agentKeyForDeployment(selectedDeployment);
+      vault = {
+        ...vault,
+        sellablePositions: await withTimeout(
+          readSellablePositions(publicClient, vault.vault, { agentKey }),
+          AUXILIARY_READ_TIMEOUT_MS,
+          "sellable positions",
+        ).catch(() => []),
+      };
+    }
+  }
+  const logs = await withTimeout(
+    readAgentLogEntries({ deployment: selectedDeployment, includeOnChain: live, storage, vault }),
+    workspaceTimeoutMs,
+    "agent logs",
+  ).catch(() => []);
 
   return {
     agent: {
@@ -273,14 +322,16 @@ export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspace
 
 function normalizeWorkspaceInput(input?: string | LoadOgAgentWorkspaceInput): {
   agentId?: string;
+  live: boolean;
   ownerAddress?: Address;
 } {
   if (typeof input === "string") {
-    return { agentId: input };
+    return { agentId: input, live: false };
   }
 
   return {
     agentId: input?.agentId,
+    live: input?.live === true,
     ownerAddress: readMainnetOwnerAddress(input?.ownerAddress ?? undefined),
   };
 }
@@ -473,6 +524,18 @@ export async function storeAgentTradeArtifact(
   await writeJsonArtifact(agentTradeArtifactPath(agentId, side), artifact);
 }
 
+export function agentKeyForDeployment(deployment: Pick<OgAgentDeploymentRecord, "identityAddress" | "tokenId">): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      [
+        { name: "identityAddress", type: "address" },
+        { name: "tokenId", type: "uint256" },
+      ],
+      [deployment.identityAddress, BigInt(deployment.tokenId)],
+    ),
+  );
+}
+
 async function readPolicyHash(
   publicClient: PublicClient,
   vault: Address,
@@ -497,10 +560,17 @@ async function readVaultSnapshot(
     };
   }
 
-  const publicClient = client ?? createPublicClient({ chain: make0GMainnetChain(rpcUrl), transport: http(rpcUrl) });
-  const vault = options.ownerAddress
-    ? await resolveMainnetVaultForOwner(options.ownerAddress, publicClient).catch(() => null)
-    : readConfiguredMainnetVaultAddress();
+  const publicClient = client ?? create0GPublicClient(rpcUrl);
+  const versionedVaults = options.ownerAddress
+    ? await resolveMainnetVaultVersionsForOwner(options.ownerAddress, publicClient).catch(() => [])
+    : [];
+  const activeVault = versionedVaults.at(-1);
+  const vault = activeVault?.vault ?? (
+    options.ownerAddress
+      ? await resolveMainnetVaultForOwner(options.ownerAddress, publicClient).catch(() => null)
+      : readConfiguredMainnetVaultAddress()
+  );
+  const vaultVersion = activeVault?.version;
   if (!vault) {
     return {
       owner: options.ownerAddress,
@@ -517,6 +587,7 @@ async function readVaultSnapshot(
       ready: false,
       owner: options.ownerAddress,
       vault,
+      vaultVersion,
       warnings: [`RPC chain mismatch: expected ${MAINNET_CHAIN_ID}, got ${chainId}.`],
     };
   }
@@ -582,13 +653,29 @@ async function readVaultSnapshot(
     ready: warnings.length === 0,
     sellablePositions,
     vault,
+    vaultVersion,
     warnings,
   };
+}
+
+async function readAgentKeyEnabled(vault: Address, deployment: OgAgentDeploymentRecord): Promise<boolean> {
+  const rpcUrl = process.env.OG_RPC_URL?.trim();
+  if (!rpcUrl) {
+    return false;
+  }
+  const publicClient = create0GPublicClient(rpcUrl);
+  return publicClient.readContract({
+    address: vault,
+    abi: policyVaultAgentKeyAbi,
+    functionName: "agentKeyEnabled",
+    args: [deployment.agentKey ?? agentKeyForDeployment(deployment)],
+  }) as Promise<boolean>;
 }
 
 async function readSellablePositions(
   publicClient: PublicClient,
   vault: Address,
+  options: { agentKey?: Hex } = {},
 ): Promise<OgAgentVaultPosition[]> {
   const routesByToken = new Map<string, (typeof CURATED_MAINNET_POLICY_VAULT_ROUTES)[number]>();
   for (const route of CURATED_MAINNET_POLICY_VAULT_ROUTES) {
@@ -600,12 +687,19 @@ async function readSellablePositions(
 
   const positions = await Promise.all(
     Array.from(routesByToken.values()).map(async (route) => {
-      const amountRaw = await publicClient.readContract({
-        address: vault,
-        abi: policyVaultAbi,
-        functionName: "positionUnits",
-        args: [route.tokenOut],
-      });
+      const amountRaw = options.agentKey
+        ? await publicClient.readContract({
+            address: vault,
+            abi: policyVaultAgentKeyAbi,
+            functionName: "agentPositionUnits",
+            args: [options.agentKey, route.tokenOut],
+          })
+        : await publicClient.readContract({
+            address: vault,
+            abi: policyVaultAbi,
+            functionName: "positionUnits",
+            args: [route.tokenOut],
+          });
       if (amountRaw <= 0n) {
         return null;
       }
@@ -668,7 +762,7 @@ async function readFreshStorageSnapshot(
     };
   }
 
-  const publicClient = client ?? createPublicClient({ chain: make0GMainnetChain(rpcUrl), transport: http(rpcUrl) });
+  const publicClient = client ?? create0GPublicClient(rpcUrl);
   const chainId = await publicClient.getChainId();
   if (chainId !== MAINNET_CHAIN_ID) {
     return {
@@ -897,10 +991,12 @@ async function writeAgentStorageProgress(payload: unknown, progress: ZeroGStorag
 
 async function readAgentLogEntries({
   deployment,
+  includeOnChain = false,
   storage,
   vault,
 }: {
   deployment: OgAgentDeploymentRecord | null;
+  includeOnChain?: boolean;
   storage: OgAgentStorageSnapshot;
   vault: OgAgentVaultSnapshot;
 }): Promise<OgAgentLogEntry[]> {
@@ -920,7 +1016,7 @@ async function readAgentLogEntries({
   const sellLog = buildTradeLogEntry(sellArtifact, "sell");
   if (sellLog && (!sellLog.txHash || !runtimeTradeTxHashes.has(sellLog.txHash))) logs.push(sellLog);
   const knownTradeTxHashes = new Set(logs.map((log) => log.txHash).filter((hash): hash is string => Boolean(hash)));
-  const onChainTradeLogs = deployment ? await readOnChainTradeLogEntries(deployment).catch(() => []) : [];
+  const onChainTradeLogs = includeOnChain && deployment ? await readOnChainTradeLogEntries(deployment).catch(() => []) : [];
   for (const log of onChainTradeLogs) {
     if (!log.txHash || !knownTradeTxHashes.has(log.txHash)) {
       logs.push(log);
@@ -1100,7 +1196,7 @@ async function readOnChainTradeLogEntries(deployment: OgAgentDeploymentRecord): 
   const rpcUrl = process.env.OG_RPC_URL?.trim();
   if (!rpcUrl) return [];
 
-  const publicClient = createPublicClient({ chain: make0GMainnetChain(rpcUrl), transport: http(rpcUrl) });
+  const publicClient = create0GPublicClient(rpcUrl);
   const chainId = await publicClient.getChainId();
   if (chainId !== MAINNET_CHAIN_ID) return [];
 
@@ -1229,6 +1325,26 @@ function clampInteger(value: number | undefined, min: number, max: number, fallb
   return Math.min(max, Math.max(min, Math.trunc(value)));
 }
 
+function create0GPublicClient(rpcUrl: string): PublicClient {
+  return createPublicClient({
+    chain: make0GMainnetChain(rpcUrl),
+    transport: http(rpcUrl, {
+      retryCount: 0,
+      timeout: OG_RPC_TIMEOUT_MS,
+    }),
+  });
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms.`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 async function resolveAgenticIdAddress(): Promise<{ address?: Address; fromArtifact: boolean }> {
   // Prefer the mainnet-scoped env vars; keep the legacy names as a fallback so
   // existing setups keep working. Agentic ID is mainnet-only (chain 16661);
@@ -1272,11 +1388,17 @@ function selectRemovedAgentDeployment(
 
 async function readAgentDeploymentRoster(
   identityAddress?: Address,
-  filter: { ownerAddress?: Address; vaultAddress?: Address } = {},
+  filter: { includeOnChain?: boolean; ownerAddress?: Address; vaultAddress?: Address } = {},
 ): Promise<{ active: OgAgentDeploymentRecord[]; removed: OgRemovedAgentRecord[] }> {
   const registry = await readAgentDeploymentRegistryArtifact();
   const [onChainRecords, legacyDeployResponse, legacySingleRecord] = await Promise.all([
-    readOnChainAgentDeploymentRecords(identityAddress).catch(() => []),
+    filter.includeOnChain
+      ? withTimeout(
+          readOnChainAgentDeploymentRecords(identityAddress),
+          AUXILIARY_READ_TIMEOUT_MS,
+          "Agentic ID on-chain roster",
+        ).catch(() => [])
+      : Promise.resolve([]),
     readLegacyDeployResponseRecord(),
     readJsonArtifact<OgAgentDeploymentRecord>(LEGACY_AGENT_DEPLOYMENT_PATH),
   ]);
@@ -1289,32 +1411,11 @@ async function readAgentDeploymentRoster(
   const removedAgents = buildRemovedAgentRecords(registry, removedCandidates, readEnvRemovedAgentIds())
     .filter((deployment) => deploymentMatchesFilter(deployment, filter));
   const removedAgentIds = new Set(removedAgents.map((deployment) => deployment.id));
-
-  const activeAppDeployments = appDeployments.filter((deployment) => {
+  const active = mergeAgentDeploymentRecords([...onChainRecords, ...appDeployments]).filter((deployment) => {
     if (removedAgentIds.has(deployment.id)) return false;
     return deploymentMatchesFilter(deployment, filter);
   });
-  if (activeAppDeployments.length > 0) {
-    return { active: latestDeploymentOnly(activeAppDeployments), removed: removedAgents };
-  }
-
-  if (!filter.ownerAddress && !filter.vaultAddress) {
-    return { active: [], removed: removedAgents };
-  }
-
-  const latestOnChainDeployment = latestDeploymentOnly(
-    mergeAgentDeploymentRecords(onChainRecords).filter((deployment) => deploymentMatchesFilter(deployment, filter)),
-  ).at(0);
-  if (!latestOnChainDeployment || removedAgentIds.has(latestOnChainDeployment.id)) {
-    return { active: [], removed: removedAgents };
-  }
-
-  return { active: [latestOnChainDeployment], removed: removedAgents };
-}
-
-function latestDeploymentOnly(deployments: OgAgentDeploymentRecord[]): OgAgentDeploymentRecord[] {
-  const latest = deployments.at(-1);
-  return latest ? [latest] : [];
+  return { active, removed: removedAgents };
 }
 
 function deploymentMatchesFilter(
@@ -1437,6 +1538,7 @@ function normalizeAgentDeploymentRecord(
     deployTxHash,
     executor,
     filters: filters.length ? filters : ["capital-guard", "proof-strict"],
+    agentKey: agentKeyForDeployment({ identityAddress, tokenId }),
     id: ogAgentIdFromTokenId(tokenId),
     identityAddress,
     name: record.name.trim() || `Agentic ID #${tokenId}`,
@@ -1467,7 +1569,7 @@ async function readOnChainAgentDeploymentRecords(identityAddress?: Address): Pro
   if (!identityAddress) return [];
   const rpcUrl = process.env.OG_RPC_URL?.trim();
   if (!rpcUrl) return [];
-  const publicClient = createPublicClient({ chain: make0GMainnetChain(rpcUrl), transport: http(rpcUrl) });
+  const publicClient = create0GPublicClient(rpcUrl);
   const chainId = await publicClient.getChainId();
   if (chainId !== MAINNET_CHAIN_ID) return [];
   const fromBlock = await readAgenticIdDeploymentBlock(publicClient).catch(() => 0n);

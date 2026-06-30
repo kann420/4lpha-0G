@@ -41,6 +41,7 @@ export interface OgAgentDeploymentRecord {
   tokenId: string;
   vault: Address;
   executor: Address;
+  agentKey?: Hex;
   paused?: boolean;
   runtime?: OgAgentRuntimeSettings;
 }
@@ -101,6 +102,7 @@ export interface OgAgentVaultSnapshot {
   ready: boolean;
   sellablePositions?: OgAgentVaultPosition[];
   vault?: Address;
+  vaultVersion?: number;
   warnings: string[];
 }
 

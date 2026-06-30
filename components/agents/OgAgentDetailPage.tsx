@@ -25,12 +25,22 @@ import {
   Zap,
 } from "lucide-react";
 import { useSignMessage } from "wagmi";
+import {
+  createPublicClient,
+  createWalletClient,
+  custom,
+  http,
+  type Chain,
+  type EIP1193Provider,
+  type Hex,
+} from "viem";
 import { AppShell } from "@/components/app/AppShell";
 import { useOgNetwork } from "@/components/app/useOgNetwork";
 import { AgentEmptyState, shortHash } from "@/components/agents/OgAgentWorkspace";
 import { WalletConnectButton } from "@/components/wallet";
 import { useWalletConnection } from "@/components/wallet/useWalletConnection";
 import { AGENT_TRADE_ROUTES } from "@/lib/agent/trade-catalog";
+import { policyVaultAgentKeyAbi } from "@/lib/contracts/policy-vault";
 import { buildCopilotWalletAccessMessage } from "@/lib/copilot/wallet-access";
 import { getOgNetwork } from "@/lib/og/networks";
 import type { AgentTradeResponse } from "@/lib/types";
@@ -218,6 +228,7 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
     setActionMessage(action === "pause" ? "Pausing agent runtime." : "Arming agent runtime.");
     try {
       const walletProof = await ensureOwnerWalletProof();
+      await setAgentKeyEnabledOnActiveVault(action === "arm");
       const response = await fetch("/api/agents/status", {
         body: JSON.stringify({
           action,
@@ -302,6 +313,10 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
     setActionMessage("Preparing owner-signed remove request.");
     try {
       const walletProof = await ensureOwnerWalletProof();
+      if ((workspace?.vault.vaultVersion ?? 1) >= 2 && (workspace?.vault.sellablePositions?.length ?? 0) > 0) {
+        throw new Error("Sell this agent's open V2 positions before removing it.");
+      }
+      await setAgentKeyEnabledOnActiveVault(false);
       const response = await fetch("/api/agents/remove", {
         body: JSON.stringify({
           agentId,
@@ -325,6 +340,40 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
     } finally {
       setActionLoading(null);
     }
+  }
+
+  async function setAgentKeyEnabledOnActiveVault(enabled: boolean) {
+    const deployment = workspace?.agent.deployment;
+    const vault = workspace?.vault.vault;
+    if (!deployment?.agentKey || !vault || (workspace?.vault.vaultVersion ?? 1) < 2) {
+      return;
+    }
+    const provider = typeof window === "undefined"
+      ? undefined
+      : (window as Window & { ethereum?: EIP1193Provider }).ethereum;
+    if (!provider) {
+      throw new Error("Wallet provider is required to update the V2 agent key.");
+    }
+    setActionMessage(enabled ? "Waiting for wallet confirmation to enable the V2 agent key." : "Waiting for wallet confirmation to disable the V2 agent key.");
+    const chain = make0GMainnetChain(network.rpcUrl);
+    const publicClient = createPublicClient({ chain, transport: http(network.rpcUrl) });
+    const walletClient = createWalletClient({
+      chain,
+      transport: custom(provider),
+    });
+    const [account] = await walletClient.getAddresses();
+    if (!account || !ownerAddress || account.toLowerCase() !== ownerAddress.toLowerCase()) {
+      throw new Error("Connected wallet is not the Policy Vault owner.");
+    }
+    const txHash = await walletClient.writeContract({
+      account,
+      address: vault,
+      abi: policyVaultAgentKeyAbi,
+      functionName: "setAgentKeyEnabled",
+      args: [deployment.agentKey as Hex, enabled],
+    });
+    setActionMessage(enabled ? "Agent key enable submitted. Waiting for confirmation." : "Agent key disable submitted. Waiting for confirmation.");
+    await waitForReceipt(publicClient, txHash);
   }
 
   return (
@@ -1245,4 +1294,39 @@ function sanitizeWalletError(message: string): string {
     return "Owner wallet does not have enough 0G for gas.";
   }
   return message.replace(/0x[a-fA-F0-9]{96,}/gu, "[redacted-hex]");
+}
+
+function make0GMainnetChain(rpcUrl: string): Chain {
+  return {
+    id: MAINNET.chainId,
+    name: MAINNET.networkName,
+    nativeCurrency: {
+      decimals: 18,
+      name: "0G",
+      symbol: "0G",
+    },
+    rpcUrls: {
+      default: { http: [rpcUrl] },
+    },
+    blockExplorers: {
+      default: {
+        name: "0G ChainScan",
+        url: MAINNET.explorerUrl,
+      },
+    },
+  };
+}
+
+async function waitForReceipt(
+  publicClient: ReturnType<typeof createPublicClient>,
+  hash: Hex,
+) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    try {
+      return await publicClient.getTransactionReceipt({ hash });
+    } catch {
+      await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+    }
+  }
+  throw new Error("Timed out waiting for the V2 agent key transaction.");
 }

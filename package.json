@@ -28,6 +28,7 @@
     "smoke:vault": "hardhat run scripts/smoke-galileo.ts --network ogGalileo",
     "deploy:vault:mainnet": "hardhat run scripts/deploy-mainnet-core.ts --network ogMainnet",
     "deploy:vault:mainnet:factory": "hardhat run scripts/deploy-mainnet-factory.ts --network ogMainnet",
+    "deploy:vault:mainnet:factory:v2": "hardhat run scripts/deploy-mainnet-factory-v2.ts --network ogMainnet",
     "deploy:vault:mainnet:adapter": "hardhat run scripts/deploy-mainnet-adapter.ts --network ogMainnet",
     "deploy:agentic-id:mainnet": "hardhat run scripts/deploy-mainnet-agentic-id.ts --network ogMainnet",
     "check:vault:mainnet": "tsx scripts/check-mainnet-vault-config.ts",

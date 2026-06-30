@@ -14,6 +14,7 @@ import {
   parseUnits,
   toBytes,
   zeroAddress,
+  type Abi,
   type Address,
   type Chain,
   type Hex,
@@ -27,11 +28,15 @@ import {
 } from "@/lib/contracts/curated-routes";
 import {
   defaultMainnetPolicyVaultPolicy,
+  getLatestPolicyVaultFactoryVersion,
   policyVaultAbi,
+  policyVaultAgentKeyAbi,
   policyVaultFactoryAbi,
+  policyVaultV2TradeAbi,
   type PolicyVaultPolicy,
 } from "@/lib/contracts/policy-vault";
 import { uploadBytesTo0GStorage } from "@/lib/og/storage-upload";
+import { proofRegistryAbi as PROOF_REGISTRY_ABI } from "@/lib/contracts/proof-registry-abi";
 
 const MAINNET_CHAIN_ID = 16661;
 const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
@@ -87,6 +92,7 @@ export interface CuratedTradeQuote {
 }
 
 export interface CuratedTradeExecutionInput extends CuratedTradeQuoteInput {
+  agentKey?: Hex;
   agentRef?: string;
   copilotAudit?: {
     model?: string;
@@ -140,30 +146,7 @@ const erc20Abi = [
   },
 ] as const;
 
-const proofRegistryAbi = [
-  {
-    inputs: [],
-    name: "owner",
-    outputs: [{ internalType: "address", name: "", type: "address" }],
-    stateMutability: "view",
-    type: "function",
-  },
-  {
-    inputs: [
-      { internalType: "bytes32", name: "actionHash", type: "bytes32" },
-      { internalType: "bytes32", name: "auditRoot", type: "bytes32" },
-      { internalType: "bytes32", name: "policySnapshotHash", type: "bytes32" },
-      { internalType: "bytes32", name: "modelMetadataHash", type: "bytes32" },
-      { internalType: "string", name: "storageRef", type: "string" },
-      { internalType: "bytes32", name: "vaultActionHash", type: "bytes32" },
-      { internalType: "string", name: "agentRef", type: "string" },
-    ],
-    name: "acceptProof",
-    outputs: [],
-    stateMutability: "nonpayable",
-    type: "function",
-  },
-] as const;
+const proofRegistryAbi = PROOF_REGISTRY_ABI;
 
 const quoterV2Abi = [
   {
@@ -298,6 +281,15 @@ export async function executeCuratedTrade(input: CuratedTradeExecutionInput): Pr
   const nonce = randomNonce();
   const tokenIn = input.side === "buy" ? zeroAddress : route.tokenOut;
   const tokenOut = input.side === "buy" ? route.tokenOut : zeroAddress;
+  const agentKey = input.agentKey;
+  const supportsAgentKeys = await vaultSupportsAgentKeys(runtime, vaultAddress);
+  if (supportsAgentKeys && agentKey === undefined) {
+    throw new Error("PolicyVaultV2 execution requires an agent key.");
+  }
+  const isV2 = agentKey !== undefined ? await isAgentKeyEnabled(runtime, vaultAddress, agentKey) : false;
+  if (agentKey !== undefined && !isV2) {
+    throw new Error("PolicyVaultV2 agent key is not enabled for this agent.");
+  }
 
   const agentRef = input.agentRef ?? AGENT_REF;
   const baseAudit = {
@@ -318,6 +310,7 @@ export async function executeCuratedTrade(input: CuratedTradeExecutionInput): Pr
     minOutBps: quote.minOutBps,
     policySnapshotHash,
     copilotAudit: input.copilotAudit,
+    ...(isV2 ? { agentKey } : {}),
   };
   const storage = await uploadTradeAudit(baseAudit);
 
@@ -328,6 +321,7 @@ export async function executeCuratedTrade(input: CuratedTradeExecutionInput): Pr
     auditRoot: storage.auditRoot,
     deadline,
     nonce,
+    ...(isV2 ? { agentKey } : {}),
     policySnapshotHash,
     poolId: quote.route.id,
     quotedAmountOut: BigInt(quote.quotedAmountOut),
@@ -337,16 +331,16 @@ export async function executeCuratedTrade(input: CuratedTradeExecutionInput): Pr
   };
   const vaultActionHash = await runtime.publicClient.readContract({
     address: vaultAddress,
-    abi: policyVaultAbi,
+    abi: tradeAbiForVersion(isV2),
     functionName: "vaultActionHashFor",
     args: [input.side === "buy", draftRequest],
-  });
+  }) as Hex;
   const actionHash = await runtime.publicClient.readContract({
     address: vaultAddress,
     abi: policyVaultAbi,
     functionName: "actionHashFor",
     args: [vaultActionHash, storage.auditRoot, policySnapshotHash],
-  });
+  }) as Hex;
   const tradeRequest = {
     ...draftRequest,
     actionHash,
@@ -376,7 +370,7 @@ export async function executeCuratedTrade(input: CuratedTradeExecutionInput): Pr
   const tradeSimulation = await runtime.publicClient.simulateContract({
     account: executorAccount.address,
     address: vaultAddress,
-    abi: policyVaultAbi,
+    abi: tradeAbiForVersion(isV2),
     functionName,
     args: [tradeRequest],
   });
@@ -485,11 +479,15 @@ function resolveMainnetRuntime() {
   const rpcUrl = requireEnv("OG_RPC_URL");
   const chain = make0GMainnetChain(rpcUrl);
   const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
+  const factory = getLatestPolicyVaultFactoryVersion("mainnet");
+  if (!factory) {
+    throw new Error("Missing mainnet Policy Vault factory configuration.");
+  }
   return {
     adapter: readAddressEnv("NEXT_PUBLIC_POLICY_VAULT_ADAPTER_MAINNET_ADDRESS"),
     chain,
     executor: readAddressEnv("NEXT_PUBLIC_VAULT_EXECUTOR_MAINNET_ADDRESS"),
-    factory: readAddressEnv("NEXT_PUBLIC_POLICY_VAULT_FACTORY_MAINNET_ADDRESS"),
+    factory: factory.address,
     proofRegistry: readAddressEnv("NEXT_PUBLIC_PROOF_REGISTRY_MAINNET_ADDRESS"),
     publicClient,
     rpcUrl,
@@ -854,6 +852,28 @@ async function uploadTradeAudit(payload: unknown): Promise<{ auditRoot: Hex; sto
     auditRoot: upload.rootHash,
     storageRef: upload.storageRef,
   };
+}
+
+async function isAgentKeyEnabled(runtime: Runtime, vault: Address, agentKey: Hex): Promise<boolean> {
+  return runtime.publicClient.readContract({
+    address: vault,
+    abi: policyVaultAgentKeyAbi,
+    functionName: "agentKeyEnabled",
+    args: [agentKey],
+  }).catch(() => false);
+}
+
+async function vaultSupportsAgentKeys(runtime: Runtime, vault: Address): Promise<boolean> {
+  return runtime.publicClient.readContract({
+    address: vault,
+    abi: policyVaultAgentKeyAbi,
+    functionName: "agentOpenPositionCount",
+    args: [ZERO_HASH],
+  }).then(() => true, () => false);
+}
+
+function tradeAbiForVersion(isV2: boolean): Abi {
+  return (isV2 ? policyVaultV2TradeAbi : policyVaultAbi) as Abi;
 }
 
 function hashJson(value: unknown): Hex {

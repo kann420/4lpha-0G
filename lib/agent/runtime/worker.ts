@@ -82,15 +82,28 @@ async function selectDeploymentsForCycle(config: OgAgentWorkerConfig): Promise<O
     return [workspace.agent.deployment];
   }
 
-  const armed = workspace.agents.filter(
-    (deployment) => !deployment.paused && workspace.vault.ready && !workspace.vault.paused && !workspace.vault.executorRevoked,
-  );
+  const armed = workspace.agents.filter((deployment) => !deployment.paused);
   if (config.processAllAgents) {
-    return armed;
+    return selectReadyAllAgentDeployments(armed);
   }
 
   const selected = workspace.agent.deployment ?? armed.at(-1);
   return selected ? [selected] : [];
+}
+
+async function selectReadyAllAgentDeployments(armed: OgAgentDeploymentRecord[]): Promise<OgAgentDeploymentRecord[]> {
+  const ready: OgAgentDeploymentRecord[] = [];
+  for (const deployment of armed) {
+    const workspace = await loadOgAgentWorkspace(deployment.id);
+    if ((workspace.vault.vaultVersion ?? 1) < 2) {
+      return [];
+    }
+    if (workspace.agent.status !== "armed" || !workspace.agent.deployment || !isVaultRunnable(workspace)) {
+      return [];
+    }
+    ready.push(workspace.agent.deployment);
+  }
+  return ready;
 }
 
 async function processDeployment(
@@ -111,6 +124,10 @@ async function processDeployment(
     }
     if (workspace.agent.status !== "armed") {
       decision = holdDecision(`Agent is ${workspace.agent.status}, not armed.`);
+      return appendAndReturn(buildRunRecord({ candidates, decision, deployment, request, startedAt, status: "blocked" }));
+    }
+    if (!isVaultRunnable(workspace)) {
+      decision = holdDecision(vaultBlockedReason(workspace));
       return appendAndReturn(buildRunRecord({ candidates, decision, deployment, request, startedAt, status: "blocked" }));
     }
     if (!workspace.storage.uploadReady) {
@@ -176,6 +193,23 @@ async function processDeployment(
       buildRunRecord({ candidates, decision, deployment, error: message, request, startedAt, status: "errored" }),
     );
   }
+}
+
+function isVaultRunnable(workspace: OgAgentWorkspace): boolean {
+  return workspace.vault.ready && !workspace.vault.paused && !workspace.vault.executorRevoked;
+}
+
+function vaultBlockedReason(workspace: OgAgentWorkspace): string {
+  if (!workspace.vault.ready) {
+    return workspace.vault.warnings.join(" ") || "Policy Vault is not ready for autonomous execution.";
+  }
+  if (workspace.vault.paused) {
+    return "Policy Vault is paused.";
+  }
+  if (workspace.vault.executorRevoked) {
+    return "Policy Vault executor is revoked.";
+  }
+  return "Policy Vault is not ready for autonomous execution.";
 }
 
 async function getPositionHoldReason(

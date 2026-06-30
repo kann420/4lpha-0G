@@ -125,6 +125,14 @@ export function VaultSurface() {
               vaultAddress={walletVault.vaultAddress}
               walletConnected={walletAccount.isConnected}
             />
+            {walletVault.migrationRequired ? (
+              <VaultMigrationPanel
+                disabled={walletVault.isCreating || walletVault.isDiscovering}
+                legacyCount={walletVault.legacyVaults.length}
+                onMigrate={walletVault.migrateVault}
+                status={walletVault.statusText}
+              />
+            ) : null}
           </div>
 
           <VaultActionPanel
@@ -558,6 +566,44 @@ function PolicyInput({
         <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted">{suffix}</span>
       </span>
     </label>
+  );
+}
+
+function VaultMigrationPanel({
+  disabled,
+  legacyCount,
+  onMigrate,
+  status,
+}: {
+  disabled: boolean;
+  legacyCount: number;
+  onMigrate: () => Promise<void>;
+  status: string;
+}) {
+  return (
+    <section className="rounded-[20px] border border-amber/25 bg-amber/[0.06] p-5">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-semibold text-amber">
+            <AlertTriangle className="h-4 w-4" />
+            Vault migration available
+          </div>
+          <p className="mt-2 text-sm leading-6 text-muted">
+            {legacyCount} legacy vault detected. Move native 0G into the latest PolicyVault version before enabling multi-agent auto-run.
+          </p>
+          <p className="mt-2 text-xs leading-5 text-muted">{status}</p>
+        </div>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => void onMigrate()}
+          className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full border border-amber/30 bg-amber/15 px-4 text-sm font-semibold text-amber transition hover:bg-amber/20 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {disabled ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+          Migrate vault
+        </button>
+      </div>
+    </section>
   );
 }
 

@@ -22,12 +22,23 @@ import {
   Zap,
 } from "lucide-react";
 import { useSignMessage } from "wagmi";
+import {
+  createPublicClient,
+  createWalletClient,
+  custom,
+  http,
+  type Chain,
+  type EIP1193Provider,
+  type Hex,
+} from "viem";
 import { AppShell } from "@/components/app/AppShell";
 import { useOgNetwork } from "@/components/app/useOgNetwork";
 import { shortHash } from "@/components/agents/OgAgentWorkspace";
 import { WalletConnectButton } from "@/components/wallet";
 import { useWalletConnection } from "@/components/wallet/useWalletConnection";
 import { buildCopilotWalletAccessMessage } from "@/lib/copilot/wallet-access";
+import { policyVaultAgentKeyAbi } from "@/lib/contracts/policy-vault";
+import { getOgNetwork } from "@/lib/og/networks";
 import { type OgAgentFilterId, type OgAgentWorkspace } from "@/lib/agent/single-agent";
 
 type DeployResponse = {
@@ -54,6 +65,8 @@ type AgentWalletProof = {
   message: string;
   signature: string;
 };
+
+const MAINNET = getOgNetwork("mainnet");
 
 const STRATEGY_TEMPLATES: Array<{
   description: string;
@@ -315,6 +328,7 @@ export function OgAgentCreateWorkspace() {
       if (!response.ok || !payload.data) {
         throw new Error(payload.error?.message ?? "Unable to deploy agent.");
       }
+      await enableAgentKeyOnActiveVault(payload.data.workspace);
       setWorkspace(payload.data.workspace);
       setStatusText("Agentic ID minted and bound to the Policy Vault.");
       router.push(`/agents/${payload.data.workspace.agent.id}`);
@@ -323,6 +337,37 @@ export function OgAgentCreateWorkspace() {
     } finally {
       setIsDeploying(false);
     }
+  }
+
+  async function enableAgentKeyOnActiveVault(nextWorkspace: OgAgentWorkspace) {
+    const deployment = nextWorkspace.agent.deployment;
+    const vault = nextWorkspace.vault.vault;
+    if (!deployment?.agentKey || !vault || (nextWorkspace.vault.vaultVersion ?? 1) < 2) {
+      return;
+    }
+    const provider = typeof window === "undefined"
+      ? undefined
+      : (window as Window & { ethereum?: EIP1193Provider }).ethereum;
+    if (!provider) {
+      throw new Error("Wallet provider is required to enable the V2 agent key.");
+    }
+    setStatusText("Waiting for wallet confirmation to enable this agent on PolicyVaultV2.");
+    const chain = make0GMainnetChain(network.rpcUrl);
+    const publicClient = createPublicClient({ chain, transport: http(network.rpcUrl) });
+    const walletClient = createWalletClient({ chain, transport: custom(provider) });
+    const [account] = await walletClient.getAddresses();
+    if (!account || !ownerAddress || account.toLowerCase() !== ownerAddress.toLowerCase()) {
+      throw new Error("Connected wallet is not the Policy Vault owner.");
+    }
+    const txHash = await walletClient.writeContract({
+      account,
+      address: vault,
+      abi: policyVaultAgentKeyAbi,
+      functionName: "setAgentKeyEnabled",
+      args: [deployment.agentKey as Hex, true],
+    });
+    setStatusText("Agent key enable submitted. Waiting for confirmation.");
+    await waitForReceipt(publicClient, txHash);
   }
 
   return (
@@ -967,4 +1012,39 @@ function getOwnerWalletMessage({
   if (!isOwnerWallet) return `Connected wallet ${shortHash(walletAddress)} is not the vault owner ${shortHash(ownerAddress)}.`;
   if (isWrongChain) return "Owner wallet is connected; minting will switch to 0G Mainnet before signing.";
   return undefined;
+}
+
+function make0GMainnetChain(rpcUrl: string): Chain {
+  return {
+    id: MAINNET.chainId,
+    name: MAINNET.networkName,
+    nativeCurrency: {
+      decimals: 18,
+      name: "0G",
+      symbol: "0G",
+    },
+    rpcUrls: {
+      default: { http: [rpcUrl] },
+    },
+    blockExplorers: {
+      default: {
+        name: "0G ChainScan",
+        url: MAINNET.explorerUrl,
+      },
+    },
+  };
+}
+
+async function waitForReceipt(
+  publicClient: ReturnType<typeof createPublicClient>,
+  hash: Hex,
+) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    try {
+      return await publicClient.getTransactionReceipt({ hash });
+    } catch {
+      await new Promise((resolve) => window.setTimeout(resolve, 1_000));
+    }
+  }
+  throw new Error("Timed out waiting for the V2 agent key transaction.");
 }
