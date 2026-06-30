@@ -19,6 +19,11 @@ export interface PolicyVaultFactoryVersion {
   version: number;
 }
 
+// Public, non-secret deployment defaults for the live 0G mainnet vault stack.
+// Environment variables still override these values for future deployments.
+const MAINNET_POLICY_VAULT_FACTORY_V2_ADDRESS = "0xc9CA07dc92eEf55aFB4d83BBffb9E8EFc5c0036f";
+const MAINNET_POLICY_VAULT_FACTORY_V2_FROM_BLOCK = "37476922";
+
 export const defaultPolicyVaultPolicy: PolicyVaultPolicy = {
   cooldownSeconds: 0n,
   dailyCap0G: UNBOUNDED_POLICY_LIMIT,
@@ -642,7 +647,7 @@ function readFactoryAddressEnv(networkId: OgNetworkId, version: number): string 
       case 1:
         return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_MAINNET_ADDRESS;
       case 2:
-        return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_V2_MAINNET_ADDRESS;
+        return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_V2_MAINNET_ADDRESS ?? MAINNET_POLICY_VAULT_FACTORY_V2_ADDRESS;
       default:
         return undefined;
     }
@@ -677,7 +682,7 @@ function readFactoryFromBlockValue(networkId: OgNetworkId, version: number): str
       case 1:
         return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_MAINNET_FROM_BLOCK;
       case 2:
-        return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_V2_MAINNET_FROM_BLOCK;
+        return process.env.NEXT_PUBLIC_POLICY_VAULT_FACTORY_V2_MAINNET_FROM_BLOCK ?? MAINNET_POLICY_VAULT_FACTORY_V2_FROM_BLOCK;
       default:
         return undefined;
     }
