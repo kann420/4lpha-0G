@@ -1400,6 +1400,7 @@ async function readAgentDeploymentRoster(
     ...(legacySingleRecord ? [legacySingleRecord] : []),
     ...(registry?.agents ?? []),
   ]);
+  const appDeploymentIds = new Set(appDeployments.map((deployment) => deployment.id));
   const deploymentCandidates = mergeAgentDeploymentRecords([
     ...((filter.ownerAddress || filter.vaultAddress) ? onChainRecords : []),
     ...appDeployments,
@@ -1409,11 +1410,44 @@ async function readAgentDeploymentRoster(
     .filter((deployment) => deploymentMatchesFilter(deployment, filter));
   const removedAgentIds = new Set(removedAgents.map((deployment) => deployment.id));
 
-  const activeDeployments = deploymentCandidates.filter((deployment) => {
+  const activeCandidates = deploymentCandidates.filter((deployment) => {
     if (removedAgentIds.has(deployment.id)) return false;
     return deploymentMatchesFilter(deployment, filter);
   });
+  const activeDeployments = await filterActiveOnChainAgentRecords(activeCandidates, appDeploymentIds, filter);
   return { active: activeDeployments, removed: removedAgents };
+}
+
+async function filterActiveOnChainAgentRecords(
+  deployments: OgAgentDeploymentRecord[],
+  appDeploymentIds: Set<string>,
+  filter: { includeOnChain?: boolean; ownerAddress?: Address; vaultAddress?: Address },
+): Promise<OgAgentDeploymentRecord[]> {
+  if (!filter.includeOnChain || (!filter.ownerAddress && !filter.vaultAddress)) {
+    return deployments;
+  }
+
+  const vault = filter.vaultAddress ?? (
+    filter.ownerAddress ? await resolveMainnetVaultForOwner(filter.ownerAddress).catch(() => null) : null
+  );
+  if (!vault) {
+    return deployments;
+  }
+
+  const filtered = await Promise.all(
+    deployments.map(async (deployment): Promise<OgAgentDeploymentRecord | null> => {
+      if (appDeploymentIds.has(deployment.id)) {
+        return deployment;
+      }
+      const enabled = await withTimeout(
+        readAgentKeyEnabled(vault, deployment),
+        AUXILIARY_READ_TIMEOUT_MS,
+        "Agent key status",
+      ).catch(() => undefined);
+      return enabled === false ? null : deployment;
+    }),
+  );
+  return filtered.filter((deployment): deployment is OgAgentDeploymentRecord => deployment !== null);
 }
 
 function deploymentMatchesFilter(
