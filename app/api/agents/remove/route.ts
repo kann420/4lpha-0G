@@ -54,16 +54,6 @@ export async function POST(request: Request) {
     return removeError("owner_required", "Connect the Policy Vault owner wallet before removing this agent.", 403);
   }
   if ((workspace.vault.vaultVersion ?? 1) >= 2) {
-    const hasOpenPosition = (workspace.vault.sellablePositions ?? []).some((position) => {
-      try {
-        return BigInt(position.amountRaw) > 0n;
-      } catch {
-        return false;
-      }
-    });
-    if (hasOpenPosition) {
-      return removeError("open_positions", "Sell this agent's open V2 positions before removing it.", 409);
-    }
     if (!workspace.vault.vault) {
       return removeError("vault_unavailable", "Policy Vault address is required before removing this agent.", 409);
     }

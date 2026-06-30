@@ -347,16 +347,13 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
   }
 
   async function removeAgent() {
-    if (!window.confirm("Remove this active 0G agent record from the app? On-chain Agentic ID history remains visible.")) {
+    if (!window.confirm("Remove this active 0G agent record from the app? Any remaining vault positions stay in vault accounting, and on-chain Agentic ID history remains visible.")) {
       return;
     }
     setActionLoading("remove");
     setActionMessage("Preparing owner-signed remove request.");
     try {
       const walletProof = await ensureOwnerWalletProof();
-      if ((workspace?.vault.vaultVersion ?? 1) >= 2 && (workspace?.vault.sellablePositions?.length ?? 0) > 0) {
-        throw new Error("Sell this agent's open V2 positions before removing it.");
-      }
       const agentKeyDisableTxHash = await setAgentKeyEnabledOnActiveVault(false);
       const response = await fetch("/api/agents/remove", {
         body: JSON.stringify({
