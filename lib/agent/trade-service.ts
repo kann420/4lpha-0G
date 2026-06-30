@@ -8,6 +8,7 @@ import {
 } from "@/lib/agent/curated-trade";
 import { resolveMainnetVaultForOwner } from "@/lib/agent/mainnet-vault-resolver";
 import { agentKeyForDeployment, loadOgAgentWorkspace, storeAgentTradeArtifact } from "@/lib/agent/single-agent-server";
+import type { OgAgentWorkspace } from "@/lib/agent/single-agent";
 import { AGENT_TRADE_ROUTES, canAgentUseTradeRoute, getAgentTradeRoute } from "@/lib/agent/trade-catalog";
 import { hashText } from "@/lib/copilot/audit";
 import { auditEvidence } from "@/lib/mock-data";
@@ -56,11 +57,7 @@ export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
 
   const preview = await buildMainnetTradePreview(request, route);
   const now = new Date().toISOString();
-  const workspace = await loadOgAgentWorkspace({
-    agentId: request.agentId,
-    live: true,
-    ownerAddress: request.ownerAddress,
-  });
+  const workspace = await loadMainnetAgentTradeWorkspace(request);
   if (workspace.agent.status === "removed") {
     throw new AgentTradeError("Removed agent records are read-only and cannot trade.", "agent_removed", 409);
   }
@@ -279,6 +276,42 @@ async function buildMainnetTradePreview(
     },
     vaultAddress: quote.vaultAddress,
   };
+}
+
+export async function loadMainnetAgentTradeWorkspace(
+  request: Pick<AgentTradeRequest, "agentId" | "ownerAddress">,
+): Promise<OgAgentWorkspace> {
+  let lastWorkspace: OgAgentWorkspace | null = null;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const workspace = await loadOgAgentWorkspace({
+        agentId: request.agentId,
+        live: true,
+        ownerAddress: request.ownerAddress,
+      });
+      lastWorkspace = workspace;
+      if (workspace.agent.deployment && workspace.agent.id === request.agentId) {
+        return workspace;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+
+    if (attempt < 2) {
+      await delay(450 * (attempt + 1));
+    }
+  }
+
+  if (lastWorkspace) {
+    return lastWorkspace;
+  }
+  throw lastError instanceof Error ? lastError : new Error("Unable to resolve the requested agent workspace.");
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function buildStubAgentTradePreview(request: AgentTradeRequest, route: AgentTradeRouteOption): AgentTradePreview {

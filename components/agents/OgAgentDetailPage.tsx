@@ -258,6 +258,7 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
   async function sellOpenPosition(routeId?: string) {
     setActionLoading("sell");
     setActionMessage("Preparing owner-approved sell request.");
+    let temporarilyEnabledAgentKey = false;
     try {
       const walletProof = await ensureOwnerWalletProof();
       const routeIds = routeId ? [routeId] : getSellableRouteIds(workspace);
@@ -266,35 +267,49 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
       }
 
       let submitted = 0;
-      for (const currentRouteId of routeIds) {
-        const route = getSellRoute(currentRouteId);
-        if (!route) {
-          throw new Error("Selected mainnet sell route is not available for this agent.");
-        }
-        const response = await fetch("/api/copilot/trade", {
-          body: JSON.stringify({
-            intent: "execute",
-            request: {
-              agentId: workspace?.agent.id ?? agentId,
-              networkId: "mainnet",
-              routeId: route.id,
-              sellPercent: 100,
-              side: "sell",
-              slippageBps: getDefaultSlippageBps(policy),
+      const shouldRePauseAfterSell = isAgentPaused && (workspace?.vault.vaultVersion ?? 1) >= 2;
+      if (shouldRePauseAfterSell) {
+        setActionMessage("Temporarily enabling the paused agent key for owner-approved exit.");
+        await setAgentKeyEnabledOnActiveVault(true);
+        temporarilyEnabledAgentKey = true;
+      }
+
+      try {
+        for (const currentRouteId of routeIds) {
+          const route = getSellRoute(currentRouteId);
+          if (!route) {
+            throw new Error("Selected mainnet sell route is not available for this agent.");
+          }
+          const response = await fetch("/api/copilot/trade", {
+            body: JSON.stringify({
+              intent: "execute",
+              request: {
+                agentId: workspace?.agent.id ?? agentId,
+                networkId: "mainnet",
+                routeId: route.id,
+                sellPercent: 100,
+                side: "sell",
+                slippageBps: getDefaultSlippageBps(policy),
+              },
+              wallet: walletProof,
+            }),
+            headers: {
+              "Content-Type": "application/json",
             },
-            wallet: walletProof,
-          }),
-          headers: {
-            "Content-Type": "application/json",
-          },
-          method: "POST",
-        });
-        const payload = (await response.json()) as AgentTradeResponse;
-        if (!response.ok || !payload.data) {
-          throw new Error(payload.error?.message ?? "Sell request failed.");
+            method: "POST",
+          });
+          const payload = (await response.json()) as AgentTradeResponse;
+          if (!response.ok || !payload.data) {
+            throw new Error(payload.error?.message ?? "Sell request failed.");
+          }
+          if (payload.data.execution?.txHash) {
+            submitted += 1;
+          }
         }
-        if (payload.data.execution?.txHash) {
-          submitted += 1;
+      } finally {
+        if (temporarilyEnabledAgentKey) {
+          setActionMessage("Restoring paused agent key after owner-approved exit.");
+          await setAgentKeyEnabledOnActiveVault(false);
         }
       }
       await loadWorkspace();

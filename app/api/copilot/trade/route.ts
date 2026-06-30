@@ -7,6 +7,7 @@ import {
   AgentTradeError,
   buildAgentTradePreview,
   executeAgentTrade,
+  loadMainnetAgentTradeWorkspace,
 } from "@/lib/agent/trade-service";
 import { validateCopilotWalletGate } from "@/lib/copilot/wallet-gate";
 import { policyVaultAbi, policyVaultAgentKeyAbi } from "@/lib/contracts/policy-vault";
@@ -185,7 +186,7 @@ async function resolveSellPercentAmount(
     throw new AgentTradeError("Selected route does not expose a token address for percentage sell.", "route_not_allowed", 409);
   }
 
-  const workspace = await loadOgAgentWorkspace({ agentId, live: true, ownerAddress });
+  const workspace = await loadMainnetAgentTradeWorkspace({ agentId, ownerAddress });
   const vault = workspace.vault.vault;
   if (!vault) {
     throw new AgentTradeError("Policy Vault address is required for percentage sell.", "vault_not_ready", 409);
