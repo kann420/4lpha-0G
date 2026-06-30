@@ -224,6 +224,7 @@ export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspace
     } satisfies OgAgentStorageSnapshot),
   ]);
   let roster = await readAgentDeploymentRoster(identity.address, {
+    agentId,
     includeOnChain: live,
     ownerAddress: vault.owner ?? ownerAddress,
   });
@@ -242,6 +243,7 @@ export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspace
       warnings: [error instanceof Error ? error.message : "Unable to read Policy Vault state."],
     }));
     roster = await readAgentDeploymentRoster(identity.address, {
+      agentId,
       includeOnChain: live,
       ownerAddress: vault.owner ?? deployment.owner,
     });
@@ -1393,7 +1395,7 @@ function selectRemovedAgentDeployment(
 
 async function readAgentDeploymentRoster(
   identityAddress?: Address,
-  filter: { includeOnChain?: boolean; ownerAddress?: Address; vaultAddress?: Address } = {},
+  filter: { agentId?: string; includeOnChain?: boolean; ownerAddress?: Address; vaultAddress?: Address } = {},
 ): Promise<{ active: OgAgentDeploymentRecord[]; removed: OgRemovedAgentRecord[] }> {
   const registry = await readAgentDeploymentRegistryArtifact();
   const [onChainRecords, legacyDeployResponse, legacySingleRecord] = await Promise.all([
@@ -1433,7 +1435,7 @@ async function readAgentDeploymentRoster(
 async function filterActiveOnChainAgentRecords(
   deployments: OgAgentDeploymentRecord[],
   appDeploymentIds: Set<string>,
-  filter: { includeOnChain?: boolean; ownerAddress?: Address; vaultAddress?: Address },
+  filter: { agentId?: string; includeOnChain?: boolean; ownerAddress?: Address; vaultAddress?: Address },
 ): Promise<OgAgentDeploymentRecord[]> {
   if (!filter.includeOnChain || (!filter.ownerAddress && !filter.vaultAddress)) {
     return deployments;
@@ -1448,18 +1450,45 @@ async function filterActiveOnChainAgentRecords(
 
   const filtered = await Promise.all(
     deployments.map(async (deployment): Promise<OgAgentDeploymentRecord | null> => {
-      if (appDeploymentIds.has(deployment.id)) {
-        return deployment;
-      }
       const enabled = await withTimeout(
         readAgentKeyEnabled(vault, deployment),
         AUXILIARY_READ_TIMEOUT_MS,
         "Agent key status",
       ).catch(() => undefined);
-      return enabled === false ? null : deployment;
+      if (enabled !== false) {
+        return deployment;
+      }
+
+      const pausedDeployment = { ...deployment, paused: true } satisfies OgAgentDeploymentRecord;
+      if (appDeploymentIds.has(deployment.id) || filter.agentId === deployment.id) {
+        return pausedDeployment;
+      }
+
+      return (await hasAgentOpenPositions(vault, deployment)) ? pausedDeployment : null;
     }),
   );
   return filtered.filter((deployment): deployment is OgAgentDeploymentRecord => deployment !== null);
+}
+
+async function hasAgentOpenPositions(vault: Address, deployment: OgAgentDeploymentRecord): Promise<boolean> {
+  const rpcUrl = process.env.OG_RPC_URL?.trim();
+  if (!rpcUrl) {
+    return false;
+  }
+  const publicClient = create0GPublicClient(rpcUrl);
+  const agentKey = deployment.agentKey ?? agentKeyForDeployment(deployment);
+  const positions = await withTimeout(
+    readSellablePositions(publicClient, vault, { agentKey }),
+    AUXILIARY_READ_TIMEOUT_MS,
+    "agent-scoped positions",
+  ).catch(() => []);
+  return positions.some((position) => {
+    try {
+      return BigInt(position.amountRaw) > 0n;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function deploymentMatchesFilter(
