@@ -317,10 +317,11 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
       if ((workspace?.vault.vaultVersion ?? 1) >= 2 && (workspace?.vault.sellablePositions?.length ?? 0) > 0) {
         throw new Error("Sell this agent's open V2 positions before removing it.");
       }
-      await setAgentKeyEnabledOnActiveVault(false);
+      const agentKeyDisableTxHash = await setAgentKeyEnabledOnActiveVault(false);
       const response = await fetch("/api/agents/remove", {
         body: JSON.stringify({
           agentId,
+          agentKeyDisableTxHash,
           networkId: "mainnet",
           wallet: walletProof,
         }),
@@ -343,11 +344,11 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
     }
   }
 
-  async function setAgentKeyEnabledOnActiveVault(enabled: boolean) {
+  async function setAgentKeyEnabledOnActiveVault(enabled: boolean): Promise<Hex | undefined> {
     const deployment = workspace?.agent.deployment;
     const vault = workspace?.vault.vault;
     if (!deployment?.agentKey || !vault || (workspace?.vault.vaultVersion ?? 1) < 2) {
-      return;
+      return undefined;
     }
     const provider = typeof window === "undefined"
       ? undefined
@@ -375,6 +376,7 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
     });
     setActionMessage(enabled ? "Agent key enable submitted. Waiting for confirmation." : "Agent key disable submitted. Waiting for confirmation.");
     await waitForReceipt(publicClient, txHash);
+    return txHash;
   }
 
   return (

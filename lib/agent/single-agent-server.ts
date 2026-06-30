@@ -466,6 +466,7 @@ export async function removeSingleOgAgentRecord(
   agentId: string,
   knownRecord?: OgAgentDeploymentRecord,
   removedBy?: Address,
+  agentKeyDisableTxHash?: Hex,
 ): Promise<OgAgentDeploymentRecord | null> {
   const registry = await readAgentDeploymentRegistryArtifact();
   const deployments = mergeAgentDeploymentRecords([
@@ -477,6 +478,9 @@ export async function removeSingleOgAgentRecord(
   const tombstone = current
     ? normalizeRemovedAgentRecord({
         ...current,
+        agentKeyDisabledAt: new Date().toISOString(),
+        agentKeyDisableTxHash,
+        removeMode: "soft-retire",
         removedAt: new Date().toISOString(),
         removedBy,
       })
@@ -500,6 +504,10 @@ export async function setSingleOgAgentPaused(
     ...(registry?.agents ?? []),
     ...(knownRecord ? [knownRecord] : []),
   ]);
+  const removedAgents = buildRemovedAgentRecords(registry, deployments);
+  if (removedAgents.some((deployment) => deployment.id === agentId)) {
+    return null;
+  }
   const current = deployments.find((deployment) => deployment.id === agentId) ?? knownRecord ?? null;
   if (!current) {
     return null;
@@ -510,7 +518,7 @@ export async function setSingleOgAgentPaused(
   } satisfies OgAgentDeploymentRecord;
   await writeAgentDeploymentRegistry(
     deployments.map((deployment) => (deployment.id === agentId ? updated : deployment)),
-    buildRemovedAgentRecords(registry, deployments),
+    removedAgents,
   );
   return updated;
 }
@@ -657,7 +665,7 @@ async function readVaultSnapshot(
   };
 }
 
-async function readAgentKeyEnabled(vault: Address, deployment: OgAgentDeploymentRecord): Promise<boolean> {
+export async function readAgentKeyEnabled(vault: Address, deployment: OgAgentDeploymentRecord): Promise<boolean> {
   const rpcUrl = process.env.OG_RPC_URL?.trim();
   if (!rpcUrl) {
     return false;
@@ -1513,7 +1521,7 @@ async function readLegacyDeployResponseRecord(): Promise<OgAgentDeploymentRecord
 async function upsertAgentDeploymentRecord(record: OgAgentDeploymentRecord) {
   const registry = await readAgentDeploymentRegistryArtifact();
   const deployments = mergeAgentDeploymentRecords([...(registry?.agents ?? []), record]);
-  const removedAgents = buildRemovedAgentRecords(registry, deployments).filter((deployment) => deployment.id !== record.id);
+  const removedAgents = buildRemovedAgentRecords(registry, deployments);
   await writeAgentDeploymentRegistry(deployments, removedAgents);
 }
 
@@ -1626,14 +1634,30 @@ function normalizeAgentDeploymentRecord(
 }
 
 function normalizeRemovedAgentRecord(
-  record: (OgAgentDeploymentRecord & { removedAt?: string; removedBy?: string }) | null | undefined,
+  record:
+    | (OgAgentDeploymentRecord & {
+        agentKeyDisabledAt?: string;
+        agentKeyDisableTxHash?: string;
+        removeMode?: string;
+        removedAt?: string;
+        removedBy?: string;
+      })
+    | null
+    | undefined,
 ): OgRemovedAgentRecord | null {
   const normalized = normalizeAgentDeploymentRecord(record);
   if (!normalized) return null;
   const removedBy = readAddress(record?.removedBy);
   const removedAt = record?.removedAt;
+  const agentKeyDisabledAt = record?.agentKeyDisabledAt;
+  const agentKeyDisableTxHash = isHex(record?.agentKeyDisableTxHash, { strict: true })
+    ? record.agentKeyDisableTxHash
+    : undefined;
   return {
     ...normalized,
+    ...(agentKeyDisabledAt && isValidDateString(agentKeyDisabledAt) ? { agentKeyDisabledAt } : {}),
+    ...(agentKeyDisableTxHash ? { agentKeyDisableTxHash } : {}),
+    removeMode: "soft-retire",
     removedAt: removedAt && isValidDateString(removedAt) ? removedAt : new Date().toISOString(),
     ...(removedBy ? { removedBy } : {}),
   };

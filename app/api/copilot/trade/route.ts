@@ -194,6 +194,9 @@ async function resolveSellPercentAmount(
   if (!deployment) {
     throw new AgentTradeError("Agentic ID deployment is required for percentage sell.", "agent_not_ready", 409);
   }
+  if (workspace.agent.status === "removed") {
+    throw new AgentTradeError("Removed agent records are read-only and cannot trade.", "agent_removed", 409);
+  }
 
   const network = getOgNetwork(networkId);
   const publicClient = createPublicClient({ transport: http(network.rpcUrl) });

@@ -61,6 +61,9 @@ export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
     live: true,
     ownerAddress: request.ownerAddress,
   });
+  if (workspace.agent.status === "removed") {
+    throw new AgentTradeError("Removed agent records are read-only and cannot trade.", "agent_removed", 409);
+  }
   const resolvedRequest = workspace.agent.deployment
     ? {
         ...request,
@@ -188,9 +191,14 @@ async function buildMainnetTradePreview(
     );
   }
 
-  const workspace = request.ownerAddress
-    ? await loadOgAgentWorkspace({ agentId: request.agentId, live: true, ownerAddress: request.ownerAddress }).catch(() => null)
-    : null;
+  const workspace = await loadOgAgentWorkspace({
+    agentId: request.agentId,
+    live: true,
+    ownerAddress: request.ownerAddress,
+  }).catch(() => null);
+  if (workspace?.agent.status === "removed") {
+    throw new AgentTradeError("Removed agent records are read-only and cannot trade.", "agent_removed", 409);
+  }
   const vaultAddress = workspace?.vault.vault ?? (
     request.ownerAddress ? await resolveMainnetVaultForOwner(request.ownerAddress).catch(() => null) : null
   );

@@ -41,6 +41,9 @@ export async function POST(request: Request) {
   if (workspace.agent.id !== parsed.data.agentId || !workspace.agent.deployment) {
     return statusError("agent_not_found", "Unknown 0G agent id.", 404);
   }
+  if (workspace.agent.status === "removed") {
+    return statusError("agent_removed", "Removed agent records are read-only and cannot be armed or paused.", 409);
+  }
 
   const owner = workspace.agent.deployment.owner ?? workspace.vault.owner;
   if (!owner) {

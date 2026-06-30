@@ -47,6 +47,9 @@ export interface OgAgentDeploymentRecord {
 }
 
 export interface OgRemovedAgentRecord extends OgAgentDeploymentRecord {
+  agentKeyDisabledAt?: string;
+  agentKeyDisableTxHash?: Hex;
+  removeMode?: "soft-retire";
   removedAt: string;
   removedBy?: Address;
 }

@@ -94,14 +94,7 @@ function chooseAgent(registry: AgentRegistry): { record: AgentRecord; temporaryR
     return { record: activeRecord, temporaryRemovedAgent: false };
   }
 
-  const removed = (registry.removedAgents ?? [])
-    .filter((record) => isAddress(record.owner) && sameAddress(record.owner, OWNER))
-    .sort(compareAgentRecords);
-  const removedRecord = removed.at(-1);
-  if (!removedRecord) {
-    throw new Error("No local AgenticID record is available for V2 smoke.");
-  }
-  return { record: removedRecord, temporaryRemovedAgent: true };
+  throw new Error("No active local AgenticID record is available for V2 smoke; removed records must not be re-enabled.");
 }
 
 function compareAgentRecords(left: AgentRecord, right: AgentRecord): number {

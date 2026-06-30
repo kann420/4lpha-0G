@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import { isHex, type Hex } from "viem";
 import { z } from "zod";
-import { loadOgAgentWorkspace, removeSingleOgAgentRecord } from "@/lib/agent/single-agent-server";
+import { loadOgAgentWorkspace, readAgentKeyEnabled, removeSingleOgAgentRecord } from "@/lib/agent/single-agent-server";
 import { readMainnetOwnerAddress } from "@/lib/agent/mainnet-vault-resolver";
 import { validateCopilotWalletGate } from "@/lib/copilot/wallet-gate";
 import { getOgNetwork } from "@/lib/og/networks";
@@ -16,6 +17,7 @@ const walletSchema = z.object({
 
 const requestSchema = z.object({
   agentId: z.string().trim().min(1).max(96),
+  agentKeyDisableTxHash: z.string().trim().optional(),
   networkId: z.literal("mainnet"),
   wallet: walletSchema,
 });
@@ -40,6 +42,9 @@ export async function POST(request: Request) {
   if (workspace.agent.id !== parsed.data.agentId || !workspace.agent.deployment) {
     return removeError("agent_not_found", "Unknown 0G agent id.", 404);
   }
+  if (workspace.agent.status === "removed") {
+    return NextResponse.json({ data: { removed: workspace.agent.deployment, workspace } });
+  }
 
   const owner = workspace.agent.deployment?.owner ?? workspace.vault.owner;
   if (!owner) {
@@ -48,8 +53,39 @@ export async function POST(request: Request) {
   if (owner.toLowerCase() !== parsed.data.wallet.address.toLowerCase()) {
     return removeError("owner_required", "Connect the Policy Vault owner wallet before removing this agent.", 403);
   }
+  if ((workspace.vault.vaultVersion ?? 1) >= 2) {
+    const hasOpenPosition = (workspace.vault.sellablePositions ?? []).some((position) => {
+      try {
+        return BigInt(position.amountRaw) > 0n;
+      } catch {
+        return false;
+      }
+    });
+    if (hasOpenPosition) {
+      return removeError("open_positions", "Sell this agent's open V2 positions before removing it.", 409);
+    }
+    if (!workspace.vault.vault) {
+      return removeError("vault_unavailable", "Policy Vault address is required before removing this agent.", 409);
+    }
+    if (!process.env.OG_RPC_URL?.trim()) {
+      return removeError("rpc_unavailable", "0G RPC is required to verify the V2 agent key before removing this agent.", 409);
+    }
+    const agentKeyEnabled = await readAgentKeyEnabled(workspace.vault.vault, workspace.agent.deployment).catch(() => undefined);
+    if (agentKeyEnabled !== false) {
+      return removeError("agent_key_enabled", "Disable this V2 agent key before removing the agent record.", 409);
+    }
+  }
 
-  const removed = await removeSingleOgAgentRecord(parsed.data.agentId, workspace.agent.deployment, ownerAddress);
+  const agentKeyDisableTxHash = parseTxHash(parsed.data.agentKeyDisableTxHash);
+  if (parsed.data.agentKeyDisableTxHash && !agentKeyDisableTxHash) {
+    return removeError("invalid_tx_hash", "Agent key disable transaction hash was not valid.", 400);
+  }
+  const removed = await removeSingleOgAgentRecord(
+    parsed.data.agentId,
+    workspace.agent.deployment,
+    ownerAddress,
+    agentKeyDisableTxHash,
+  );
   const nextWorkspace = await loadOgAgentWorkspace({ live: true, ownerAddress });
   return NextResponse.json({ data: { removed, workspace: nextWorkspace } });
 }
@@ -64,4 +100,8 @@ async function readJson(request: Request): Promise<unknown> {
 
 function removeError(code: string, message: string, status: number) {
   return NextResponse.json({ error: { code, message } }, { status });
+}
+
+function parseTxHash(value: string | undefined): Hex | undefined {
+  return value && isHex(value, { strict: true }) && value.length === 66 ? value : undefined;
 }
