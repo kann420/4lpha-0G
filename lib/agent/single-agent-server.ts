@@ -255,13 +255,6 @@ export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspace
         "Agent key status",
       ).catch(() => undefined)
     : undefined;
-  if (selectedAgentKeyEnabled === false) {
-    vault = {
-      ...vault,
-      ready: false,
-      warnings: [...vault.warnings, "Agent key is disabled on the active Policy Vault V2."],
-    };
-  }
   const status = removedDeployment
     ? "removed"
     : deployment
