@@ -88,6 +88,9 @@ let storageSnapshotCache:
 const tradeExecutedEvent = parseAbiItem(
   "event TradeExecuted(bytes32 indexed actionHash, bool indexed isBuy, address indexed token, uint256 amountIn, uint256 amountOut, bytes32 auditRoot, bytes32 policySnapshotHash)",
 );
+const tradeExecutedV2Event = parseAbiItem(
+  "event TradeExecutedV2(bytes32 indexed actionHash, bytes32 indexed agentKey, bool indexed isBuy, address token, uint256 amountIn, uint256 amountOut, bytes32 auditRoot, bytes32 policySnapshotHash)",
+);
 
 const erc20DecimalsAbi = [
   {
@@ -1195,7 +1198,16 @@ async function readOnChainTradeLogEntries(deployment: OgAgentDeploymentRecord): 
 
   const deployReceipt = await publicClient.getTransactionReceipt({ hash: deployment.deployTxHash }).catch(() => null);
   const fromBlock = deployReceipt?.blockNumber ?? 0n;
-  const logs = await publicClient.getLogs({
+  const agentKey = deployment.agentKey ?? agentKeyForDeployment(deployment);
+  const v2Logs = await publicClient.getLogs({
+    address: deployment.vault,
+    event: tradeExecutedV2Event,
+    args: { agentKey },
+    fromBlock,
+    toBlock: "latest",
+  }).catch(() => []);
+  const sourceEvent = v2Logs.length > 0 ? "TradeExecutedV2" : "TradeExecuted";
+  const logs = v2Logs.length > 0 ? v2Logs : await publicClient.getLogs({
     address: deployment.vault,
     event: tradeExecutedEvent,
     fromBlock,
@@ -1253,7 +1265,7 @@ async function readOnChainTradeLogEntries(deployment: OgAgentDeploymentRecord): 
         notes: [
           `${side === "buy" ? "Bought" : "Sold"} ${amount} ${symbol} through the Policy Vault.`,
           `Vault action ${shortHash(args.actionHash)} was accepted with audit root ${shortHash(args.auditRoot)}.`,
-          "Source: on-chain PolicyVault TradeExecuted event.",
+          `Source: on-chain PolicyVault ${sourceEvent} event.`,
         ],
         proofTxHash: undefined,
         reason: `${side === "buy" ? "Buy" : "Sell"} submitted on-chain by the agent executor.`,
