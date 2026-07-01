@@ -6,6 +6,7 @@ import {
   ArrowRight,
   Bot,
   BrainCircuit,
+  Check,
   ChevronDown,
   CircleAlert,
   ExternalLink,
@@ -13,7 +14,7 @@ import {
   Loader2,
   LockKeyhole,
   MessageSquare,
-  Save,
+  Plus,
   Send,
   ShieldAlert,
   ShieldCheck,
@@ -44,7 +45,7 @@ import type {
   AgentTradeResponse,
   AgentTradeRouteOption,
   CopilotAuditBundle,
-  CopilotChatResponse,
+  CopilotChatStreamEvent,
   CopilotContextItem,
   CopilotMessage,
   CopilotModelOption,
@@ -58,8 +59,10 @@ import type {
 export interface EmbeddedCopilotMessage extends CopilotMessage {
   card?: CopilotTradeCard;
   content: string;
+  reasoning?: string;
   role: "operator" | "assistant";
   status?: "error" | "pending";
+  streamId?: string;
 }
 
 type CopilotPermissionMode = "default" | "full_access";
@@ -263,6 +266,53 @@ export function EmbeddedCopilotRail({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedModeAvailable, networkId, wallet.address, wallet.isConnected, wallet.isWrongChain]);
 
+  // Debounced staging: keep stagedSaveRef populated with an encrypted payload of
+  // the current transcript so auto-save / beacon can fire without re-encrypting
+  // at session end. Only stages when the session-key signature is already cached
+  // (never prompts MetaMask from an effect) and the session is not already saved.
+  useEffect(() => {
+    if (!savedModeAvailable || sessionMode !== "saved" || !wallet.address || !sessionId || currentSessionSaved) {
+      return;
+    }
+    const transcript = messagesByNetwork[networkId] ?? initialMessages;
+    if (!transcript.some((message) => message.role === "operator")) {
+      return;
+    }
+    const stateKey = sessionKeyStateKey(wallet.address, sessionId);
+    if (!sessionKeySignatureByKey[stateKey]) {
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      void stageCurrentSession();
+    }, 600);
+    return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    savedModeAvailable,
+    sessionMode,
+    networkId,
+    wallet.address,
+    wallet.chainId,
+    sessionId,
+    currentSessionSaved,
+    messagesByNetwork,
+    auditBundlesByNetwork,
+    sessionKeySignatureByKey,
+    selectedModel,
+  ]);
+
+  // Best-effort save on page unload. Reads the staged payload + cached access
+  // signature; sendBeacon queues the request, the server does upload + anchor.
+  useEffect(() => {
+    if (!savedModeAvailable || sessionMode !== "saved" || !wallet.address) {
+      return;
+    }
+    const handler = () => fireSaveBeacon();
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedModeAvailable, sessionMode, networkId, wallet.address, walletAccessKey, savedSessionIdsByNetwork]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -462,6 +512,9 @@ export function EmbeddedCopilotRail({
     if (message.card) {
       out.card = message.card;
     }
+    if (message.reasoning) {
+      out.reasoning = message.reasoning;
+    }
     return out;
   }
 
@@ -473,6 +526,9 @@ export function EmbeddedCopilotRail({
     if (message.card) {
       out.card = message.card as CopilotTradeCard;
     }
+    if (message.reasoning) {
+      out.reasoning = message.reasoning;
+    }
     return out;
   }
 
@@ -481,88 +537,191 @@ export function EmbeddedCopilotRail({
     return first ? first.content.slice(0, 80) : undefined;
   }
 
-  async function saveCurrentSession() {
-    if (chatLocked || isSavingSession || !wallet.address) {
-      return;
+  function markSessionSaved(id: string) {
+    setSavedSessionIdsByNetwork((current) => ({
+      ...current,
+      [networkId]: { ...(current[networkId] ?? {}), [id]: true as const },
+    }));
+  }
+
+  /**
+   * Encrypt the current transcript into a StagedSessionSave (no network I/O).
+   * Returns null when there is nothing worth saving, the preconditions aren't
+   * met, or the session was already saved (a second save would 409). The staged
+   * payload is cached in stagedSaveRef so a later auto-save / beacon can fire
+   * the exact same bytes without re-encrypting.
+   */
+  async function stageCurrentSession(): Promise<StagedSessionSave | null> {
+    if (!wallet.address || !savedModeAvailable) {
+      return null;
     }
     const transcript = messagesByNetwork[networkId] ?? initialMessages;
     if (!transcript.some((message) => message.role === "operator")) {
-      return;
+      return null;
     }
     const id = ensureSessionId();
+    if (savedSessionIdsByNetwork[networkId]?.[id]) {
+      return null;
+    }
     const createdAt = new Date().toISOString();
     const auditBundles = auditBundlesByNetwork[networkId] ?? [];
-    setIsSavingSessionByNetwork((current) => ({ ...current, [networkId]: true }));
-    setSaveErrorByNetwork((current) => {
-      const next = { ...current };
-      delete next[networkId];
-      return next;
+    const bundle: CopilotSessionBundle = {
+      schemaVersion: 1,
+      kind: "copilot-session",
+      sessionId: id,
+      wallet: { address: wallet.address, chainId: wallet.chainId, networkId },
+      createdAt,
+      updatedAt: createdAt,
+      mode: "saved",
+      model: selectedModel || "auto",
+      networkLabel,
+      messages: transcript.map(toSessionMessage),
+      auditBundles,
+    };
+    const plaintext = serializeSessionBundle(bundle);
+    const signature = await ensureSessionKeySignature(wallet.address, id);
+    const key = await deriveSessionAesKey(signature);
+    const { iv, ciphertext } = await encryptSessionBytes(plaintext, key);
+    const label = deriveSessionLabel(transcript);
+    const staged: StagedSessionSave = {
+      sessionId: id,
+      createdAt,
+      ciphertextB64: bytesToBase64(ciphertext),
+      ivB64: bytesToBase64(iv),
+      messageCount: transcript.length,
+      model: selectedModel || "auto",
+      ...(label ? { label } : {}),
+    };
+    stagedSaveRef.current = staged;
+    return staged;
+  }
+
+  async function commitStagedSave(staged: StagedSessionSave): Promise<boolean> {
+    if (!wallet.address) {
+      return false;
+    }
+    const proof = await ensureCopilotWalletProof(wallet.address);
+    const res = await fetch("/api/copilot/sessions/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        wallet: proof,
+        sessionId: staged.sessionId,
+        networkId,
+        ciphertextB64: staged.ciphertextB64,
+        ivB64: staged.ivB64,
+        messageCount: staged.messageCount,
+        model: staged.model,
+        ...(staged.label ? { label: staged.label } : {}),
+        createdAt: staged.createdAt,
+      }),
     });
-    try {
-      const bundle: CopilotSessionBundle = {
-        schemaVersion: 1,
-        kind: "copilot-session",
-        sessionId: id,
-        wallet: { address: wallet.address, chainId: wallet.chainId, networkId },
-        createdAt,
-        updatedAt: createdAt,
-        mode: "saved",
-        model: selectedModel || "auto",
-        networkLabel,
-        messages: transcript.map(toSessionMessage),
-        auditBundles,
-      };
-      const plaintext = serializeSessionBundle(bundle);
-      const signature = await ensureSessionKeySignature(wallet.address, id);
-      const key = await deriveSessionAesKey(signature);
-      const { iv, ciphertext } = await encryptSessionBytes(plaintext, key);
-      const proof = await ensureCopilotWalletProof(wallet.address);
-      const res = await fetch("/api/copilot/sessions/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          wallet: proof,
-          sessionId: id,
-          networkId,
-          ciphertextB64: bytesToBase64(ciphertext),
-          ivB64: bytesToBase64(iv),
-          messageCount: transcript.length,
-          ...(selectedModel ? { model: selectedModel } : {}),
-          ...(deriveSessionLabel(transcript) ? { label: deriveSessionLabel(transcript) } : {}),
-          createdAt,
-        }),
-      });
-      const payload = (await res.json()) as {
-        data?: { rootHash: string; proofTxHash: string; storageRef: string };
-        error?: { message: string };
-      };
-      if (!res.ok || !payload.data) {
-        throw new Error(payload.error?.message ?? "Failed to save Copilot session to 0G Storage.");
+    const payload = (await res.json()) as {
+      data?: { rootHash: string; proofTxHash: string; storageRef: string };
+      error?: { message: string; code?: string };
+    };
+    if (!res.ok || !payload.data) {
+      // 409 means this session is already persisted+anchored (e.g. a prior
+      // auto-save raced ahead). Treat as success so the UI marks it saved.
+      if (res.status === 409 || payload.error?.code === "session_already_exists") {
+        markSessionSaved(staged.sessionId);
+        return true;
       }
-      appendSaveResultMessage(payload.data);
-      await refreshSavedSessions();
-    } catch (error) {
+      // Auto-save is silent in-transcript, but surface the failure via the
+      // status banner so the user can see the session was not persisted.
       setSaveErrorByNetwork((current) => ({
         ...current,
-        [networkId]: error instanceof Error ? error.message : "Failed to save Copilot session.",
+        [networkId]: payload.error?.message ?? "Failed to save Copilot session.",
       }));
+      return false;
+    }
+    markSessionSaved(staged.sessionId);
+    await refreshSavedSessions();
+    return true;
+  }
+
+  /**
+   * Auto-save on session end (New session / close panel). Silent: no result
+   * message in the transcript. Skips when the session was already saved.
+   * Best-effort and never blocks the triggering action.
+   */
+  async function autoSaveCurrentSession(): Promise<void> {
+    if (chatLocked || !wallet.address || !savedModeAvailable || isSavingSession) {
+      return;
+    }
+    if (pendingAutoSaveRef.current) {
+      return;
+    }
+    pendingAutoSaveRef.current = true;
+    setIsSavingSessionByNetwork((current) => ({ ...current, [networkId]: true }));
+    try {
+      const staged = await stageCurrentSession();
+      if (!staged) {
+        return;
+      }
+      await commitStagedSave(staged);
+    } catch {
+      // Best-effort auto-save: swallow transient errors silently.
     } finally {
+      pendingAutoSaveRef.current = false;
       setIsSavingSessionByNetwork((current) => ({ ...current, [networkId]: false }));
     }
   }
 
-  function appendSaveResultMessage(result: { rootHash: string; proofTxHash: string; storageRef: string }) {
-    setMessagesByNetwork((current) => ({
-      ...current,
-      [networkId]: [
-        ...(current[networkId] ?? initialMessages),
-        {
-          content:
-            `Saved this session to 0G Storage (encrypted, anchored on-chain).\nStorage root: ${shortHash(result.rootHash)}\nProof tx: ${shortHash(result.proofTxHash)}`,
-          role: "assistant",
-        },
-      ],
-    }));
+  /**
+   * Fire-and-forget save on page unload via navigator.sendBeacon. beforeunload
+   * cannot await a wallet signature, so this only fires when the access proof
+   * is already cached in localStorage AND a staged payload is available. The
+   * 0G Storage upload + on-chain anchor happen server-side; sendBeacon only
+   * guarantees the request is queued, not that it completes before the tab
+   * closes, so this is a best-effort supplement to the close/New-session path.
+   */
+  function fireSaveBeacon() {
+    if (!wallet.address || !savedModeAvailable || !walletAccessKey) {
+      return;
+    }
+    const staged = stagedSaveRef.current;
+    if (!staged || savedSessionIdsByNetwork[networkId]?.[staged.sessionId]) {
+      return;
+    }
+    let accessSignature: string | undefined;
+    try {
+      accessSignature =
+        window.localStorage.getItem(`${COPILOT_ACCESS_STORAGE_PREFIX}:${walletAccessKey}`) ?? undefined;
+    } catch {
+      accessSignature = undefined;
+    }
+    if (!accessSignature) {
+      return;
+    }
+    const accessMessage = buildCopilotWalletAccessMessage({
+      address: wallet.address,
+      chainId: wallet.chainId,
+      networkId,
+    });
+    const body = JSON.stringify({
+      wallet: {
+        address: wallet.address,
+        chainId: wallet.chainId,
+        message: accessMessage,
+        signature: accessSignature,
+      },
+      sessionId: staged.sessionId,
+      networkId,
+      ciphertextB64: staged.ciphertextB64,
+      ivB64: staged.ivB64,
+      messageCount: staged.messageCount,
+      model: staged.model,
+      ...(staged.label ? { label: staged.label } : {}),
+      createdAt: staged.createdAt,
+    });
+    try {
+      navigator.sendBeacon("/api/copilot/sessions/save", new Blob([body], { type: "application/json" }));
+      markSessionSaved(staged.sessionId);
+    } catch {
+      // sendBeacon unavailable; the close/New-session auto-save path is the
+      // primary mechanism. Swallow.
+    }
   }
 
   async function loadSavedSession(record: CopilotSessionRegistryRecord) {
@@ -613,6 +772,12 @@ export function EmbeddedCopilotRail({
   }
 
   function startNewSession() {
+    // Auto-save the current session before discarding it. The auto-save is
+    // fire-and-forget; the cleared transcript starts a fresh session immediately.
+    if (sessionMode === "saved" && !currentSessionSaved) {
+      void autoSaveCurrentSession();
+    }
+    stagedSaveRef.current = null;
     setMessagesByNetwork((current) => ({ ...current, [networkId]: initialMessages }));
     setAuditBundlesByNetwork((current) => {
       const next = { ...current };
@@ -632,9 +797,14 @@ export function EmbeddedCopilotRail({
   }
 
   function handleClosePanel() {
-    // Privacy mode is ephemeral: clear the transcript and any collected audit
-    // bundles before closing so nothing persists beyond the session.
-    if (sessionMode === "privacy") {
+    // Saved mode: auto-save the transcript on close (encrypted upload + anchor),
+    // unless this session was already saved. Privacy mode is ephemeral: clear the
+    // transcript and any collected audit bundles so nothing persists on close.
+    if (sessionMode === "saved") {
+      if (!currentSessionSaved) {
+        void autoSaveCurrentSession();
+      }
+    } else {
       setMessagesByNetwork((current) => ({ ...current, [networkId]: initialMessages }));
       setAuditBundlesByNetwork((current) => {
         const next = { ...current };
@@ -703,8 +873,13 @@ export function EmbeddedCopilotRail({
 
     // Saved mode: lazily assign a sessionId for this conversation so per-turn
     // audit bundles can be associated with the session that gets uploaded.
+    // Pre-request the session-key signature on the first saved prompt so the
+    // debounced staging effect + later auto-save can encrypt without prompting.
     if (savedModeAvailable && sessionMode === "saved") {
-      ensureSessionId();
+      const id = ensureSessionId();
+      void ensureSessionKeySignature(connectedAddress, id).catch(() => {
+        // Signing may be dismissed; auto-save will simply skip without a key.
+      });
     }
 
     const quickPromptResponse = resolveQuickPromptResponse(content);
@@ -728,6 +903,7 @@ export function EmbeddedCopilotRail({
     setIsSendingByNetwork((current) => ({ ...current, [networkId]: true }));
 
     let pendingMessage: EmbeddedCopilotMessage | undefined;
+    let streamId: string | undefined;
 
     try {
       const operatorMessage: EmbeddedCopilotMessage = { content, role: "operator" };
@@ -754,10 +930,14 @@ export function EmbeddedCopilotRail({
           ? permissionMode === "full_access"
             ? "Preparing allowlisted route quote and bypass execution..."
             : "Preparing allowlisted route review..."
-          : "Routing through 0G Compute Router...",
+          : "",
         role: "assistant",
         status: "pending",
       };
+      if (!tradeCommand) {
+        streamId = createDraftId();
+        pendingMessage.streamId = streamId;
+      }
       const currentMessages = messagesByNetwork[networkId] ?? initialMessages;
       const routeMessages = [...currentMessages, operatorMessage].map((message) => ({
         content: message.content,
@@ -850,38 +1030,69 @@ export function EmbeddedCopilotRail({
         },
         method: "POST",
       });
-      const payload = (await response.json()) as CopilotChatResponse;
 
-      if (!response.ok || !payload.data) {
-        throw new Error(payload.error?.message ?? "0G Compute Router request failed.");
+      if (!response.body) {
+        throw new Error("0G Compute Router returned no stream.");
       }
 
-      const { message, auditBundle } = payload.data;
-      setMessagesByNetwork((current) => ({
-        ...current,
-        [networkId]: [
-          ...(current[networkId] ?? initialMessages).filter((item) => item !== pendingMessage),
-          {
-            content: message.content,
+      const streamIdLocal = streamId;
+      const updatePending = (updater: (prev: EmbeddedCopilotMessage) => EmbeddedCopilotMessage) => {
+        setMessagesByNetwork((current) => {
+          const list = current[networkId] ?? initialMessages;
+          return {
+            ...current,
+            [networkId]: list.map((item) =>
+              streamIdLocal && item.streamId === streamIdLocal ? updater(item) : item,
+            ),
+          };
+        });
+      };
+
+      await consumeCopilotChatStream(response, {
+        onReasoning: (chunk) => {
+          updatePending((prev) => ({
+            ...(streamIdLocal ? { streamId: streamIdLocal } : {}),
+            content: prev.content,
+            reasoning: `${prev.reasoning ?? ""}${chunk}`,
             role: "assistant",
-          },
-        ],
-      }));
-      // Saved mode: collect the per-turn audit bundle so the saved session
-      // transcript can include the verifiable evidence. Privacy mode: server
-      // omits the audit bundle and we collect nothing.
-      if (sessionMode === "saved" && auditBundle) {
-        const collected = auditBundle;
-        setAuditBundlesByNetwork((current) => ({
-          ...current,
-          [networkId]: [...(current[networkId] ?? []), collected],
-        }));
-      }
+            status: "pending",
+          }));
+        },
+        onDelta: (chunk) => {
+          updatePending((prev) => ({
+            ...(streamIdLocal ? { streamId: streamIdLocal } : {}),
+            content: `${prev.content}${chunk}`,
+            reasoning: prev.reasoning,
+            role: "assistant",
+            status: "pending",
+          }));
+        },
+        onDone: ({ content, auditBundle }) => {
+          updatePending((prev) => ({
+            ...(streamIdLocal ? { streamId: streamIdLocal } : {}),
+            content,
+            reasoning: prev.reasoning,
+            role: "assistant",
+          }));
+          // Saved mode: collect the per-turn audit bundle so the saved session
+          // transcript can include the verifiable evidence. Privacy mode: server
+          // omits the audit bundle and we collect nothing.
+          if (sessionMode === "saved" && auditBundle) {
+            const collected = auditBundle;
+            setAuditBundlesByNetwork((current) => ({
+              ...current,
+              [networkId]: [...(current[networkId] ?? []), collected],
+            }));
+          }
+        },
+      });
     } catch (error) {
       setMessagesByNetwork((current) => ({
         ...current,
         [networkId]: [
-          ...(current[networkId] ?? initialMessages).filter((item) => item !== pendingMessage),
+          ...(current[networkId] ?? initialMessages).filter(
+            (item) => item !== pendingMessage && (!streamId || item.streamId !== streamId),
+          ),
           {
             content: error instanceof Error ? error.message : "0G Compute Router request failed.",
             role: "assistant",
@@ -1048,15 +1259,33 @@ export function EmbeddedCopilotRail({
                       ? "No saved sessions yet"
                       : "Browse saved Copilot sessions"
                 }
-                className="inline-flex items-center gap-1.5 rounded-[10px] border border-line bg-panel-solid-strong px-2.5 py-1.5 text-xs font-semibold text-muted transition-colors hover:border-line-strong hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                className="relative inline-flex h-8 w-8 items-center justify-center rounded-[10px] border border-line bg-panel-solid-strong text-muted transition-colors hover:border-line-strong hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                 aria-label="Past sessions"
               >
                 <History className="h-3.5 w-3.5" />
-                {savedSessions.length > 0 ? savedSessions.length : "Past"}
+                {savedSessions.length > 0 ? (
+                  <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold leading-none text-background">
+                    {savedSessions.length}
+                  </span>
+                ) : null}
               </button>
-              <span className="min-w-0 flex-1 truncate rounded-[10px] border border-line bg-panel-solid-strong px-2.5 py-1.5 text-xs font-semibold text-foreground">
-                {networkLabel}
-              </span>
+              <button
+                type="button"
+                onClick={startNewSession}
+                disabled={!hasConversation || isSavingSession || isSending}
+                title="New session"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border border-line bg-panel-solid-strong text-muted transition-colors hover:border-line-strong hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                aria-label="New session"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+              <ModelSelector
+                catalog={modelCatalog}
+                selectedModel={selectedModel}
+                onChange={(model) =>
+                  setSelectedModelByNetwork((current) => ({ ...current, [networkId]: model }))
+                }
+              />
             </div>
             {isPastSessionsOpen && savedModeAvailable ? (
               <PastSessionsPopover
@@ -1066,41 +1295,6 @@ export function EmbeddedCopilotRail({
                 onLoad={loadSavedSession}
               />
             ) : null}
-            <div className="mt-2 grid grid-cols-[minmax(0,1fr)] gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-              <label className="relative flex h-10 min-w-0 items-center gap-2 rounded-[12px] border border-line bg-panel-solid-strong px-3 text-xs font-semibold text-foreground">
-                <BrainCircuit className="h-3.5 w-3.5 shrink-0 text-primary" />
-                <span className="sr-only">LLM model</span>
-                <select
-                  value={selectedModel}
-                  onChange={(event) =>
-                    setSelectedModelByNetwork((current) => ({ ...current, [networkId]: event.target.value }))
-                  }
-                  disabled={modelCatalog.status === "loading"}
-                  className="min-w-0 flex-1 appearance-none truncate bg-transparent pr-6 text-xs font-semibold text-foreground outline-none disabled:text-muted"
-                  aria-label="LLM model"
-                >
-                  <option className="bg-panel-solid-strong text-foreground" value="">
-                    {modelCatalog.defaultModel ? `Auto: ${shortModelLabel(modelCatalog.defaultModel)}` : "Auto Router model"}
-                  </option>
-                  {modelCatalog.models.map((model) => (
-                    <option key={model.id} className="bg-panel-solid-strong text-foreground" value={model.id}>
-                      {model.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-3 h-3.5 w-3.5 text-muted" />
-              </label>
-              <span
-                className={`inline-flex h-10 items-center rounded-[12px] border px-2.5 text-xs font-semibold ${
-                  modelCatalog.status === "error"
-                    ? "border-amber/20 bg-amber/10 text-amber"
-                    : "border-line bg-panel-solid-strong text-muted"
-                }`}
-                title={modelCatalog.error}
-              >
-                {modelStatusLabel(modelCatalog)}
-              </span>
-            </div>
             {chatLocked ? (
               <div className="mt-3 flex flex-col gap-3 rounded-[14px] border border-amber/20 bg-amber/10 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex min-w-0 gap-2">
@@ -1140,11 +1334,31 @@ export function EmbeddedCopilotRail({
                     : "mr-8 border-line bg-panel-solid-strong text-muted"
               }`}
             >
+              {message.role === "assistant" && message.reasoning ? (
+                <details
+                  open={message.status === "pending"}
+                  className="mb-2 rounded-lg border border-line bg-panel/50 px-3 py-2 text-xs text-muted">
+                  <summary className="flex cursor-pointer list-none items-center gap-2 font-semibold text-muted select-none">
+                    <BrainCircuit className="h-3.5 w-3.5 text-primary" />
+                    {message.status === "pending" ? "Thinking…" : "Thinking"}
+                    <ChevronDown className="ml-auto h-3.5 w-3.5 text-muted/60" />
+                  </summary>
+                  <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-muted/80">
+                    {message.reasoning}
+                  </p>
+                </details>
+              ) : null}
               <div className="flex gap-2">
                 {message.status === "pending" ? (
                   <Loader2 className="mt-1 h-4 w-4 shrink-0 animate-spin text-primary" />
                 ) : null}
-                <p className="whitespace-pre-line">{message.content}</p>
+                <p className="whitespace-pre-line">
+                  {message.content
+                    ? message.content
+                    : message.status === "pending" && !message.reasoning
+                      ? "Routing through 0G Compute Router..."
+                      : ""}
+                </p>
               </div>
               {message.card?.kind === "trade_review" ? (
                 <TradeReviewCardView
@@ -1192,15 +1406,16 @@ export function EmbeddedCopilotRail({
             />
           </label>
 
-          {(saveError || (sessionMode === "saved" && savedModeAvailable && hasConversation)) ? (
+          {(saveError || isSavingSession || currentSessionSaved) &&
+          sessionMode === "saved" &&
+          savedModeAvailable ? (
             <div className="mt-3 rounded-[12px] border border-line bg-panel-solid-strong px-3 py-2 text-xs">
               {saveError ? (
                 <p className="text-rose">Save failed: {saveError}</p>
+              ) : isSavingSession ? (
+                <p className="text-muted">Saving encrypted session to 0G Storage…</p>
               ) : (
-                <p className="text-muted">
-                  Saved mode: this transcript is encrypted with your wallet key and uploaded to 0G Storage when you press
-                  Save.
-                </p>
+                <p className="text-primary">Session saved to 0G Storage ✓ — encrypted and anchored on-chain.</p>
               )}
             </div>
           ) : null}
@@ -1211,42 +1426,20 @@ export function EmbeddedCopilotRail({
                 mode={permissionMode}
                 onChange={(mode) => setPermissionModeByNetwork((current) => ({ ...current, [networkId]: mode }))}
               />
-              {sessionMode === "saved" && savedModeAvailable ? (
-                <button
-                  type="button"
-                  onClick={() => void saveCurrentSession()}
-                  disabled={chatLocked || isSavingSession || !hasConversation}
-                  title="Encrypt this transcript with your wallet key and save it to 0G Storage"
-                  className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary transition-[background-color,border-color,color,transform] hover:border-primary/30 hover:bg-primary/15 active:scale-[0.96] disabled:cursor-not-allowed disabled:border-line disabled:bg-panel disabled:text-muted"
-                >
-                  {isSavingSession ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
-                  {isSavingSession ? "Saving..." : "Save to 0G"}
-                </button>
-              ) : null}
-              {hasConversation ? (
-                <button
-                  type="button"
-                  onClick={startNewSession}
-                  disabled={isSavingSession || isSending}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-line bg-panel px-2.5 py-1 text-xs font-semibold text-muted transition-colors hover:border-line-strong hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  New session
-                </button>
-              ) : null}
             </div>
             <button
               type="button"
               onClick={() => void submitPrompt(draft)}
               disabled={chatLocked || !draft.trim() || isSending}
-              className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[var(--pulse-teal)] text-background transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--pulse-teal)] text-background shadow-[0_0_0_1px_rgba(30,232,197,0.28),0_10px_24px_rgba(30,232,197,0.18)] transition-[transform,filter,box-shadow] hover:brightness-110 hover:shadow-[0_0_0_3px_rgba(30,232,197,0.22),0_14px_30px_rgba(30,232,197,0.28)] active:scale-90 disabled:cursor-not-allowed disabled:bg-panel-strong disabled:text-muted disabled:shadow-none disabled:opacity-60"
               aria-label="Send"
             >
               {isSending ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <Loader2 className="h-4 w-4 animate-spin" />
               ) : sendIcon === "message" ? (
-                <MessageSquare className="h-3.5 w-3.5" />
+                <MessageSquare className="h-4 w-4" />
               ) : (
-                <Send className="h-3.5 w-3.5" />
+                <Send className="h-4 w-4" />
               )}
             </button>
           </div>
@@ -1254,22 +1447,6 @@ export function EmbeddedCopilotRail({
       </div>
     </section>
   );
-}
-
-function modelStatusLabel(catalog: ModelCatalogState): string {
-  if (catalog.status === "loading") {
-    return "Loading";
-  }
-
-  if (catalog.status === "error") {
-    return "Config needed";
-  }
-
-  if (catalog.status === "ready") {
-    return catalog.models.length === 1 ? "1 model" : `${catalog.models.length} models`;
-  }
-
-  return "Catalog";
 }
 
 function resolveQuickPromptResponse(content: string): string | undefined {
@@ -1283,6 +1460,137 @@ function shortModelLabel(modelId: string): string {
   }
 
   return `${modelId.slice(0, 16)}...${modelId.slice(-14)}`;
+}
+
+/**
+ * Compact LLM model picker. Replaces a native <select> with a custom dropdown
+ * so the open list matches the app's dark glass vibe (native option lists render
+ * with the OS chrome and look out of place). The trigger is content-sized with a
+ * max-width cap so it stays "just enough" — on the wide /chat surface it no
+ * longer stretches across the whole header row.
+ */
+function ModelSelector({
+  catalog,
+  selectedModel,
+  onChange,
+}: {
+  catalog: ModelCatalogState;
+  selectedModel: string;
+  onChange: (model: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const disabled = catalog.status === "loading";
+
+  const selectedOption = catalog.models.find((model) => model.id === selectedModel);
+  const triggerLabel = selectedModel
+    ? (selectedOption?.label ?? shortModelLabel(selectedModel))
+    : catalog.defaultModel
+      ? `Auto · ${shortModelLabel(catalog.defaultModel)}`
+      : catalog.status === "error"
+        ? "Models unavailable"
+        : "Auto Router";
+  const hasError = catalog.status === "error";
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    function handleClick(event: MouseEvent) {
+      if (ref.current && !ref.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function handleKey(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative flex min-w-0 max-w-[220px] flex-1 items-center">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        disabled={disabled}
+        title={hasError ? catalog.error ?? "Model catalog unavailable" : "LLM model"}
+        aria-label="LLM model"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className={`inline-flex h-8 w-full items-center gap-1.5 rounded-[10px] border px-2.5 text-xs font-semibold transition-[background-color,border-color,color,transform] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50 ${
+          hasError
+            ? "border-amber/30 bg-amber/10 text-amber hover:bg-amber/20"
+            : "border-line bg-panel-solid-strong text-foreground hover:border-line-strong"
+        }`}
+      >
+        <BrainCircuit className={`h-3.5 w-3.5 shrink-0 ${hasError ? "text-amber" : "text-primary"}`} />
+        <span className="min-w-0 flex-1 truncate">{triggerLabel}</span>
+        <ChevronDown
+          className={`h-3 w-3 shrink-0 opacity-60 transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+
+      {open ? (
+        <div
+          role="listbox"
+          className="absolute right-0 top-full z-50 mt-1.5 max-h-[300px] w-64 overflow-y-auto rounded-[14px] border border-line bg-panel-solid-strong p-1 shadow-[0_18px_52px_rgba(0,0,0,0.55)] scrollbar-subtle"
+        >
+          <button
+            type="button"
+            role="option"
+            aria-selected={!selectedModel}
+            onClick={() => {
+              onChange("");
+              setOpen(false);
+            }}
+            className={`flex w-full items-center gap-2 rounded-[10px] px-2.5 py-2 text-left text-xs transition-colors hover:bg-panel ${
+              !selectedModel ? "bg-panel/60 text-foreground" : "text-muted"
+            }`}
+          >
+            <BrainCircuit className="h-3.5 w-3.5 shrink-0 text-primary" />
+            <span className="min-w-0 flex-1 truncate">
+              {catalog.defaultModel ? `Auto · ${shortModelLabel(catalog.defaultModel)}` : "Auto Router model"}
+            </span>
+            {!selectedModel ? <Check className="h-3 w-3 shrink-0 text-primary" /> : null}
+          </button>
+          {catalog.models.length > 0 ? <div className="mx-2 my-1 border-t border-line" /> : null}
+          {catalog.models.map((model) => {
+            const active = model.id === selectedModel;
+            return (
+              <button
+                key={model.id}
+                type="button"
+                role="option"
+                aria-selected={active}
+                onClick={() => {
+                  onChange(model.id);
+                  setOpen(false);
+                }}
+                className={`flex w-full items-center gap-2 rounded-[10px] px-2.5 py-2 text-left text-xs transition-colors hover:bg-panel ${
+                  active ? "bg-panel/60 text-foreground" : "text-muted"
+                }`}
+              >
+                <span className="min-w-0 flex-1 truncate" title={model.label}>
+                  {model.label}
+                </span>
+                {active ? <Check className="h-3 w-3 shrink-0 text-primary" /> : null}
+              </button>
+            );
+          })}
+          {catalog.models.length === 0 && hasError ? (
+            <p className="px-2.5 py-2 text-[11px] leading-4 text-rose">{catalog.error ?? "Model catalog unavailable."}</p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function PermissionModeDropdown({
@@ -1377,34 +1685,29 @@ function SessionModeToggle({
   disabled?: boolean;
   onChange: (mode: CopilotSessionMode) => void;
 }) {
-  const isSaved = mode === "saved";
+  const isPrivacy = mode === "privacy";
   return (
-    <div
-      className={`inline-flex rounded-[10px] border border-line bg-panel-solid-strong p-0.5 ${
-        disabled ? "opacity-60" : ""
+    <button
+      type="button"
+      onClick={() => onChange(isPrivacy ? "saved" : "privacy")}
+      disabled={disabled}
+      aria-pressed={isPrivacy}
+      title={
+        disabled
+          ? "Saved mode requires 0G mainnet storage"
+          : isPrivacy
+            ? "Privacy mode: ephemeral chat, nothing is stored or anchored"
+            : "Default mode: chat is encrypted and auto-saved to 0G Storage — tap for private chat"
+      }
+      className={`inline-flex items-center gap-1.5 rounded-[10px] border px-2.5 py-1.5 text-xs font-semibold transition-[background-color,border-color,color,transform] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 ${
+        isPrivacy
+          ? "border-primary/30 bg-primary/15 text-primary"
+          : "border-line bg-panel-solid-strong text-muted hover:border-line-strong hover:text-foreground"
       }`}
-      title={disabled ? "Saved mode requires 0G mainnet storage" : "Choose how this chat session is handled"}
     >
-      <button
-        type="button"
-        onClick={() => onChange("saved")}
-        disabled={disabled}
-        className={`rounded-[8px] px-2.5 py-1 text-xs font-semibold transition-colors disabled:cursor-not-allowed ${
-          isSaved ? "bg-panel-strong text-foreground" : "text-muted hover:text-foreground"
-        }`}
-      >
-        Saved
-      </button>
-      <button
-        type="button"
-        onClick={() => onChange("privacy")}
-        className={`inline-flex items-center gap-1 rounded-[8px] px-2.5 py-1 text-xs font-semibold transition-colors ${
-          !isSaved ? "bg-panel-strong text-foreground" : "text-muted hover:text-foreground"
-        }`}
-      >
-        Privacy
-      </button>
-    </div>
+      <LockKeyhole className="h-3.5 w-3.5" />
+      Privacy
+    </button>
   );
 }
 
@@ -1930,6 +2233,82 @@ function findTradeReviewCard(messages: EmbeddedCopilotMessage[], draftId: string
 
 function createDraftId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `trade-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+/**
+ * Consume the Server-Sent Events stream from `/api/copilot/chat`. The route
+ * emits `delta` (answer chunks), `reasoning` (thinking chunks, when the model
+ * emits any), `done` (final normalized answer + audit bundle in saved mode),
+ * and `error` events. `onDelta`/`onReasoning` fire as tokens arrive so the UI
+ * can render the answer and the thinking block in real time; `onDone` fires
+ * once with the final, markdown-normalized content. An `error` event rejects
+ * the promise so the caller's catch block can surface it.
+ */
+async function consumeCopilotChatStream(
+  response: Response,
+  handlers: {
+    onDelta: (content: string) => void;
+    onReasoning: (content: string) => void;
+    onDone: (event: {
+      content: string;
+      model: string;
+      mode: string;
+      auditBundle?: CopilotAuditBundle;
+    }) => void;
+  },
+): Promise<void> {
+  if (!response.body) {
+    throw new Error("0G Compute Router returned no stream.");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finished = false;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+
+    let separator: number;
+    while ((separator = buffer.indexOf("\n\n")) !== -1) {
+      const rawEvent = buffer.slice(0, separator);
+      buffer = buffer.slice(separator + 2);
+      const dataStr = rawEvent
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).replace(/^\s/, ""))
+        .join("");
+      if (!dataStr) {
+        continue;
+      }
+      let event: CopilotChatStreamEvent;
+      try {
+        event = JSON.parse(dataStr) as CopilotChatStreamEvent;
+      } catch {
+        continue;
+      }
+      if (event.type === "delta") {
+        handlers.onDelta(event.content);
+      } else if (event.type === "reasoning") {
+        handlers.onReasoning(event.content);
+      } else if (event.type === "error") {
+        throw new Error(event.message);
+      } else if (event.type === "done") {
+        handlers.onDone(event);
+        finished = true;
+      }
+    }
+    if (finished) {
+      break;
+    }
+  }
+
+  if (!finished) {
+    throw new Error("0G Compute Router stream ended without a response.");
+  }
 }
 
 function parseExpiresAt(value: string): number {

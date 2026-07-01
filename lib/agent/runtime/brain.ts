@@ -95,11 +95,20 @@ export async function decideOgAgentAction({
     2,
   );
 
+  const systemPrompt = [
+    "You are the 4lpha 0G autonomous trading agent brain running inside a server-side worker on 0G mainnet.",
+    "You receive one JSON message with allowlisted trade candidates, vault policy, and readiness state.",
+    'Return JSON only that matches the output_contract in the message. No markdown, no prose, no chain-of-thought.',
+    "Select at most one allowlisted candidate. Never invent routes, wallets, keys, calldata, recipients, or amounts outside the supplied candidates and policy.",
+    "If no candidate is ready or policy blocks the action, return action: hold.",
+    `Worker policy: ${policyContext}`,
+    "Autonomous worker cycle context is redacted and server-side only.",
+  ].join("\n");
+
   const response = await callOgComputeRouter({
     config: routerConfig,
     messages: [{ content: message, role: "operator" }],
-    operatorContext: "Autonomous worker cycle context is redacted and server-side only.",
-    policyContext,
+    systemPrompt,
     selectedModel: config.selectedModel,
   });
 

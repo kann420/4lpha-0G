@@ -43,6 +43,13 @@ export interface OgAgentDeploymentRecord {
   executor: Address;
   agentKey?: Hex;
   paused?: boolean;
+  // Tx hash of the vault.setAgentKeyEnabled(agentKey, true) call that authorizes
+  // this agent to trade on the Policy Vault. mintAgent only records the
+  // vault/executor refs — it does NOT flip vault.agentKeyEnabled — so the key
+  // must be enabled separately (the vault reverts any trade whose agentKey is
+  // not enabled). Undefined when the deployer key is not the vault owner and
+  // therefore cannot authorize the key (multi-user case: owner enables it).
+  agentKeyEnableTxHash?: Hex;
   runtime?: OgAgentRuntimeSettings;
 }
 

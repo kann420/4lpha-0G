@@ -43,7 +43,7 @@ export interface AgenticIdTransferValidityProof {
  * Exposes the identity-creation path (mint, authorizeUsage, revokeAuthorization,
  * delegateAccess) and the read surface (ownerOf, agentRecord, intelligentDataOf,
  * authorizedUsersOf, getApproved, isApprovedForAll, getDelegateAccess, balanceOf,
- * name, symbol, verifier, nextTokenId). iTransfer/iClone are deliberately OMITTED
+ * name, symbol, verifier, projectInfo, nextTokenId). iTransfer/iClone are deliberately OMITTED
  * from this export: the re-key transfer path requires real TEE/ZKP
  * TransferValidityProofs and is disabled until a verifier is wired. Do not add
  * iTransfer/iClone here without routing through a real, mainnet-gated verifier.
@@ -53,6 +53,46 @@ export const agenticIdAbi = [
     inputs: [],
     name: "nextTokenId",
     outputs: [{ internalType: "uint256", name: "", type: "uint256" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "projectInfo",
+    outputs: [
+      { internalType: "string", name: "name_", type: "string" },
+      { internalType: "string", name: "description_", type: "string" },
+      { internalType: "string", name: "website_", type: "string" },
+      { internalType: "string", name: "x_", type: "string" },
+    ],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "projectName",
+    outputs: [{ internalType: "string", name: "", type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "projectDescription",
+    outputs: [{ internalType: "string", name: "", type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "projectWebsite",
+    outputs: [{ internalType: "string", name: "", type: "string" }],
+    stateMutability: "view",
+    type: "function",
+  },
+  {
+    inputs: [],
+    name: "projectX",
+    outputs: [{ internalType: "string", name: "", type: "string" }],
     stateMutability: "view",
     type: "function",
   },
@@ -224,6 +264,16 @@ export const agenticIdAbi = [
       { indexed: false, internalType: "bytes32[]", name: "newDataHashes", type: "bytes32[]" },
     ],
     name: "AgentDataUpdated",
+    type: "event",
+  },
+  {
+    anonymous: false,
+    inputs: [
+      { indexed: false, internalType: "string", name: "projectName", type: "string" },
+      { indexed: false, internalType: "string", name: "website", type: "string" },
+      { indexed: false, internalType: "string", name: "xAccount", type: "string" },
+    ],
+    name: "ProjectInfoSet",
     type: "event",
   },
   {

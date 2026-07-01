@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "coinmarketcap": {
+      "type": "http",
+      "url": "https://mcp.coinmarketcap.com/mcp",
+      "headers": {
+        "X-CMC-MCP-API-KEY": "${CMC_API_KEY}"
+      }
+    }
+  }
+}

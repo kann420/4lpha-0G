@@ -232,7 +232,7 @@ export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspace
   let deployments = roster.active;
   let removedDeployments = roster.removed;
   let deployment = selectAgentDeployment(deployments, agentId);
-  let removedDeployment = selectRemovedAgentDeployment(removedDeployments, agentId);
+  let removedDeployment = deployment ? null : selectRemovedAgentDeployment(removedDeployments, agentId);
   if (!ownerAddress && deployment && vault.owner?.toLowerCase() !== deployment.owner.toLowerCase()) {
     vault = await withTimeout(
       readVaultSnapshot(undefined, { ownerAddress: deployment.owner }),
@@ -251,7 +251,7 @@ export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspace
     deployments = roster.active;
     removedDeployments = roster.removed;
     deployment = selectAgentDeployment(deployments, agentId);
-    removedDeployment = selectRemovedAgentDeployment(removedDeployments, agentId);
+    removedDeployment = deployment ? null : selectRemovedAgentDeployment(removedDeployments, agentId);
   }
   const selectedDeployment = deployment ?? removedDeployment ?? null;
   const selectedAgentKeyEnabled = live && selectedDeployment && vault.vault && (vault.vaultVersion ?? 1) >= 2
@@ -439,6 +439,41 @@ export async function deploySingleOgAgent(input: DeploySingleOgAgentInput): Prom
   });
   await waitForReceipt(publicClient, txHash, "Agentic ID mint");
 
+  // Enable the agent's key on the Policy Vault so the bounded executor can
+  // actually trade for this agent. mintAgent only records the vault/executor
+  // refs and emits AgentMinted — it does NOT flip vault.agentKeyEnabled, and
+  // there is no other app path that does (only the manual smoke script enables
+  // keys). Without this step a freshly minted agent can never trade: the vault
+  // reverts any trade whose agentKey is not enabled (PolicyVaultV2 trade guard).
+  // setAgentKeyEnabled is onlyOwner on the vault, so the on-chain enable is only
+  // possible when the server deployer key IS the vault owner (the single-user
+  // demo case). When they differ (multi-user), skip on-chain enable and leave
+  // agentKeyEnableTxHash undefined so the UI can tell the owner to enable the
+  // key themselves. This does not loosen vault policy — it authorizes an agent
+  // the owner just explicitly created, which is the intended lifecycle.
+  const agentKey = agentKeyForDeployment({
+    identityAddress: identity.address,
+    tokenId: expectedTokenId.toString(),
+  });
+  const deployerIsVaultOwner =
+    deployer.address.toLowerCase() === readyVault.owner.toLowerCase();
+  let agentKeyEnableTxHash: Hex | undefined;
+  if (deployerIsVaultOwner) {
+    const enableSimulation = await publicClient.simulateContract({
+      account: deployer.address,
+      address: readyVault.vault,
+      abi: policyVaultAgentKeyAbi,
+      functionName: "setAgentKeyEnabled",
+      args: [agentKey, true],
+    });
+    agentKeyEnableTxHash = await walletClient.writeContract({
+      ...enableSimulation.request,
+      account: deployer,
+      chain,
+    });
+    await waitForReceipt(publicClient, agentKeyEnableTxHash, "Agent key enable");
+  }
+
   const record = {
     agentRef,
     createdAt: new Date().toISOString(),
@@ -455,6 +490,8 @@ export async function deploySingleOgAgent(input: DeploySingleOgAgentInput): Prom
     storageRoot: storage.rootHash,
     tokenId: expectedTokenId.toString(),
     vault: readyVault.vault,
+    agentKey,
+    agentKeyEnableTxHash,
     runtime: normalizeRuntimeSettings(input.runtime),
   } satisfies OgAgentDeploymentRecord;
 
@@ -1431,10 +1468,26 @@ async function readAgentDeploymentRoster(
   const removedCandidates = mergeAgentDeploymentRecords([...onChainRecords, ...appDeployments]);
   const removedAgents = buildRemovedAgentRecords(registry, removedCandidates, readEnvRemovedAgentIds())
     .filter((deployment) => deploymentMatchesFilter(deployment, filter));
-  const removedAgentIds = new Set(removedAgents.map((deployment) => deployment.id));
+  // Match removed vs active by (identityAddress, tokenId), not by deployment.id
+  // alone. The agent id is `agent-0g-mainnet-${tokenId}` and does NOT encode the
+  // identity contract, so a removed agent minted on one AgenticID contract
+  // (e.g. a dead V1-vault agent on 0x7a968138…) would otherwise shadow a live
+  // agent with the same tokenId on a different contract (e.g. a freshly minted
+  // agent on 0x058c5F4C…) and silently exclude it from the active roster.
+  const removedIdentityTokenKeys = new Set(
+    removedAgents
+      .filter((deployment) => deployment.identityAddress && deployment.tokenId)
+      .map((deployment) => `${deployment.identityAddress.toLowerCase()}:${deployment.tokenId}`),
+  );
 
   const activeCandidates = deploymentCandidates.filter((deployment) => {
-    if (removedAgentIds.has(deployment.id)) return false;
+    if (
+      deployment.identityAddress &&
+      deployment.tokenId &&
+      removedIdentityTokenKeys.has(`${deployment.identityAddress.toLowerCase()}:${deployment.tokenId}`)
+    ) {
+      return false;
+    }
     return deploymentMatchesFilter(deployment, filter);
   });
   const activeDeployments = await filterActiveOnChainAgentRecords(activeCandidates, appDeploymentIds, filter);

@@ -8,6 +8,11 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
 const ERC165_INTERFACE_ID = "0x01ffc9a7" as Hex;
 const INVALID_INTERFACE_ID = "0xffffffff" as Hex;
+const PROJECT_NAME = "4lpha 0G";
+const PROJECT_DESCRIPTION =
+  "0G-native autonomous trading agents and AI-powered token intelligence with ERC-7857 Agentic ID and Policy Vault execution.";
+const PROJECT_WEBSITE = "https://0g.4lpha.tech/";
+const PROJECT_X = "https://x.com/4lpha_agent";
 
 function selector(signature: string): Hex {
   return slice(keccak256(stringToBytes(signature)), 0, 4);
@@ -58,6 +63,10 @@ describe("0G AgenticID", async function () {
       "4lpha 0G Agentic ID",
       "4OGAI",
       verifier.address,
+      PROJECT_NAME,
+      PROJECT_DESCRIPTION,
+      PROJECT_WEBSITE,
+      PROJECT_X,
     ]);
     return { owner, agentOwner, executor, receiver, verifier, identity };
   }
@@ -117,6 +126,20 @@ describe("0G AgenticID", async function () {
     const storedData = await identity.read.intelligentDataOf([1n]);
     assert.equal(storedData.length, 2);
     assert.equal(storedData[0].dataHash, data[0].dataHash);
+  });
+
+  it("exposes 4lpha project info for verified explorer reads", async function () {
+    const { identity } = await networkHelpers.loadFixture(deployFixture);
+    assert.equal(await identity.read.projectName(), PROJECT_NAME);
+    assert.equal(await identity.read.projectDescription(), PROJECT_DESCRIPTION);
+    assert.equal(await identity.read.projectWebsite(), PROJECT_WEBSITE);
+    assert.equal(await identity.read.projectX(), PROJECT_X);
+    assert.deepEqual(await identity.read.projectInfo(), [
+      PROJECT_NAME,
+      PROJECT_DESCRIPTION,
+      PROJECT_WEBSITE,
+      PROJECT_X,
+    ]);
   });
 
   it("allows only the owner or approved operator to manage usage and transfer", async function () {

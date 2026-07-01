@@ -85,18 +85,21 @@ flowchart LR
 
 ## Deployed 0G Contracts
 
-The current vault path uses deployed 0G contracts and curated routes rather than a legacy smart-account or arbitrary executor path. Mainnet is multi-user: the app resolves each connected wallet's vault through `PolicyVaultFactory.vaultOf(wallet)`. A new user creates a new vault instance from the deployed factory; the factory, adapter, proof registry, and AgenticID contracts do not need to be redeployed for each user.
+The current vault path uses deployed 0G contracts and curated routes rather than a legacy smart-account or arbitrary executor path. Mainnet is multi-user: the app resolves each connected wallet's vault through `PolicyVaultFactoryV2.vaultOf(wallet)`. A new user creates a new vault instance from the deployed V2 factory; the factory, adapter, proof registry, and AgenticID contracts do not need to be redeployed for each user.
+
+`PolicyVaultFactoryV2` (version `2`) is the active factory and the source of truth for new vault creation. `PolicyVaultFactory` (V1) remains deployed as a legacy factory: the app still discovers V1 vaults so existing operators keep working, and offers an in-app migration from a V1 vault to a V2 vault. The V2 vault adds agent-scoped positions: every trade request carries a `bytes32 agentKey`, so trades and exposure are tracked per agent inside one owner vault instead of one vault per agent.
 
 ### 0G Mainnet
 
 | Contract | Address | Purpose |
 |---|---|---|
-| PolicyVaultFactory | [`0x9bcb67FE731c6eB1ed0c51f1b821100CC8CE25C4`](https://chainscan.0g.ai/address/0x9bcb67FE731c6eB1ed0c51f1b821100CC8CE25C4) | Per-owner vault creation and discovery. |
+| PolicyVaultFactoryV2 | [`0xc9CA07dc92eEf55aFB4d83BBffb9E8EFc5c0036f`](https://chainscan.0g.ai/address/0xc9CA07dc92eEf55aFB4d83BBffb9E8EFc5c0036f) | Active per-owner vault factory (version `2`). Agent-scoped vault creation and discovery via `vaultOf(wallet)`. |
+| PolicyVaultFactory (V1, legacy) | [`0x9bcb67FE731c6eB1ed0c51f1b821100CC8CE25C4`](https://chainscan.0g.ai/address/0x9bcb67FE731c6eB1ed0c51f1b821100CC8CE25C4) | Legacy per-owner vault factory. Still discovered for existing vaults; new vaults are created through V2 with an in-app migration path. |
 | ProofRegistry | [`0xfe87d95B76E297Bb28b0eC4dD72b15cfC2b14E7a`](https://chainscan.0g.ai/address/0xfe87d95B76E297Bb28b0eC4dD72b15cfC2b14E7a) | Anchors audit roots, policy hashes, model metadata hashes, and vault action hashes. |
 | CuratedUniswapV3RouteAdapter | [`0xfaa8A8e03307dd901054E16Ee89189d006DBf6Db`](https://chainscan.0g.ai/address/0xfaa8A8e03307dd901054E16Ee89189d006DBf6Db) | Real mainnet adapter for allowlisted ZIA/Oku routes, tokens, pools, routers, and selectors. |
 | AgenticID | [`0x058c5f4c72810d7d4fc0bef3875a8f779de7e59c`](https://chainscan.0g.ai/address/0x058c5f4c72810d7d4fc0bef3875a8f779de7e59c) | Canonical ERC-7857 identity record (ERC-165 `supportsInterface`) for agent, vault, executor, and storage references. |
 
-Example owner vault: [`0xE4c802B58993e49bEFe824ec0765e1128586dB2A`](https://chainscan.0g.ai/address/0xE4c802B58993e49bEFe824ec0765e1128586dB2A). This is a demo/operator vault instance, not a global vault for every user.
+Example owner vault: [`0xE4c802B58993e49bEFe824ec0765e1128586dB2A`](https://chainscan.0g.ai/address/0xE4c802B58993e49bEFe824ec0765e1128586dB2A). This is a V1 demo/operator vault instance, not a global vault for every user; new vaults are created through the V2 factory above.
 
 Agentic ID is mainnet-only (chain ID `16661`). There is no Galileo/testnet Agentic ID deployment or smoke path; Galileo is used only for vault/adapter/proof smoke. Agentic ID mint requires `OG_NETWORK=mainnet`, `OG_CHAIN_ID=16661`, and `ENABLE_MAINNET_DEPLOY=true`. The re-key transfer path (`iTransfer`/`iClone`) requires a real TEE/ZKP verifier and is disabled in the server layer until one is wired.
 
@@ -104,7 +107,8 @@ Mainnet policy defaults for new vault instances: per-trade cap `5 0G`, daily cap
 
 For deployment and operations:
 
-- `NEXT_PUBLIC_POLICY_VAULT_FACTORY_MAINNET_ADDRESS` is the required multi-user vault discovery entrypoint.
+- `NEXT_PUBLIC_POLICY_VAULT_FACTORY_V2_MAINNET_ADDRESS` is the required multi-user vault discovery entrypoint (active V2 factory). `NEXT_PUBLIC_POLICY_VAULT_FACTORY_V2_MAINNET_FROM_BLOCK` scopes event discovery.
+- `NEXT_PUBLIC_POLICY_VAULT_FACTORY_MAINNET_ADDRESS` is the legacy V1 factory, still read so existing V1 vaults stay discoverable and can be migrated to V2.
 - `NEXT_PUBLIC_POLICY_VAULT_MAINNET_ADDRESS` / `POLICY_VAULT_MAINNET_ADDRESS` are optional demo or script fallbacks, not the user vault source of truth.
 - `DEPLOYER_PRIVATE_KEY` is the server-side proof and AgenticID minter key; it is not the owner key for every user's vault.
 - `VAULT_EXECUTOR_PRIVATE_KEY` controls the bounded executor address configured into each vault.
@@ -287,6 +291,8 @@ POLICY_VAULT_MAINNET_ADDRESS=
 PROOF_REGISTRY_ADDRESS=
 AGENT_IDENTITY_ADDRESS=
 AGENT_IDENTITY_MAINNET_ADDRESS=
+NEXT_PUBLIC_POLICY_VAULT_FACTORY_V2_MAINNET_ADDRESS=
+NEXT_PUBLIC_POLICY_VAULT_FACTORY_V2_MAINNET_FROM_BLOCK=
 ```
 
 ### Feature Flags
@@ -331,8 +337,10 @@ lib/
   types/                      Shared TypeScript contracts
 
 contracts/
-  PolicyVault.sol             Deny-by-default vault contract
-  PolicyVaultFactory.sol      Vault factory
+  PolicyVault.sol             Deny-by-default vault contract (V1, legacy)
+  PolicyVaultFactory.sol      Vault factory (V1, legacy)
+  PolicyVaultV2.sol           Deny-by-default vault with agent-scoped positions (V2, active)
+  PolicyVaultFactoryV2.sol    Per-owner vault factory (V2, active)
   ProofRegistry.sol           Proof anchoring and lookup
   AgenticID.sol               Agent identity / proof registry path
   mocks/                      Local-only mock and malicious test contracts

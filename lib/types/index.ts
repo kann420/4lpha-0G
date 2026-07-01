@@ -118,6 +118,33 @@ export interface CopilotChatResponse {
 }
 
 /**
+ * Server-Sent Events emitted by the Copilot chat route while streaming a 0G
+ * Compute Router response. The route always responds with `text/event-stream`
+ * (even for deterministic short-circuits and errors) so the client has one
+ * uniform consumption path. Each event is one `data: <json>\n\n` line.
+ *
+ * - `delta`: an incremental answer chunk — append to the streamed answer.
+ * - `reasoning`: an incremental reasoning/thinking chunk (only when the model
+ *   emits one, e.g. via `reasoning_content`/`reasoning`) — append to the
+ *   thinking block.
+ * - `done`: the stream finished. `content` is the final, markdown-normalized
+ *   answer (the client replaces the streamed text with it); `auditBundle` is
+ *   present only in saved mode.
+ * - `error`: the stream failed; the client surfaces `message`.
+ */
+export type CopilotChatStreamEvent =
+  | { type: "delta"; content: string }
+  | { type: "reasoning"; content: string }
+  | {
+      type: "done";
+      content: string;
+      model: string;
+      mode: CopilotSessionMode;
+      auditBundle?: CopilotAuditBundle;
+    }
+  | { type: "error"; code: string; message: string };
+
+/**
  * Copilot chat session storage mode.
  * - "saved" (default): the session transcript is encrypted client-side with a
  *   wallet-derived AES-256-GCM key, uploaded as one ciphertext file to 0G
@@ -140,6 +167,7 @@ export interface CopilotSessionMessage {
   role: "operator" | "assistant";
   status?: "error" | "pending";
   card?: unknown;
+  reasoning?: string;
 }
 
 /**

@@ -10,6 +10,35 @@ const configuredPrivateKeys = [process.env.DEPLOYER_PRIVATE_KEY]
 
 export default defineConfig({
   plugins: [hardhatToolboxViemPlugin],
+  chainDescriptors: {
+    16602: {
+      name: "0G Galileo",
+      chainType: "l1",
+      blockExplorers: {
+        etherscan: {
+          name: "0G Chain Scan Galileo",
+          url: "https://chainscan-galileo.0g.ai",
+          apiUrl: "https://chainscan-galileo.0g.ai/open/api",
+        },
+      },
+    },
+    16661: {
+      name: "0G Mainnet",
+      chainType: "l1",
+      blockExplorers: {
+        etherscan: {
+          name: "0G Chain Scan",
+          url: "https://chainscan.0g.ai",
+          apiUrl: "https://chainscan.0g.ai/open/api",
+        },
+      },
+    },
+  },
+  verify: {
+    etherscan: {
+      apiKey: process.env.OG_CHAINSCAN_API_KEY ?? "PLACEHOLDER",
+    },
+  },
   solidity: {
     profiles: {
       default: {

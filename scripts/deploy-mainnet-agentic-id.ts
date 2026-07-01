@@ -5,6 +5,11 @@ import { artifacts, network } from "hardhat";
 import { parseEther, zeroAddress, type Abi, type Address, type Hex } from "viem";
 
 const MAINNET_CHAIN_ID = 16661;
+const PROJECT_NAME = "4lpha 0G";
+const PROJECT_DESCRIPTION =
+  "0G-native autonomous trading agents and AI-powered token intelligence with ERC-7857 Agentic ID and Policy Vault execution.";
+const PROJECT_WEBSITE = "https://0g.4lpha.tech/";
+const PROJECT_X = "https://x.com/4lpha_agent";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -94,7 +99,16 @@ const artifact = await readArtifact("AgenticID");
 const txHash = await deployer.deployContract({
   abi: artifact.abi,
   bytecode: artifact.bytecode,
-  args: [deployerAddress, "4lpha 0G Agentic ID", "4OGAI", zeroAddress],
+  args: [
+    deployerAddress,
+    "4lpha 0G Agentic ID",
+    "4OGAI",
+    zeroAddress,
+    PROJECT_NAME,
+    PROJECT_DESCRIPTION,
+    PROJECT_WEBSITE,
+    PROJECT_X,
+  ],
 });
 const receipt = await waitForTx(txHash, "AgenticID deploy");
 const agenticId = requireAddress(receipt.contractAddress, "AgenticID deployment");
@@ -103,6 +117,12 @@ const output = {
   agenticId,
   chainId,
   deployer: deployerAddress,
+  project: {
+    description: PROJECT_DESCRIPTION,
+    name: PROJECT_NAME,
+    website: PROJECT_WEBSITE,
+    x: PROJECT_X,
+  },
   standard: "ERC-7857",
   txHash,
 };

@@ -49,7 +49,13 @@ contract AgenticID is Ownable, IERC7857, IERC7857Metadata {
         string storageRef
     );
     event AgentDataUpdated(uint256 indexed tokenId, bytes32[] oldDataHashes, bytes32[] newDataHashes);
+    event ProjectInfoSet(string projectName, string website, string xAccount);
     event VerifierUpdated(address indexed verifier);
+
+    string public projectName;
+    string public projectDescription;
+    string public projectWebsite;
+    string public projectX;
 
     string private _name;
     string private _symbol;
@@ -65,14 +71,30 @@ contract AgenticID is Ownable, IERC7857, IERC7857Metadata {
         address initialOwner,
         string memory name_,
         string memory symbol_,
-        address verifier_
+        address verifier_,
+        string memory projectName_,
+        string memory projectDescription_,
+        string memory projectWebsite_,
+        string memory projectX_
     ) Ownable(initialOwner) {
-        if (bytes(name_).length == 0 || bytes(symbol_).length == 0) {
+        if (
+            bytes(name_).length == 0
+                || bytes(symbol_).length == 0
+                || bytes(projectName_).length == 0
+                || bytes(projectDescription_).length == 0
+                || bytes(projectWebsite_).length == 0
+                || bytes(projectX_).length == 0
+        ) {
             revert InvalidMetadata();
         }
         _name = name_;
         _symbol = symbol_;
         _verifier = IERC7857DataVerifier(verifier_);
+        projectName = projectName_;
+        projectDescription = projectDescription_;
+        projectWebsite = projectWebsite_;
+        projectX = projectX_;
+        emit ProjectInfoSet(projectName_, projectWebsite_, projectX_);
         emit VerifierUpdated(verifier_);
     }
 
@@ -95,6 +117,19 @@ contract AgenticID is Ownable, IERC7857, IERC7857Metadata {
 
     function nextTokenId() external view returns (uint256) {
         return _nextTokenId;
+    }
+
+    function projectInfo()
+        external
+        view
+        returns (
+            string memory name_,
+            string memory description_,
+            string memory website_,
+            string memory x_
+        )
+    {
+        return (projectName, projectDescription, projectWebsite, projectX);
     }
 
     function mintAgent(
