@@ -1420,12 +1420,13 @@ export function EmbeddedCopilotRail({
             </div>
           ) : null}
 
-          <div className="mt-3 flex items-center justify-between gap-3 border-t border-line pt-3">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <div className="relative mt-3 flex items-center justify-between gap-3 border-t border-line pt-3">
+            <div className="flex flex-nowrap items-center gap-2">
               <PermissionModeDropdown
                 mode={permissionMode}
                 onChange={(mode) => setPermissionModeByNetwork((current) => ({ ...current, [networkId]: mode }))}
               />
+              <CmcMcpBadge />
             </div>
             <button
               type="button"
@@ -1620,7 +1621,7 @@ function PermissionModeDropdown({
   }, [open]);
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} className="relative shrink-0">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -1670,6 +1671,88 @@ function PermissionModeDropdown({
               <span className="mt-1 block text-[10px] leading-4 text-muted">Auto-execute allowed previews</span>
             </span>
           </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * CoinMarketCap logo mark (monochrome path from Simple Icons). Filled with
+ * `currentColor` so it inherits the CMC brand blue (`#3861FB`) wherever it is
+ * used. Inlined (not hotlinked) so the badge works offline and never depends on
+ * an external asset.
+ */
+function CmcLogo({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={className}
+      fill="currentColor"
+      role="img"
+      aria-label="CoinMarketCap"
+    >
+      <path d="M20.738 14.341c-.419.265-.912.298-1.286.087-.476-.27-.738-.898-.738-1.774v-2.618c0-1.264-.5-2.164-1.336-2.407-1.416-.413-2.482 1.32-2.882 1.972l-2.498 4.05v-4.95c-.028-1.14-.398-1.821-1.1-2.027-.466-.135-1.161-.081-1.837.953l-5.597 8.987A9.875 9.875 0 0 1 2.326 12c0-5.414 4.339-9.818 9.672-9.818 5.332 0 9.67 4.404 9.67 9.818.004.018.002.034.003.053.05 1.049-.29 1.883-.933 2.29zm3.08-2.34-.001-.055C23.787 5.353 18.497 0 11.997 0 5.48 0 .177 5.383.177 12c0 6.616 5.303 12 11.82 12 2.991 0 5.846-1.137 8.037-3.2.435-.41.46-1.1.057-1.541a1.064 1.064 0 0 0-1.519-.059 9.56 9.56 0 0 1-6.574 2.618c-2.856 0-5.425-1.263-7.197-3.268l5.048-8.105v3.737c0 1.794.696 2.374 1.28 2.544.584.17 1.476.054 2.413-1.468.998-1.614 2.025-3.297 3.023-4.88v2.276c0 1.678.672 3.02 1.843 3.68 1.056.597 2.384.543 3.465-.14 1.312-.828 2.018-2.354 1.944-4.193z" />
+    </svg>
+  );
+}
+
+/**
+ * Compact indicator that the Copilot grounds market-overview answers with live
+ * CoinMarketCap data via the CMC MCP server (data-layer-only, Hướng B). Sits on
+ * the same row as the approvals/bypass dropdown in the composer footer (the
+ * footer group is flex-nowrap with shrink-0 children so the badge never wraps
+ * below the dropdown). The pill uses the CoinMarketCap brand blue (#3861FB) and
+ * the real CMC logo mark; clicking opens an absolute-positioned info popover
+ * above it so it does not consume composer layout space. CMC is a data input
+ * only — the 0G Compute Router remains the reasoning path — and the popover
+ * says so.
+ */
+function CmcMcpBadge() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    function handleClick(event: MouseEvent) {
+      if (ref.current && !ref.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        title="CoinMarketCap MCP — market data layer"
+        aria-label="CoinMarketCap MCP data layer"
+        className="inline-flex h-8 w-8 items-center justify-center rounded-[10px] border border-[#3861FB]/30 bg-[#3861FB]/10 text-[#3861FB] transition-colors hover:border-[#3861FB]/50 hover:bg-[#3861FB]/20"
+      >
+        <CmcLogo className="h-4 w-4" />
+      </button>
+
+      {open ? (
+        <div className="absolute bottom-full left-1/2 z-50 mb-1.5 w-60 max-w-full -translate-x-1/2 overflow-hidden rounded-[14px] border border-[#3861FB]/30 bg-panel-solid-strong shadow-[0_16px_48px_rgba(0,0,0,0.5)]">
+          <div className="px-3 py-2.5">
+            <div className="flex items-center gap-2">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[#3861FB]/20 bg-[#3861FB]/15 text-[#3861FB]">
+                <CmcLogo className="h-3.5 w-3.5" />
+              </span>
+              <span className="block text-[11px] font-semibold leading-none text-foreground">CoinMarketCap MCP</span>
+            </div>
+            <p className="mt-2 text-[10px] leading-4 text-muted">
+              Market-overview prompts are grounded with live CoinMarketCap data — global metrics, Fear &amp; Greed, BTC dominance, open interest, funding, liquidations, and ETF flows — fetched server-side via the CMC MCP server.
+            </p>
+            <p className="mt-2 text-[10px] leading-4 text-muted/80">
+              Data layer only. The 0G Compute Router is the reasoning path; no raw provider payloads are stored.
+            </p>
+          </div>
         </div>
       ) : null}
     </div>
