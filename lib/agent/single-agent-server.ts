@@ -67,6 +67,8 @@ const MAX_STORAGE_SYNC_LAG_BLOCKS = 120n;
 const STORAGE_SNAPSHOT_CACHE_TTL_MS = 60_000;
 const WORKSPACE_READ_TIMEOUT_MS = 6_000;
 const AUXILIARY_READ_TIMEOUT_MS = 2_500;
+const ON_CHAIN_ROSTER_READ_TIMEOUT_MS = 5_000;
+const AGENT_METADATA_READ_TIMEOUT_MS = 900;
 const OG_RPC_TIMEOUT_MS = 4_000;
 const STANDARD_LABEL = "ERC-7857" as const;
 const STANDARD_NOTE =
@@ -1457,7 +1459,7 @@ async function readAgentDeploymentRoster(
     filter.includeOnChain
       ? withTimeout(
           readOnChainAgentDeploymentRecords(identityAddress),
-          AUXILIARY_READ_TIMEOUT_MS,
+          ON_CHAIN_ROSTER_READ_TIMEOUT_MS,
           "Agentic ID on-chain roster",
         ).catch(() => [])
       : Promise.resolve([]),
@@ -1807,10 +1809,12 @@ async function agentMintedLogToDeploymentRecord(
   const tokenId = args.tokenId.toString();
   const storageRoot = extractStorageRoot(args.storageRef);
   if (!storageRoot) return null;
-  const metadata = await readStoredAgentMetadata(storageRoot).catch(() => null);
-  const block = log.blockNumber
-    ? await publicClient.getBlock({ blockNumber: log.blockNumber }).catch(() => null)
-    : null;
+  const [metadata, block] = await Promise.all([
+    withTimeout(readStoredAgentMetadata(storageRoot), AGENT_METADATA_READ_TIMEOUT_MS, "agent metadata").catch(() => null),
+    log.blockNumber
+      ? withTimeout(publicClient.getBlock({ blockNumber: log.blockNumber }), AGENT_METADATA_READ_TIMEOUT_MS, "agent mint block").catch(() => null)
+      : Promise.resolve(null),
+  ]);
   return {
     agentRef: args.agentRef,
     createdAt: block?.timestamp ? new Date(Number(block.timestamp) * 1000).toISOString() : new Date().toISOString(),
