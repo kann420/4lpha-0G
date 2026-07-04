@@ -54,13 +54,14 @@ import { readOgAgentRuns } from "@/lib/agent/runtime/store";
 import type { OgAgentRuntimeRunRecord } from "@/lib/agent/runtime/types";
 
 const MAINNET_CHAIN_ID = 16661;
-const AGENT_REGISTRY_PATH = join(".data", "agents", "mainnet-agents.json");
-const LEGACY_AGENT_DEPLOYMENT_PATH = join(".data", "agents", "mainnet-single-agent.json");
-const LEGACY_AGENT_DEPLOY_RESPONSE_PATH = join(".data", "agents", "deploy-response.json");
-const AGENT_STORAGE_PENDING_PATH = join(".data", "agents", "mainnet-agent-storage-pending.json");
-const AGENT_TRADE_ARTIFACT_DIR = join(".data", "agents", "trades");
-const LEGACY_AGENT_TRADE_EXECUTION_PATH = join(".data", "agents", "trade-execution-response.json");
-const LEGACY_AGENT_SELL_EXECUTION_PATH = join(".data", "agents", "sell-execution-response.json");
+const AGENT_DATA_DIR = resolveAgentDataDir();
+const AGENT_REGISTRY_PATH = join(AGENT_DATA_DIR, "mainnet-agents.json");
+const LEGACY_AGENT_DEPLOYMENT_PATH = join(AGENT_DATA_DIR, "mainnet-single-agent.json");
+const LEGACY_AGENT_DEPLOY_RESPONSE_PATH = join(AGENT_DATA_DIR, "deploy-response.json");
+const AGENT_STORAGE_PENDING_PATH = join(AGENT_DATA_DIR, "mainnet-agent-storage-pending.json");
+const AGENT_TRADE_ARTIFACT_DIR = join(AGENT_DATA_DIR, "trades");
+const LEGACY_AGENT_TRADE_EXECUTION_PATH = join(AGENT_DATA_DIR, "trade-execution-response.json");
+const LEGACY_AGENT_SELL_EXECUTION_PATH = join(AGENT_DATA_DIR, "sell-execution-response.json");
 const AGENTIC_ID_DEPLOYMENT_PATH = join(".data", "deployments", "mainnet-agentic-id.json");
 const MAX_STORAGE_SYNC_LAG_BLOCKS = 120n;
 const STORAGE_SNAPSHOT_CACHE_TTL_MS = 60_000;
@@ -77,6 +78,14 @@ const STANDARD_NOTE =
 // AGENTS.md). These functions remain callable on-chain but are not part of any
 // production write path here. Any future verifier wiring must route through
 // assertMainnetDeployEnv / chainId === 16661.
+
+function resolveAgentDataDir(): string {
+  const configured = process.env.OG_AGENT_DATA_DIR?.trim();
+  if (configured) return configured;
+
+  const railwayVolumeMount = process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim();
+  return railwayVolumeMount ? join(railwayVolumeMount, "agents") : join(".data", "agents");
+}
 
 let storageSnapshotCache:
   | {
