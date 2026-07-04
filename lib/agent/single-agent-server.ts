@@ -1533,10 +1533,36 @@ async function filterActiveOnChainAgentRecords(
         return deployment;
       }
 
-      return { ...deployment, paused: true } satisfies OgAgentDeploymentRecord;
+      const pausedDeployment = { ...deployment, paused: true } satisfies OgAgentDeploymentRecord;
+      if (filter.agentId === deployment.id) {
+        return pausedDeployment;
+      }
+
+      return (await hasAgentOpenPositions(vault, deployment)) ? pausedDeployment : null;
     }),
   );
   return filtered.filter((deployment): deployment is OgAgentDeploymentRecord => deployment !== null);
+}
+
+async function hasAgentOpenPositions(vault: Address, deployment: OgAgentDeploymentRecord): Promise<boolean> {
+  const rpcUrl = process.env.OG_RPC_URL?.trim();
+  if (!rpcUrl) {
+    return false;
+  }
+  const publicClient = create0GPublicClient(rpcUrl);
+  const agentKey = deployment.agentKey ?? agentKeyForDeployment(deployment);
+  const positions = await withTimeout(
+    readSellablePositions(publicClient, vault, { agentKey }),
+    AUXILIARY_READ_TIMEOUT_MS,
+    "agent-scoped positions",
+  ).catch(() => []);
+  return positions.some((position) => {
+    try {
+      return BigInt(position.amountRaw) > 0n;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function deploymentMatchesFilter(
