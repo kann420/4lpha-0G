@@ -1553,6 +1553,20 @@ async function hasAgentOpenPositions(vault: Address, deployment: OgAgentDeployme
   }
   const publicClient = create0GPublicClient(rpcUrl);
   const agentKey = deployment.agentKey ?? agentKeyForDeployment(deployment);
+  const openPositionCount = await withTimeout(
+    publicClient.readContract({
+      address: vault,
+      abi: policyVaultAgentKeyAbi,
+      functionName: "agentOpenPositionCount",
+      args: [agentKey],
+    }),
+    AUXILIARY_READ_TIMEOUT_MS,
+    "agent open position count",
+  ).catch(() => undefined);
+  if (typeof openPositionCount === "bigint") {
+    return openPositionCount > 0n;
+  }
+
   const positions = await withTimeout(
     readSellablePositions(publicClient, vault, { agentKey }),
     AUXILIARY_READ_TIMEOUT_MS,
