@@ -1533,12 +1533,7 @@ async function filterActiveOnChainAgentRecords(
         return deployment;
       }
 
-      const pausedDeployment = { ...deployment, paused: true } satisfies OgAgentDeploymentRecord;
-      if (filter.agentId === deployment.id) {
-        return pausedDeployment;
-      }
-
-      return null;
+      return { ...deployment, paused: true } satisfies OgAgentDeploymentRecord;
     }),
   );
   return filtered.filter((deployment): deployment is OgAgentDeploymentRecord => deployment !== null);
