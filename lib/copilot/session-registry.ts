@@ -16,7 +16,8 @@ import type { CopilotSessionRegistryRecord } from "@/lib/types";
  * The server only ever handles ciphertext + references - never plaintext.
  */
 
-const REGISTRY_DIR = ".data/copilot-sessions";
+const DEFAULT_REGISTRY_DIR = ".data/copilot-sessions";
+const REGISTRY_DIR = process.env.COPILOT_SESSION_REGISTRY_DIR?.trim() || DEFAULT_REGISTRY_DIR;
 const MAX_SESSIONS_PER_WALLET = 200;
 
 interface RegistryFile {
