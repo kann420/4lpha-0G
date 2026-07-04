@@ -1460,13 +1460,17 @@ async function readAgentDeploymentRoster(
     ...(legacySingleRecord ? [legacySingleRecord] : []),
     ...(registry?.agents ?? []),
   ]);
-  const appDeploymentIds = new Set(appDeployments.map((deployment) => deployment.id));
   const deploymentCandidates = mergeAgentDeploymentRecords([
     ...((filter.ownerAddress || filter.vaultAddress) ? onChainRecords : []),
     ...appDeployments,
   ]);
   const removedCandidates = mergeAgentDeploymentRecords([...onChainRecords, ...appDeployments]);
-  const removedAgents = buildRemovedAgentRecords(registry, removedCandidates, readEnvRemovedAgentIds())
+  const removedAgents = buildRemovedAgentRecords(
+    registry,
+    removedCandidates,
+    readEnvRemovedAgentIds(),
+    readEnvRemovedAgentKeys(),
+  )
     .filter((deployment) => deploymentMatchesFilter(deployment, filter));
   // Match removed vs active by (identityAddress, tokenId), not by deployment.id
   // alone. The agent id is `agent-0g-mainnet-${tokenId}` and does NOT encode the
@@ -1490,13 +1494,12 @@ async function readAgentDeploymentRoster(
     }
     return deploymentMatchesFilter(deployment, filter);
   });
-  const activeDeployments = await filterActiveOnChainAgentRecords(activeCandidates, appDeploymentIds, filter);
+  const activeDeployments = await filterActiveOnChainAgentRecords(activeCandidates, filter);
   return { active: activeDeployments, removed: removedAgents };
 }
 
 async function filterActiveOnChainAgentRecords(
   deployments: OgAgentDeploymentRecord[],
-  appDeploymentIds: Set<string>,
   filter: { agentId?: string; includeOnChain?: boolean; ownerAddress?: Address; vaultAddress?: Address },
 ): Promise<OgAgentDeploymentRecord[]> {
   if (!filter.includeOnChain || (!filter.ownerAddress && !filter.vaultAddress)) {
@@ -1522,35 +1525,14 @@ async function filterActiveOnChainAgentRecords(
       }
 
       const pausedDeployment = { ...deployment, paused: true } satisfies OgAgentDeploymentRecord;
-      if (appDeploymentIds.has(deployment.id) || filter.agentId === deployment.id) {
+      if (filter.agentId === deployment.id) {
         return pausedDeployment;
       }
 
-      return (await hasAgentOpenPositions(vault, deployment)) ? pausedDeployment : null;
+      return null;
     }),
   );
   return filtered.filter((deployment): deployment is OgAgentDeploymentRecord => deployment !== null);
-}
-
-async function hasAgentOpenPositions(vault: Address, deployment: OgAgentDeploymentRecord): Promise<boolean> {
-  const rpcUrl = process.env.OG_RPC_URL?.trim();
-  if (!rpcUrl) {
-    return false;
-  }
-  const publicClient = create0GPublicClient(rpcUrl);
-  const agentKey = deployment.agentKey ?? agentKeyForDeployment(deployment);
-  const positions = await withTimeout(
-    readSellablePositions(publicClient, vault, { agentKey }),
-    AUXILIARY_READ_TIMEOUT_MS,
-    "agent-scoped positions",
-  ).catch(() => []);
-  return positions.some((position) => {
-    try {
-      return BigInt(position.amountRaw) > 0n;
-    } catch {
-      return false;
-    }
-  });
 }
 
 function deploymentMatchesFilter(
@@ -1605,8 +1587,15 @@ function buildRemovedAgentRecords(
   registry: AgentDeploymentRegistryArtifact | null,
   candidateRecords: OgAgentDeploymentRecord[],
   extraRemovedIds: Set<string> = new Set(),
+  extraRemovedAgentKeys: Set<string> = new Set(),
 ): OgRemovedAgentRecord[] {
   const candidatesById = new Map(candidateRecords.map((deployment) => [deployment.id, deployment]));
+  const candidatesByAgentKey = new Map(
+    candidateRecords.map((deployment) => [
+      (deployment.agentKey ?? agentKeyForDeployment(deployment)).toLowerCase(),
+      deployment,
+    ]),
+  );
   const removedRecords = (registry?.removedAgents ?? [])
     .map((record) => normalizeRemovedAgentRecord(record))
     .filter((record): record is OgRemovedAgentRecord => record !== null);
@@ -1622,6 +1611,17 @@ function buildRemovedAgentRecords(
     if (tombstone) removedById.set(tombstone.id, tombstone);
   }
 
+  for (const removedAgentKey of extraRemovedAgentKeys) {
+    const candidate = candidatesByAgentKey.get(removedAgentKey);
+    if (!candidate || removedById.has(candidate.id)) continue;
+    const tombstone = normalizeRemovedAgentRecord({
+      ...candidate,
+      agentKeyDisabledAt: removedAt,
+      removedAt,
+    });
+    if (tombstone) removedById.set(tombstone.id, tombstone);
+  }
+
   return mergeRemovedAgentRecords(Array.from(removedById.values()));
 }
 
@@ -1634,6 +1634,18 @@ function readEnvRemovedAgentIds(): Set<string> {
       .split(/[\s,]+/u)
       .map((value) => value.trim())
       .filter((value) => /^agent-0g-mainnet-\d+$/u.test(value)),
+  );
+}
+
+function readEnvRemovedAgentKeys(): Set<string> {
+  const raw = [process.env.OG_AGENT_REMOVED_AGENT_KEYS, process.env.OG_AGENT_DISABLED_AGENT_KEYS]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join(",");
+  return new Set(
+    raw
+      .split(/[\s,]+/u)
+      .map((value) => value.trim().toLowerCase())
+      .filter((value) => isHex(value, { strict: true }) && value.length === 66),
   );
 }
 
