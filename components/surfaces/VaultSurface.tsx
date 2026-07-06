@@ -116,22 +116,18 @@ export function VaultSurface() {
               />
             </div>
             <div className="animate-feed-reveal min-w-0" style={{ animationDelay: "120ms" }}>
-              {networkId === "mainnet" ? (
-                <FundManualDepositPanel
-                  factoryAddress={walletVault.factoryAddress}
-                  creationReady={vaultReadiness.isReady}
-                  creationStatus={vaultReadiness.reason}
-                  isCreatingVault={walletVault.isCreating}
-                  isDiscoveringVault={walletVault.isDiscovering}
-                  network={network}
-                  onCreateVault={walletVault.createVault}
-                  onRefreshVaultAddress={walletVault.refreshVaultAddress}
-                  vaultAddress={walletVault.vaultAddress}
-                  walletConnected={walletAccount.isConnected}
-                />
-              ) : (
-                <VaultMainnetOnlyPanel onSwitchMainnet={() => setNetworkId("mainnet")} />
-              )}
+              <FundManualDepositPanel
+                factoryAddress={walletVault.factoryAddress}
+                creationReady={vaultReadiness.isReady}
+                creationStatus={vaultReadiness.reason}
+                isCreatingVault={walletVault.isCreating}
+                isDiscoveringVault={walletVault.isDiscovering}
+                network={network}
+                onCreateVault={walletVault.createVault}
+                onRefreshVaultAddress={walletVault.refreshVaultAddress}
+                vaultAddress={walletVault.vaultAddress}
+                walletConnected={walletAccount.isConnected}
+              />
             </div>
             {walletVault.migrationRequired ? (
               <div className="animate-feed-reveal min-w-0" style={{ animationDelay: "180ms" }}>
@@ -948,44 +944,4 @@ function readBalanceLabel({
     maximumFractionDigits: 4,
     minimumFractionDigits: parsed === 0 ? 0 : undefined,
   })} ${symbol}`;
-}
-
-function VaultMainnetOnlyPanel({
-  onSwitchMainnet,
-}: {
-  onSwitchMainnet: () => void;
-}) {
-  return (
-    <section
-      className="rounded-hero border border-line bg-panel-solid-strong p-4 sm:p-6 lg:rounded-[30px]"
-      style={{ boxShadow: "var(--shadow-hero)" }}
-    >
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div className="space-y-2">
-          <h2 className="font-heading text-xl font-semibold tracking-tight text-foreground">
-            Policy Vault is mainnet-only
-          </h2>
-          <p className="max-w-2xl text-sm leading-6 text-muted">
-            The Policy Vault and its factory are deployed and verified on 0G Mainnet only.
-            Galileo testnet has no vault factory configured, so deposit and create controls
-            are disabled here. Switch to mainnet to fund and operate your vault.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onSwitchMainnet}
-          className="inline-flex h-11 items-center rounded-full bg-primary px-5 text-sm font-semibold text-on-primary transition-[filter,transform] hover:brightness-105 active:scale-[0.96]"
-        >
-          View Mainnet Vault
-        </button>
-      </div>
-      <div className="mt-5 flex items-start gap-3 rounded-card border border-amber/20 bg-amber/[0.06] p-3 text-xs leading-5 text-amber/80">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-        <p>
-          Copilot chat and AI scan remain available on testnet. Trade Agent and Policy Vault
-          require mainnet per project policy.
-        </p>
-      </div>
-    </section>
-  );
 }
