@@ -16,6 +16,7 @@ import {
   Loader2,
   RefreshCcw,
   Shield,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Upload,
@@ -165,6 +166,7 @@ export function OgAgentCreateWorkspace() {
   const [instructions, setInstructions] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isDeploying, setIsDeploying] = useState(false);
+  const [isMigrating, setIsMigrating] = useState(false);
   const [statusText, setStatusText] = useState("Loading vault and identity state.");
   const [walletAccessByKey, setWalletAccessByKey] = useState<Record<string, string>>({});
 
@@ -374,6 +376,45 @@ export function OgAgentCreateWorkspace() {
     await waitForReceipt(publicClient, txHash);
   }
 
+  // v2 -> v3 migration: the V3 singleton is deployed offline via `npm run vault:mainnet:create:v3`
+  // (no on-chain V3 factory on mainnet). This button re-points the owner's agent records to the
+  // V3 vault and re-enables each agent key on V3 (server-side, DEPLOYER pays gas). Funds movement
+  // (V2 withdraw / V3 deposit) stays on the manual controls. Only shown when a V3 vault exists for
+  // the owner but the agent records still point at a V2 vault.
+  const v3VaultAddress = workspace?.vault.vault;
+  const v3MigrationAvailable = Boolean(
+    workspace &&
+      (workspace.vault.vaultVersion ?? 1) >= 3 &&
+      v3VaultAddress &&
+      workspace.agents.some((agent) => agent.vault.toLowerCase() !== v3VaultAddress.toLowerCase()),
+  );
+
+  async function migrateToV3() {
+    if (!v3MigrationAvailable) {
+      return;
+    }
+    setIsMigrating(true);
+    setStatusText("Waiting for wallet signature to authorize V3 vault migration.");
+    try {
+      const walletProof = await ensureOwnerWalletProof();
+      const response = await fetch("/api/agents/migrate-vault", {
+        body: JSON.stringify({ wallet: walletProof }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const payload = (await response.json()) as { data?: { workspace: OgAgentWorkspace }; error?: { message: string } };
+      if (!response.ok || !payload.data) {
+        throw new Error(payload.error?.message ?? "V3 vault migration failed.");
+      }
+      setWorkspace(payload.data.workspace);
+      setStatusText("Agent records migrated to the V3 Policy Vault; agent keys re-enabled on V3.");
+    } catch (error) {
+      setStatusText(error instanceof Error ? error.message : "V3 vault migration failed.");
+    } finally {
+      setIsMigrating(false);
+    }
+  }
+
   return (
     <AppShell network={network} networkId={networkId} onNetworkChange={setNetworkId}>
       <main className="h-full min-h-0 overflow-y-auto px-4 py-5 lg:px-8 lg:py-7">
@@ -401,6 +442,32 @@ export function OgAgentCreateWorkspace() {
               </button>
             </div>
           </header>
+
+          {v3MigrationAvailable ? (
+            <section className="animate-feed-reveal rounded-card border border-amber/20 bg-amber/[0.06] p-5">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-amber">
+                    <AlertTriangle className="h-4 w-4" />
+                    V3 Policy Vault migration available
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-muted">
+                    A V3 Policy Vault with Zia LP support exists for this wallet. Re-point your agent records to V3 and re-enable each agent key on the V3 vault. The deployer key pays the on-chain enable gas; move native 0G from V2 to V3 via the manual controls.
+                  </p>
+                  <p className="mt-2 text-xs leading-5 text-muted">{statusText}</p>
+                </div>
+                <button
+                  type="button"
+                  disabled={isMigrating || isDeploying}
+                  onClick={() => void migrateToV3()}
+                  className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full border border-amber/20 bg-amber/[0.1] px-4 text-sm font-semibold text-amber transition hover:bg-amber/[0.16] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isMigrating ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+                  Migrate to V3
+                </button>
+              </div>
+            </section>
+          ) : null}
 
           <section className="rounded-[22px] border border-line bg-panel-solid-strong px-5 py-4">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">

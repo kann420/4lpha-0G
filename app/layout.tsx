@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { SigmaPet } from "@/components/layout/SigmaPet";
 import { WalletProvider } from "@/components/providers/WalletProvider";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import "./globals.css";
@@ -45,7 +46,10 @@ export default function RootLayout({
       </head>
       <body className="min-h-full flex flex-col">
         <WalletProvider>
-          <ThemeProvider>{children}</ThemeProvider>
+          <ThemeProvider>
+            {children}
+            <SigmaPet />
+          </ThemeProvider>
         </WalletProvider>
       </body>
     </html>

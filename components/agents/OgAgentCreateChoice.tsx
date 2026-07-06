@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { Activity, ArrowRight, Bot, Lock, Settings2, Shield, Zap } from "lucide-react";
+import { Activity, ArrowRight, Bot, Droplets, Shield, Zap } from "lucide-react";
 import { AppShell } from "@/components/app/AppShell";
 import { useOgNetwork } from "@/components/app/useOgNetwork";
+import { ZiaPoweredBadge } from "@/components/agents/lp/ZiaPoweredBadge";
 
 export function OgAgentCreateChoice() {
   const { network, networkId, setNetworkId } = useOgNetwork();
@@ -18,7 +19,7 @@ export function OgAgentCreateChoice() {
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted">Agent create</p>
                 <h1 className="text-3xl font-semibold tracking-tight text-foreground lg:text-4xl">Choose agent type</h1>
                 <p className="max-w-2xl text-sm leading-6 text-muted">
-                  Configure a 0G mainnet trading agent. Each deploy mints a separate Agentic ID record; multi-role desks stay locked for the next phase.
+                  Configure a 0G mainnet agent. Deploy a Trading Agent for buy/sell routes, or an LP Agent for single-sided 0G → Zia Uniswap v3 LP. Each deploy mints a separate Agentic ID record.
                 </p>
               </div>
 
@@ -79,25 +80,48 @@ export function OgAgentCreateChoice() {
               </Link>
             </article>
 
-            <article className="flex min-h-[23rem] flex-col rounded-2xl border border-line bg-panel-solid-strong/70 p-5 opacity-75 shadow-[0_18px_58px_rgba(0,0,0,0.18)]">
+            <article className="flex min-h-[23rem] flex-col rounded-2xl border border-line bg-panel-solid-strong/92 p-5 shadow-[0_18px_58px_rgba(0,0,0,0.22)] transition-colors duration-200 hover:border-line-strong">
               <div className="flex items-start justify-between gap-4">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-line bg-panel text-muted">
-                  <Settings2 className="h-5 w-5" />
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-primary/10 bg-primary/12 text-primary">
+                  <Droplets className="h-5 w-5" />
                 </div>
-                <span className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-muted">
-                  Coming soon
-                </span>
+                <ZiaPoweredBadge />
               </div>
+
               <div className="mt-5 space-y-2.5">
-                <h2 className="text-2xl font-semibold tracking-tight text-foreground">Multi-Agent Desk</h2>
+                <h2 className="text-2xl font-semibold tracking-tight text-foreground">LP Agents</h2>
                 <p className="max-w-xl text-sm leading-6 text-muted">
-                  Specialist safety, social, and gatekeeper roles will be added after the single-agent runtime is verified.
+                  Single-sided 0G → Zia Uniswap v3 LP through the Policy Vault. APR filter, pool picker, and automation controls (coming soon).
                 </p>
               </div>
-              <div className="mt-6 rounded-2xl border border-line bg-panel p-4 text-sm text-muted">
-                <Lock className="mb-2 h-4 w-4" />
-                Locked for this build.
+
+              <div className="mt-6 divide-y divide-line border-y border-line">
+                {[
+                  { icon: Droplets, label: "Pool", value: "W0G-leg Zia v3" },
+                  { icon: Shield, label: "Range", value: "Full / narrow" },
+                  { icon: Zap, label: "Mode", value: "Single-sided zap" },
+                ].map((metric) => (
+                  <div key={metric.label} className="grid grid-cols-[1.25rem_minmax(6rem,0.7fr)_minmax(0,1fr)] items-center gap-3 py-3">
+                    <metric.icon className="h-4 w-4 text-muted" />
+                    <span className="text-xs font-medium text-muted">{metric.label}</span>
+                    <span className="min-w-0 text-right text-sm font-semibold text-foreground">{metric.value}</span>
+                  </div>
+                ))}
               </div>
+
+              <div className="mt-5 space-y-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Network</p>
+                <div className="inline-flex w-full rounded-full border border-line bg-panel-solid-strong p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] sm:w-fit">
+                  <span className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-full bg-invert px-4 text-sm font-semibold text-invert-ink shadow-[0_10px_24px_rgba(0,0,0,0.28)] sm:flex-none">
+                    0G Mainnet
+                  </span>
+                </div>
+              </div>
+
+              <Link href="/agents/create/lp" className="mt-auto inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-on-primary transition-[filter,transform] hover:brightness-105 active:scale-[0.96]">
+                <span>Open setup</span>
+                <ArrowRight className="h-4 w-4" />
+              </Link>
             </article>
           </section>
         </div>

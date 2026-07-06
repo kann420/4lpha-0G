@@ -48,6 +48,10 @@ export default defineConfig({
           viaIR: true,
           optimizer: {
             enabled: true,
+            // PolicyVaultV3 fits EIP-170's 24KB cap at runs=200 (23810B), runs=500 (23947B),
+            // and runs=1 (23598B). Default to runs=200 for runtime-gas-friendlier bytecode;
+            // see docs/vault-v3-plan.md section 0. A bytecode-size guard should remeasure on
+            // every contract edit.
             runs: 200,
           },
         },
@@ -69,6 +73,13 @@ export default defineConfig({
     hardhatMainnet: {
       type: "edr-simulated",
       chainType: "l1",
+      // V3 singleton + factory embed exceeds EIP-170's 24KB cap; the simulated net relaxes it
+      // so tests can exercise the full contract. 0G mainnet still enforces 24KB on every deploy,
+      // which governs the real shipping scope — see docs/vault-v3-plan.md.
+      allowUnlimitedContractSize: true,
+      // Deploying a 33.6KB contract costs ~22M gas; raise the block + tx cap above the EDR default (16.7M).
+      blockGasLimit: 60_000_000,
+      transactionGasCap: 60_000_000,
     },
     ogGalileo: {
       type: "http",

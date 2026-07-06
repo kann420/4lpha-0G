@@ -11,6 +11,12 @@ const port = readValue(argv, "--port") ?? "3000";
 const workerDisabled = hasFlag(argv, "--no-worker");
 const workerAgentId = readValue(argv, "--agent-id") ?? process.env.OG_AGENT_WORKER_AGENT_ID?.trim();
 const workerExecute = shouldExecuteWorker(argv);
+const lpWorkerDisabled = workerDisabled || hasFlag(argv, "--no-lp-worker");
+const lpWorkerAgentId =
+  readValue(argv, "--lp-agent-id") ??
+  process.env.OG_AGENT_LP_WORKER_AGENT_ID?.trim() ??
+  workerAgentId;
+const lpWorkerExecute = shouldExecuteLpWorker(argv);
 const strictWorker = readBoolEnv("DEV_LOCAL_STRICT_WORKER", false);
 const workerArgs = workerDisabled ? [] : [
   "run",
@@ -20,16 +26,27 @@ const workerArgs = workerDisabled ? [] : [
   ...(workerAgentId ? ["--agent-id", workerAgentId] : []),
   ...forwardWorkerArgs(argv),
 ];
+const lpWorkerArgs = lpWorkerDisabled ? [] : [
+  "run",
+  "agent:lp:worker",
+  "--",
+  ...(lpWorkerExecute ? ["--execute"] : []),
+  ...(lpWorkerAgentId ? ["--agent-id", lpWorkerAgentId] : []),
+  ...forwardLpWorkerArgs(argv),
+];
 
 let shuttingDown = false;
 const children: ChildProcessWithoutNullStreams[] = [];
 
 const nextProcess = startProcess("app", npmCommand, ["run", "dev:app", "--", "--hostname", hostname, "--port", port]);
 const workerProcess = workerDisabled ? null : startProcess("worker", npmCommand, workerArgs);
+const lpWorkerProcess = lpWorkerDisabled ? null : startProcess("lp-worker", npmCommand, lpWorkerArgs);
 
 console.info(
   JSON.stringify({
     app: `http://${hostname}:${port}`,
+    lpWorker: lpWorkerDisabled ? "disabled" : lpWorkerExecute ? "execute" : "dry-run",
+    lpWorkerAgentId: lpWorkerAgentId ?? "latest-auto-mint",
     timestamp: new Date().toISOString(),
     type: "dev-local-started",
     worker: workerDisabled ? "disabled" : workerExecute ? "execute" : "dry-run",
@@ -60,6 +77,19 @@ if (workerProcess) {
         return;
       }
       console.info("[dev-local] app remains online after worker exit; set DEV_LOCAL_STRICT_WORKER=true to fail closed.");
+    }
+  });
+}
+
+if (lpWorkerProcess) {
+  lpWorkerProcess.on("exit", (code, signal) => {
+    if (!shuttingDown) {
+      console.info(`[agent:lp:worker] exited with ${signal ?? code ?? 0}`);
+      if (strictWorker) {
+        void shutdown(code ?? 0, "lp-worker-exit");
+        return;
+      }
+      console.info("[dev-local] app remains online after LP worker exit; set DEV_LOCAL_STRICT_WORKER=true to fail closed.");
     }
   });
 }
@@ -147,6 +177,16 @@ function shouldExecuteWorker(args: string[]): boolean {
   return readBoolEnv("AGENT_TRADE_LIVE_ENABLED", false);
 }
 
+function shouldExecuteLpWorker(args: string[]): boolean {
+  if (hasFlag(args, "--dry-run")) {
+    return false;
+  }
+  if (hasFlag(args, "--execute")) {
+    return true;
+  }
+  return readBoolEnv("OG_AGENT_LP_WORKER_EXECUTE", false);
+}
+
 function forwardWorkerArgs(args: string[]): string[] {
   const forwarded: string[] = [];
   for (const flag of [
@@ -157,6 +197,28 @@ function forwardWorkerArgs(args: string[]): string[] {
     "--route-limit",
     "--sell-percent",
     "--slippage-bps",
+  ]) {
+    const value = readValue(args, flag);
+    if (value) {
+      forwarded.push(flag, value);
+    }
+  }
+  if (hasFlag(args, "--all-agents")) {
+    forwarded.push("--all-agents");
+  }
+  if (hasFlag(args, "--kill-switch")) {
+    forwarded.push("--kill-switch");
+  }
+  return forwarded;
+}
+
+function forwardLpWorkerArgs(args: string[]): string[] {
+  const forwarded: string[] = [];
+  for (const flag of [
+    "--interval",
+    "--max-cycles",
+    "--model",
+    "--owner-address",
   ]) {
     const value = readValue(args, flag);
     if (value) {

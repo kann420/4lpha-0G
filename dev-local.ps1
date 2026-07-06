@@ -2,6 +2,7 @@ param(
   [int]$Port = 3000,
   [switch]$WithWorker,
   [switch]$ExecuteWorker,
+  [switch]$NoWorker,
   [switch]$NoBrowser,
   [switch]$NoInstall
 )
@@ -236,11 +237,11 @@ try {
   $listenUrl = "http://127.0.0.1:$selectedPort"
   $openUrl = "http://localhost:$selectedPort"
   $arguments = @("run", "dev:full", "--", "--hostname", "127.0.0.1", "--port", [string]$selectedPort)
-  if (-not $WithWorker) {
+  if ($NoWorker) {
     $arguments += "--no-worker"
   } elseif ($ExecuteWorker) {
     $arguments += "--execute"
-  } else {
+  } elseif ($PSBoundParameters.ContainsKey("WithWorker") -and $WithWorker) {
     $arguments += "--dry-run"
   }
 
@@ -259,11 +260,15 @@ try {
   if ($selectedPort -ne $Port) {
     Write-Output "Port $Port is busy, using $selectedPort instead."
   }
-  if ($WithWorker) {
-    $workerMode = if ($ExecuteWorker) { "execute" } else { "dry-run" }
-    Write-Output "Agent worker: $workerMode"
-  } else {
+  if ($NoWorker) {
     Write-Output "Agent worker: disabled"
+  } elseif ($ExecuteWorker) {
+    Write-Output "Agent worker: execute"
+  } elseif ($PSBoundParameters.ContainsKey("WithWorker") -and $WithWorker) {
+    Write-Output "Agent worker: dry-run"
+  } else {
+    $workerMode = if ($ExecuteWorker) { "execute" } else { "dry-run" }
+    Write-Output "Agent worker: env/default ($workerMode unless env overrides)"
   }
   Write-Output "Logs: $logPath"
   Write-Output "Errors: $errPath"

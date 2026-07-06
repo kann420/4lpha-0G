@@ -36,6 +36,12 @@
      Dark restores the original white pill / black text; light stays white pill / dark text. */
   --color-invert: var(--invert);
   --color-invert-ink: var(--invert-ink);
+
+  /* Radius scale — generates rounded-tile / rounded-card / rounded-hero.
+     tile = small rows/pills, card = tiles/cards, hero = top hero panels. */
+  --radius-tile: 0.875rem;
+  --radius-card: 1.25rem;
+  --radius-hero: 1.5rem;
 }
 
 :root {
@@ -77,6 +83,7 @@
   /* Status accent channels (space-separated RGB) — used by status badges. */
   --status-armed: 146 231 102;
   --status-blocked: 255 209 102;
+  --status-neutral: 127 147 164;
   --status-paused: 253 224 71;
   --status-removed: 255 112 99;
   --status-info: 30 232 197;
@@ -85,6 +92,7 @@
   --shadow-panel: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 48px rgba(0, 0, 0, 0.22);
   --shadow-section: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 52px rgba(0, 0, 0, 0.24);
   --shadow-control: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 10px 24px rgba(0, 0, 0, 0.16);
+  --shadow-hero: 0 28px 100px rgba(0, 0, 0, 0.24);
   --grid-line: rgba(255, 255, 255, 0.045);
   --grid-line-2: rgba(255, 255, 255, 0.035);
   --scrollbar-thumb: rgba(255, 255, 255, 0.12);
@@ -132,6 +140,7 @@
 
   --status-armed: 22 163 74;
   --status-blocked: 180 83 9;
+  --status-neutral: 107 103 134;
   --status-paused: 161 98 7;
   --status-removed: 225 29 72;
   --status-info: 124 58 237;
@@ -139,6 +148,7 @@
   --shadow-panel: inset 0 1px 0 rgba(255, 255, 255, 0.6), 0 18px 48px rgba(124, 58, 237, 0.08);
   --shadow-section: inset 0 1px 0 rgba(255, 255, 255, 0.55), 0 18px 52px rgba(124, 58, 237, 0.07);
   --shadow-control: inset 0 1px 0 rgba(255, 255, 255, 0.5), 0 8px 20px rgba(124, 58, 237, 0.06);
+  --shadow-hero: 0 18px 60px rgba(80, 70, 120, 0.18);
   --grid-line: rgba(124, 58, 237, 0.06);
   --grid-line-2: rgba(124, 58, 237, 0.04);
   --scrollbar-thumb: rgba(124, 58, 237, 0.22);
@@ -503,7 +513,9 @@ a,
   *,
   *::before,
   *::after {
+    animation-delay: 0 !important;
     animation-duration: 1ms !important;
+    animation-fill-mode: none !important;
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 1ms !important;
