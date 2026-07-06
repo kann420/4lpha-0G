@@ -58,4 +58,16 @@ export const proofRegistryAbi = [
     stateMutability: "view",
     type: "function",
   },
+  {
+    inputs: [
+      { internalType: "bytes32", name: "actionHash", type: "bytes32" },
+      { internalType: "bytes32", name: "auditRoot", type: "bytes32" },
+      { internalType: "bytes32", name: "policySnapshotHash", type: "bytes32" },
+      { internalType: "bytes32", name: "vaultActionHash", type: "bytes32" },
+    ],
+    name: "isAccepted",
+    outputs: [{ internalType: "bool", name: "", type: "bool" }],
+    stateMutability: "view",
+    type: "function",
+  },
 ] as const satisfies Abi;

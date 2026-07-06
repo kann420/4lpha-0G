@@ -99,39 +99,59 @@ export function VaultSurface() {
         <div className="mx-auto grid w-full max-w-7xl gap-5 xl:grid-cols-[minmax(0,1fr)_24rem]">
           <div className="flex min-w-0 flex-col gap-5">
             <FundRouteHeader network={network} />
-            <FundBalanceGrid
-              ownerBalanceLabel={readOwnerBalanceLabel({
-                balance: ownerBalance.data,
-                connected: walletAccount.isConnected,
-                error: ownerBalance.isError,
-                loading: ownerBalance.isLoading,
-              })}
-              vaultBalanceLabel={readVaultBalanceLabel({
-                balance: vaultBalance.data,
-                error: vaultBalance.isError,
-                loading: vaultBalance.isLoading,
-                vaultAddress: walletVault.vaultAddress,
-              })}
-            />
-            <FundManualDepositPanel
-              factoryAddress={walletVault.factoryAddress}
-              creationReady={vaultReadiness.isReady}
-              creationStatus={vaultReadiness.reason}
-              isCreatingVault={walletVault.isCreating}
-              isDiscoveringVault={walletVault.isDiscovering}
-              network={network}
-              onCreateVault={walletVault.createVault}
-              onRefreshVaultAddress={walletVault.refreshVaultAddress}
-              vaultAddress={walletVault.vaultAddress}
-              walletConnected={walletAccount.isConnected}
-            />
-            {walletVault.migrationRequired ? (
-              <VaultMigrationPanel
-                disabled={walletVault.isCreating || walletVault.isDiscovering}
-                legacyCount={walletVault.legacyVaults.length}
-                onMigrate={walletVault.migrateVault}
-                status={walletVault.statusText}
+            <div className="animate-feed-reveal min-w-0" style={{ animationDelay: "60ms" }}>
+              <FundBalanceGrid
+                ownerBalanceLabel={readOwnerBalanceLabel({
+                  balance: ownerBalance.data,
+                  connected: walletAccount.isConnected,
+                  error: ownerBalance.isError,
+                  loading: ownerBalance.isLoading,
+                })}
+                vaultBalanceLabel={readVaultBalanceLabel({
+                  balance: vaultBalance.data,
+                  error: vaultBalance.isError,
+                  loading: vaultBalance.isLoading,
+                  vaultAddress: walletVault.vaultAddress,
+                })}
               />
+            </div>
+            <div className="animate-feed-reveal min-w-0" style={{ animationDelay: "120ms" }}>
+              <FundManualDepositPanel
+                factoryAddress={walletVault.factoryAddress}
+                creationReady={vaultReadiness.isReady}
+                creationStatus={vaultReadiness.reason}
+                isCreatingVault={walletVault.isCreating}
+                isDiscoveringVault={walletVault.isDiscovering}
+                network={network}
+                onCreateVault={walletVault.createVault}
+                onRefreshVaultAddress={walletVault.refreshVaultAddress}
+                vaultAddress={walletVault.vaultAddress}
+                walletConnected={walletAccount.isConnected}
+              />
+            </div>
+            {walletVault.migrationRequired ? (
+              <div className="animate-feed-reveal min-w-0" style={{ animationDelay: "180ms" }}>
+                <VaultMigrationPanel
+                  disabled={walletVault.isCreating || walletVault.isDiscovering}
+                  legacyCount={walletVault.legacyVaults.length}
+                  onMigrate={walletVault.migrateVault}
+                  status={walletVault.statusText}
+                />
+              </div>
+            ) : null}
+            {walletVault.v3MigrationAvailable && walletVault.v3VaultAddress ? (
+              <div className="animate-feed-reveal min-w-0" style={{ animationDelay: "200ms" }}>
+                <VaultV3MigrationPanel
+                  disabled={
+                    walletVault.isMigratingToV3 ||
+                    walletVault.isCreating ||
+                    walletVault.isDiscovering
+                  }
+                  onMigrate={walletVault.migrateVaultToV3}
+                  status={walletVault.statusText}
+                  v3VaultAddress={walletVault.v3VaultAddress}
+                />
+              </div>
             ) : null}
           </div>
 
@@ -152,11 +172,14 @@ export function VaultSurface() {
 
 function FundRouteHeader({ network }: { network: OgNetworkConfig }) {
   return (
-    <section className="overflow-hidden rounded-[24px] border border-line bg-panel-solid-strong px-4 py-5 shadow-[0_28px_100px_rgba(0,0,0,0.24)] sm:px-6 lg:rounded-[30px] lg:px-8">
+    <section
+      className="animate-feed-reveal overflow-hidden rounded-hero border border-line bg-panel-solid-strong px-4 py-5 sm:px-6 lg:rounded-[30px] lg:px-8"
+      style={{ animationDelay: "0ms", boxShadow: "var(--shadow-hero)" }}
+    >
       <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
         <div className="max-w-3xl space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full border border-amber/18 bg-amber/[0.08] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.24em] text-amber/80">
+            <span className="rounded-full border border-amber/20 bg-amber/[0.06] px-3 py-1 text-[11px] font-medium uppercase tracking-[0.24em] text-amber/80">
               {network.networkName}
             </span>
             <span className="rounded-full border border-green/20 bg-green/10 px-3 py-1 text-xs font-medium text-green">
@@ -174,9 +197,9 @@ function FundRouteHeader({ network }: { network: OgNetworkConfig }) {
         </div>
 
         <div className="grid gap-2 text-sm sm:grid-cols-3 lg:min-w-[28rem]">
-          <HeaderMetric icon={<Network className="h-4 w-4" />} label="Network" value={network.networkName} />
-          <HeaderMetric icon={<CircleDollarSign className="h-4 w-4" />} label="Funding asset" tone="amber" value="0G native" />
-          <HeaderMetric
+          <StatTile icon={<Network className="h-4 w-4" />} label="Network" value={network.networkName} />
+          <StatTile icon={<CircleDollarSign className="h-4 w-4" />} label="Asset" tone="amber" value="0G native" />
+          <StatTile
             icon={<ShieldCheck className="h-4 w-4" />}
             label="Routes"
             value={`${CURATED_MAINNET_POLICY_VAULT_ROUTES.length} curated`}
@@ -187,25 +210,41 @@ function FundRouteHeader({ network }: { network: OgNetworkConfig }) {
   );
 }
 
-function HeaderMetric({
+function StatTile({
+  detail,
   icon,
   label,
   tone = "white",
   value,
 }: {
+  detail?: string;
   icon: React.ReactNode;
   label: string;
-  tone?: "amber" | "white";
+  tone?: "amber" | "emerald" | "teal" | "white";
   value: string;
 }) {
+  const valueTone =
+    tone === "amber"
+      ? "text-amber"
+      : tone === "emerald"
+        ? "text-green"
+        : tone === "teal"
+          ? "text-primary"
+          : "text-foreground";
   return (
-    <div className="rounded-[20px] border border-line bg-background/20 px-4 py-3">
+    <article className="min-w-0 rounded-card border border-line bg-panel px-4 py-3 transition-colors hover:border-line-strong hover:bg-panel-strong">
       <div className="flex items-center gap-2 text-muted">
         {icon}
-        <span className="text-[10px] uppercase tracking-[0.22em]">{label}</span>
+        <span className="text-[10px] font-medium uppercase tracking-[0.22em]">{label}</span>
       </div>
-      <p className={`mt-2 font-semibold ${tone === "amber" ? "text-amber" : "text-foreground"}`}>{value}</p>
-    </div>
+      <p
+        className={`mt-2 truncate font-mono text-lg font-semibold tracking-tight tabular-nums ${valueTone}`}
+        title={value}
+      >
+        {value}
+      </p>
+      {detail ? <p className="mt-1.5 text-sm leading-5 text-muted">{detail}</p> : null}
+    </article>
   );
 }
 
@@ -218,14 +257,14 @@ function FundBalanceGrid({
 }) {
   return (
     <section className="grid gap-3 sm:grid-cols-2">
-      <FundBalanceTile
+      <StatTile
         detail="Native balance in the connected wallet"
         icon={<CircleDollarSign className="h-4 w-4" />}
         label="Owner 0G"
         tone="amber"
         value={ownerBalanceLabel}
       />
-      <FundBalanceTile
+      <StatTile
         detail="0G currently deposited in the Policy Vault"
         icon={<WalletCards className="h-4 w-4" />}
         label="Vault 0G"
@@ -233,38 +272,6 @@ function FundBalanceGrid({
         value={vaultBalanceLabel}
       />
     </section>
-  );
-}
-
-function FundBalanceTile({
-  detail,
-  icon,
-  label,
-  tone,
-  value,
-}: {
-  detail: string;
-  icon: React.ReactNode;
-  label: string;
-  tone: "amber" | "emerald";
-  value: string;
-}) {
-  return (
-    <article className="min-w-0 rounded-[20px] border border-line bg-panel p-3.5 transition-colors hover:border-line-strong hover:bg-panel sm:p-4 lg:rounded-[24px]">
-      <div className="flex items-center gap-2 text-muted">
-        {icon}
-        <span className="text-[11px] font-medium uppercase tracking-[0.2em]">{label}</span>
-      </div>
-      <p
-        className={`mt-3 truncate text-lg font-semibold tracking-tight ${
-          tone === "amber" ? "text-amber" : "text-green"
-        }`}
-        title={value}
-      >
-        {value}
-      </p>
-      <p className="mt-1.5 text-sm leading-5 text-muted">{detail}</p>
-    </article>
   );
 }
 
@@ -321,7 +328,10 @@ function FundManualDepositPanel({
   }
 
   return (
-    <section className="rounded-[24px] border border-line bg-panel-solid-strong p-4 shadow-[0_24px_80px_rgba(0,0,0,0.22)] sm:p-6 lg:rounded-[30px]">
+    <section
+      className="rounded-hero border border-line bg-panel-solid-strong p-4 sm:p-6 lg:rounded-[30px]"
+      style={{ boxShadow: "var(--shadow-hero)" }}
+    >
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="space-y-2">
           <h2 className="font-heading text-xl font-semibold tracking-tight text-foreground">
@@ -334,7 +344,7 @@ function FundManualDepositPanel({
         <button
           type="button"
           onClick={() => void onRefreshVaultAddress()}
-          className="inline-flex h-10 items-center gap-2 rounded-full border border-line bg-panel px-3 text-sm text-foreground transition-colors hover:bg-panel-strong"
+          className="inline-flex h-11 items-center gap-2 rounded-full border border-line bg-panel px-3 text-sm text-foreground transition-colors hover:bg-panel-strong"
         >
           <RefreshCcw className="h-4 w-4" />
           Refresh
@@ -360,7 +370,7 @@ function FundManualDepositPanel({
       </div>
 
       {vaultAddress === null ? (
-        <div className="mt-5 rounded-[24px] border border-amber/16 bg-amber/[0.06] p-4 text-sm leading-6 text-amber">
+        <div className="mt-5 rounded-card border border-amber/20 bg-amber/[0.06] p-4 text-sm leading-6 text-amber">
           <div className="flex flex-col gap-4">
             <div className="flex min-w-0 items-start gap-3">
               <AlertTriangle className="mt-1 h-4 w-4 shrink-0" />
@@ -371,7 +381,7 @@ function FundManualDepositPanel({
                 </p>
               </div>
             </div>
-            <div className="rounded-[20px] border border-line bg-background/20 p-3">
+            <div className="rounded-card border border-line bg-background/20 p-3">
               <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                 <div>
                   <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-amber/70">
@@ -466,7 +476,7 @@ function FundManualDepositPanel({
               {policyDraft.ok ? <PolicyPreview policy={policyDraft.policy} /> : null}
 
               {displayedPolicyError !== null ? (
-                <p className="mt-3 rounded-full border border-rose/20 bg-rose/[0.08] px-3 py-2 text-xs font-medium text-rose">
+                <p className="mt-3 rounded-full border border-rose/20 bg-rose/[0.1] px-3 py-2 text-xs font-medium text-rose">
                   {displayedPolicyError}
                 </p>
               ) : null}
@@ -477,7 +487,7 @@ function FundManualDepositPanel({
                 type="button"
                 disabled={createVaultDisabled}
                 onClick={() => void createVaultWithPolicy()}
-                className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-full border border-amber/18 bg-amber/[0.08] px-4 text-sm font-semibold text-amber transition-[background-color,transform,opacity] hover:bg-amber/14 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
+                className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full border border-amber/20 bg-amber/[0.1] px-4 text-sm font-semibold text-amber transition-[background-color,transform,opacity] hover:bg-amber/[0.16] active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
               >
                 {isCreatingVault ? <Loader2 className="h-4 w-4 animate-spin" /> : <WalletCards className="h-4 w-4" />}
                 {isCreatingVault ? "Creating Vault" : "Create Wallet Vault"}
@@ -486,18 +496,23 @@ function FundManualDepositPanel({
           </div>
         </div>
       ) : (
-        <div className="mt-5 rounded-[24px] border border-amber/18 bg-amber/[0.07] p-4">
+        <div className="mt-5 rounded-card border border-amber/20 bg-amber/[0.06] p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
               <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-amber/70">
                 Policy Vault address
               </p>
-              <p className="mt-2 break-all font-mono text-sm text-amber">{vaultAddress}</p>
+              <p
+                className="mt-2 break-all font-mono text-sm font-semibold text-amber"
+                title={vaultAddress}
+              >
+                {vaultAddress}
+              </p>
             </div>
             <button
               type="button"
               onClick={copyVaultAddress}
-              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-full bg-amber px-4 text-sm font-semibold text-background transition-[background-color,transform] hover:bg-amber/90 active:scale-[0.96]"
+              className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full bg-amber px-4 text-sm font-semibold text-background transition-[background-color,transform] hover:bg-amber/90 active:scale-[0.96]"
             >
               <Copy className="h-4 w-4" />
               Copy
@@ -525,9 +540,9 @@ function PolicyModeButton({
       type="button"
       aria-pressed={active}
       onClick={onClick}
-      className={`min-h-16 rounded-[16px] border px-3 py-2.5 text-left transition-[background-color,border-color,transform] active:scale-[0.96] ${
+      className={`min-h-16 rounded-card border px-3 py-2.5 text-left transition-[background-color,border-color,transform] active:scale-[0.96] ${
         active
-          ? "border-amber/35 bg-amber/[0.1] text-amber"
+          ? "border-amber/20 bg-amber/[0.1] text-amber"
           : "border-line bg-panel text-muted hover:border-line-strong hover:bg-panel"
       }`}
     >
@@ -551,7 +566,7 @@ function PolicyInput({
   value: string;
 }) {
   return (
-    <label className="block rounded-[14px] border border-line bg-panel px-3 py-2">
+    <label className="block rounded-tile border border-line bg-panel px-3 py-2">
       <span className="block text-[10px] font-medium uppercase tracking-[0.18em] text-amber/60">
         {label}
       </span>
@@ -581,7 +596,7 @@ function VaultMigrationPanel({
   status: string;
 }) {
   return (
-    <section className="rounded-[20px] border border-amber/25 bg-amber/[0.06] p-5">
+    <section className="rounded-card border border-amber/20 bg-amber/[0.06] p-5">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-sm font-semibold text-amber">
@@ -597,10 +612,51 @@ function VaultMigrationPanel({
           type="button"
           disabled={disabled}
           onClick={() => void onMigrate()}
-          className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full border border-amber/30 bg-amber/15 px-4 text-sm font-semibold text-amber transition hover:bg-amber/20 disabled:cursor-not-allowed disabled:opacity-60"
+          className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full border border-amber/20 bg-amber/[0.1] px-4 text-sm font-semibold text-amber transition hover:bg-amber/[0.16] disabled:cursor-not-allowed disabled:opacity-60"
         >
           {disabled ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
           Migrate vault
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function VaultV3MigrationPanel({
+  disabled,
+  onMigrate,
+  status,
+  v3VaultAddress,
+}: {
+  disabled: boolean;
+  onMigrate: () => Promise<void>;
+  status: string;
+  v3VaultAddress: Address;
+}) {
+  return (
+    <section className="rounded-card border border-amber/20 bg-amber/[0.06] p-5">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-semibold text-amber">
+            <ShieldCheck className="h-4 w-4" />
+            V3 Policy Vault migration available
+          </div>
+          <p className="mt-2 text-sm leading-6 text-muted">
+            Move native 0G from your legacy V2 vault into the V3 singleton, pause and revoke the V2 executor, and re-point your agent records to V3. The V3 vault is deployer-owned and was created via the offline deploy script.
+          </p>
+          <p className="mt-2 break-all font-mono text-[11px] leading-5 text-muted">
+            V3: {v3VaultAddress}
+          </p>
+          <p className="mt-2 text-xs leading-5 text-muted">{status}</p>
+        </div>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => void onMigrate()}
+          className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full border border-amber/20 bg-amber/[0.1] px-4 text-sm font-semibold text-amber transition hover:bg-amber/[0.16] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {disabled ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+          Migrate to V3
         </button>
       </div>
     </section>
@@ -622,7 +678,7 @@ function PolicyPreview({ policy }: { policy: PolicyVaultPolicy }) {
       {rows.map((row) => (
         <div
           key={row.label}
-          className="min-h-14 rounded-[14px] border border-line bg-panel px-3 py-2"
+          className="min-h-14 rounded-tile border border-line bg-panel px-3 py-2"
         >
           <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted">
             {row.label}
@@ -646,7 +702,7 @@ function ManualDepositStep({
   value: string;
 }) {
   return (
-    <div className="rounded-[18px] border border-line bg-panel p-4">
+    <div className="rounded-card border border-line bg-panel p-4">
       <div className="flex items-center gap-2 text-muted">
         {icon}
         <span className="text-[11px] font-medium uppercase tracking-[0.22em]">{label}</span>

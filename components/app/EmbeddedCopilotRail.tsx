@@ -22,8 +22,19 @@ import {
 } from "lucide-react";
 import { useSignMessage } from "wagmi";
 import { type Hex } from "viem";
+import {
+  EMPTY_OG_MODEL_CATALOG,
+  OgModelSelector,
+  shortModelLabel,
+  type OgModelCatalogState,
+} from "@/components/app/OgModelSelector";
 import { WalletConnectButton } from "@/components/wallet";
 import { useWalletConnection } from "@/components/wallet/useWalletConnection";
+import {
+  buildSigmaPetState,
+  SIGMA_PET_STATE_EVENT,
+  type SigmaPetStateDetail,
+} from "@/lib/copilot/sigma-pet";
 import { AGENT_TRADE_ROUTES } from "@/lib/agent/trade-catalog";
 import {
   buildCopilotSessionKeyMessage,
@@ -48,7 +59,6 @@ import type {
   CopilotChatStreamEvent,
   CopilotContextItem,
   CopilotMessage,
-  CopilotModelOption,
   CopilotModelsResponse,
   CopilotSessionBundle,
   CopilotSessionMessage,
@@ -133,12 +143,7 @@ export const COPILOT_MOBILE_PANEL_CLASS =
   "h-[min(82svh,52rem)] max-h-[calc(100svh-2rem)] overflow-hidden rounded-[28px] shadow-[0_30px_80px_rgba(0,0,0,0.45)]";
 
 type NetworkScopedState<T> = Partial<Record<OgNetworkId, T>>;
-type ModelCatalogState = {
-  defaultModel?: string;
-  error?: string;
-  models: CopilotModelOption[];
-  status: "idle" | "loading" | "ready" | "error";
-};
+type ModelCatalogState = OgModelCatalogState;
 
 const COPILOT_QUICK_PROMPTS = [
   {
@@ -153,10 +158,7 @@ const COPILOT_QUICK_PROMPTS = [
   },
 ] as const;
 
-const EMPTY_MODEL_CATALOG: ModelCatalogState = {
-  models: [],
-  status: "idle",
-};
+const EMPTY_MODEL_CATALOG: ModelCatalogState = EMPTY_OG_MODEL_CATALOG;
 
 export function EmbeddedCopilotRail({
   context,
@@ -200,6 +202,7 @@ export function EmbeddedCopilotRail({
   // page unload it is sent via navigator.sendBeacon so the save survives F5.
   const stagedSaveRef = useRef<StagedSessionSave | null>(null);
   const pendingAutoSaveRef = useRef(false);
+  const sigmaStateRef = useRef("");
 
   const networkRoutes = useMemo(
     () => AGENT_TRADE_ROUTES.filter((route) => route.networkId === networkId),
@@ -234,6 +237,37 @@ export function EmbeddedCopilotRail({
   const currentSessionSaved = sessionId
     ? Boolean(savedSessionIdsByNetwork[networkId]?.[sessionId])
     : false;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const latestAssistantError = [...messages].reverse().find(
+      (message) => message.role === "assistant" && message.status === "error",
+    );
+    const tradeError =
+      latestAssistantError?.card?.kind === "trade_result" ? latestAssistantError.content : undefined;
+    const chatError =
+      latestAssistantError && latestAssistantError.card?.kind !== "trade_result"
+        ? latestAssistantError.content
+        : undefined;
+    const nextState = buildSigmaPetState({
+      chatError,
+      isChatSending: isSending,
+      isTradeSubmitting,
+      isTransferSubmitting: false,
+      messages,
+      tradeError,
+    });
+    const stateKey = `${nextState.state}:${nextState.bubbleText ?? ""}`;
+    if (sigmaStateRef.current === stateKey) return;
+    sigmaStateRef.current = stateKey;
+
+    window.dispatchEvent(
+      new CustomEvent<SigmaPetStateDetail>(SIGMA_PET_STATE_EVENT, {
+        detail: nextState,
+      }),
+    );
+  }, [isSending, isTradeSubmitting, messages]);
 
   useEffect(() => {
     setMessagesByNetwork((current) => (current[networkId] ? current : { ...current, [networkId]: initialMessages }));
@@ -1279,7 +1313,7 @@ export function EmbeddedCopilotRail({
               >
                 <Plus className="h-3.5 w-3.5" />
               </button>
-              <ModelSelector
+              <OgModelSelector
                 catalog={modelCatalog}
                 selectedModel={selectedModel}
                 onChange={(model) =>
@@ -1453,14 +1487,6 @@ export function EmbeddedCopilotRail({
 function resolveQuickPromptResponse(content: string): string | undefined {
   const normalized = normalizeSearchText(content);
   return COPILOT_QUICK_PROMPTS.find((item) => normalizeSearchText(item.prompt) === normalized)?.response;
-}
-
-function shortModelLabel(modelId: string): string {
-  if (modelId.length <= 34) {
-    return modelId;
-  }
-
-  return `${modelId.slice(0, 16)}...${modelId.slice(-14)}`;
 }
 
 /**

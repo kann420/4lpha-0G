@@ -6,6 +6,11 @@ import {
   executeCuratedTrade,
   quoteCuratedTrade,
 } from "@/lib/agent/curated-trade";
+import {
+  executeMainnetPolicyVaultLpAction,
+  type PolicyVaultLpAction,
+  type PolicyVaultLpExecution,
+} from "@/lib/executor/policy-vault-lp";
 import { resolveMainnetVaultForOwner } from "@/lib/agent/mainnet-vault-resolver";
 import { agentKeyForDeployment, loadOgAgentWorkspace, storeAgentTradeArtifact } from "@/lib/agent/single-agent-server";
 import type { OgAgentWorkspace } from "@/lib/agent/single-agent";
@@ -138,6 +143,146 @@ export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
       submittedAt: now,
       txHash: execution.executionTxHash,
   });
+}
+
+export interface AgentLpActionRequest {
+  networkId: "mainnet";
+  agentId: string;
+  ownerAddress?: Hex;
+  vaultAddress?: Hex;
+  action: PolicyVaultLpAction;
+  copilotAudit?: {
+    model?: string;
+    policyContextHash?: Hex;
+    promptHash?: Hex;
+    responseHash?: Hex;
+  };
+}
+
+export interface AgentLpActionExecution {
+  id: string;
+  actionKind: PolicyVaultLpAction["kind"];
+  proofBundle: AgentAuditProofPreview;
+  status: "submitted" | "blocked";
+  submittedAt: string;
+  txHash?: Hex;
+  tokenId?: string;
+  liquidity?: string;
+  reason?: string;
+}
+
+/// Execute a V3 Policy Vault LP action (zap-in-mint / stake / unstake / zap-out) for a deployed
+/// agent. Mirrors executeAgentTrade's guard pattern: the agent must be deployed (agentRef binds
+/// the proof), storage must be ready for audit upload, and the resolved vault must be a V3 vault
+/// with an LP adapter. The executor handles proof acceptance + vault entrypoint submission.
+export async function executeAgentLpAction(request: AgentLpActionRequest): Promise<{
+  execution: AgentLpActionExecution;
+  result?: PolicyVaultLpExecution;
+}> {
+  if (request.networkId !== "mainnet") {
+    throw new AgentTradeError("LP actions are mainnet-only (V3 Policy Vault).", "network_mismatch", 409);
+  }
+  const workspace = await loadMainnetAgentTradeWorkspace(request);
+  if (workspace.agent.status === "removed") {
+    throw new AgentTradeError("Removed agent records are read-only and cannot trade.", "agent_removed", 409);
+  }
+  const now = new Date().toISOString();
+  if (!workspace.agent.deployment) {
+    return {
+      execution: {
+        id: randomUUID(),
+        actionKind: request.action.kind,
+        proofBundle: emptyLpProofBundle(),
+        reason: "Deploy the Agentic ID before live vault LP execution so the proof can bind to an agentRef.",
+        status: "blocked",
+        submittedAt: now,
+      },
+    };
+  }
+  if (!workspace.storage.uploadReady) {
+    return {
+      execution: {
+        id: randomUUID(),
+        actionKind: request.action.kind,
+        proofBundle: emptyLpProofBundle(),
+        reason: workspace.storage.warnings.join(" ") || "0G Storage is not ready for live audit upload.",
+        status: "blocked",
+        submittedAt: now,
+      },
+    };
+  }
+  if ((workspace.vault.vaultVersion ?? 1) < 3) {
+    return {
+      execution: {
+        id: randomUUID(),
+        actionKind: request.action.kind,
+        proofBundle: emptyLpProofBundle(),
+        reason: "LP actions require a V3 Policy Vault with an LP adapter. Migrate the vault to V3 first.",
+        status: "blocked",
+        submittedAt: now,
+      },
+    };
+  }
+  if (!workspace.vault.lpAdapter) {
+    return {
+      execution: {
+        id: randomUUID(),
+        actionKind: request.action.kind,
+        proofBundle: emptyLpProofBundle(),
+        reason: "Resolved V3 vault is swap-only (no LP adapter configured).",
+        status: "blocked",
+        submittedAt: now,
+      },
+    };
+  }
+
+  const agentKey = workspace.agent.deployment.agentKey ?? agentKeyForDeployment(workspace.agent.deployment);
+  const result = await executeMainnetPolicyVaultLpAction({
+    networkId: "mainnet",
+    agentKey,
+    vaultAddress: request.vaultAddress ?? workspace.vault.vault,
+    action: request.action,
+    agentRef: workspace.agent.deployment.agentRef,
+    copilotAudit: request.copilotAudit,
+  });
+
+  const proofBundle: AgentAuditProofPreview = {
+    ...emptyLpProofBundle(),
+    generatedAt: now,
+    proofTxHash: result.proofTxHash ?? "",
+    quoteHash: result.actionHash,
+    routeHash: result.vaultActionHash,
+    storageRoot: result.auditRoot,
+    verificationStatus: "verified",
+  };
+  return {
+    execution: {
+      id: randomUUID(),
+      actionKind: request.action.kind,
+      proofBundle,
+      status: "submitted",
+      submittedAt: now,
+      txHash: result.lpTxHash,
+      tokenId: result.tokenId?.toString(),
+      liquidity: result.liquidity?.toString(),
+    },
+    result,
+  };
+}
+
+function emptyLpProofBundle(): AgentAuditProofPreview {
+  return {
+    auditId: randomUUID(),
+    generatedAt: new Date().toISOString(),
+    policyDecision: "allow",
+    policyDecisionHash: "",
+    proofTxHash: "",
+    quoteHash: "",
+    responseHash: "",
+    routeHash: "",
+    storageRoot: "",
+    verificationStatus: "pending",
+  };
 }
 
 async function persistAgentTradeResult(

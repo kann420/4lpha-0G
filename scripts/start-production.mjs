@@ -10,6 +10,9 @@ let shuttingDown = false;
 const workerEnabled = readBoolEnv("OG_AGENT_WORKER_ENABLED", true);
 const workerExecute = readBoolEnv("OG_AGENT_WORKER_EXECUTE", false);
 
+const lpWorkerEnabled = readBoolEnv("OG_AGENT_LP_WORKER_ENABLED", true);
+const lpWorkerExecute = readBoolEnv("OG_AGENT_LP_WORKER_EXECUTE", false);
+
 startProcess("web", npmCommand, ["run", "start:web"]);
 
 if (workerEnabled && workerExecute) {
@@ -28,6 +31,26 @@ if (workerEnabled && workerExecute) {
       workerEnabled,
       workerExecute,
       message: "0G agent worker not started. Set OG_AGENT_WORKER_EXECUTE=true to enable auto-run.",
+    }),
+  );
+}
+
+if (lpWorkerEnabled && lpWorkerExecute) {
+  startProcess("lp-worker", nodeCommand, [
+    "--conditions=react-server",
+    "--import",
+    "tsx",
+    "scripts/og-agent-lp-worker.ts",
+    "--execute",
+    "--all-agents",
+  ]);
+} else {
+  console.info(
+    JSON.stringify({
+      type: "production-start",
+      lpWorkerEnabled,
+      lpWorkerExecute,
+      message: "0G LP agent worker not started. Set OG_AGENT_LP_WORKER_EXECUTE=true to enable auto-mint.",
     }),
   );
 }

@@ -19,6 +19,7 @@ import {
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { buildV3LpAllowlists, ZIA_LP_MAINNET } from "../lib/contracts/zia-lp";
 
 dotenv.config({ path: ".env.local", quiet: true });
 
@@ -27,6 +28,8 @@ export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as cons
 export const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
 export const MOCK_ADAPTER_KIND = keccak256(stringToHex("4LPHA_0G_MOCK_ADAPTER"));
 export const ROUTE_ADAPTER_KIND = keccak256(stringToHex("4LPHA_0G_CURATED_UNISWAP_V3_ROUTE_ADAPTER"));
+export const MOCK_LP_ADAPTER_KIND = keccak256(stringToHex("4LPHA_0G_MOCK_LP_ADAPTER"));
+export const ZIA_LP_ADAPTER_KIND = keccak256(stringToHex("4LPHA_0G_ZIA_LP_ADAPTER"));
 
 export interface PolicyVaultPolicy {
   cooldownSeconds: bigint;
@@ -489,6 +492,64 @@ export function readPolicyFromEnv(): PolicyVaultPolicy {
     perTradeCap0G: read0GAmountEnv("NEXT_PUBLIC_POLICY_VAULT_MAINNET_PER_TRADE_CAP_0G", "5"),
   };
 }
+
+export interface PolicyVaultV3LpPolicy {
+  perLpActionCap0G: bigint;
+  lpDailyCap0G: bigint;
+  maxLpExposure0G: bigint;
+  cooldownSecondsLp: bigint;
+  lpMinOutBps: number;
+  minLiquidityFloor: bigint;
+  allowStaking: boolean;
+}
+
+export interface PolicyVaultV3Policy extends PolicyVaultPolicy {
+  lp: PolicyVaultV3LpPolicy;
+}
+
+/// V3 policy = V2 6 swap fields + nested LpPolicy (7 fields). The constructor
+/// takes this as a single nested tuple; viem encodes {lp: {...}} correctly.
+export function readV3PolicyFromEnv(): PolicyVaultV3Policy {
+  const base = readPolicyFromEnv();
+  const lp: PolicyVaultV3LpPolicy = {
+    perLpActionCap0G: read0GAmountEnv("NEXT_PUBLIC_POLICY_VAULT_V3_MAINNET_PER_LP_ACTION_CAP_0G", "2"),
+    lpDailyCap0G: read0GAmountEnv("NEXT_PUBLIC_POLICY_VAULT_V3_MAINNET_LP_DAILY_CAP_0G", "10"),
+    maxLpExposure0G: read0GAmountEnv("NEXT_PUBLIC_POLICY_VAULT_V3_MAINNET_MAX_LP_EXPOSURE_0G", "15"),
+    cooldownSecondsLp: readBigIntEnv("NEXT_PUBLIC_POLICY_VAULT_V3_MAINNET_LP_COOLDOWN_SECONDS", 0n),
+    lpMinOutBps: readBpsEnv("NEXT_PUBLIC_POLICY_VAULT_V3_MAINNET_LP_MIN_OUT_BPS", 9_500),
+    minLiquidityFloor: readBigIntEnv("NEXT_PUBLIC_POLICY_VAULT_V3_MAINNET_LP_MIN_LIQUIDITY_FLOOR", 1_000_000n),
+    allowStaking: readBoolEnv("NEXT_PUBLIC_POLICY_VAULT_V3_MAINNET_LP_ALLOW_STAKING", true),
+  };
+  return { ...base, lp };
+}
+
+/// Build the three parallel constructor arrays for the V3 LP allowlists from
+/// ZIA_LP_VAULTS, filtered to W0G-leg pools (zappable single-sided from native).
+export function readV3LpAllowlistsFromEnv() {
+  return buildV3LpAllowlists(ZIA_LP_MAINNET.wrappedNative);
+}
+
+export function formatV3Policy(policy: PolicyVaultV3Policy) {
+  return {
+    ...formatPolicy(policy),
+    lp: {
+      perLpActionCap0G: formatEther(policy.lp.perLpActionCap0G),
+      lpDailyCap0G: formatEther(policy.lp.lpDailyCap0G),
+      maxLpExposure0G: formatEther(policy.lp.maxLpExposure0G),
+      cooldownSecondsLp: policy.lp.cooldownSecondsLp.toString(),
+      lpMinOutBps: policy.lp.lpMinOutBps,
+      minLiquidityFloor: policy.lp.minLiquidityFloor.toString(),
+      allowStaking: policy.lp.allowStaking,
+    },
+  };
+}
+
+/// Minimal LP adapter ABI for deploy-time validation (reject mock on mainnet).
+export const lpAdapterAbi = [
+  { inputs: [], name: "lpAdapterKind", outputs: [{ internalType: "bytes32", name: "", type: "bytes32" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "wrappedNative", outputs: [{ internalType: "address", name: "", type: "address" }], stateMutability: "view", type: "function" },
+  { inputs: [], name: "nfpm", outputs: [{ internalType: "address", name: "", type: "address" }], stateMutability: "view", type: "function" },
+] as const;
 
 export function read0GAmountEnv(name: string, fallback: string): bigint {
   const value = process.env[name]?.trim() || fallback;

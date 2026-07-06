@@ -41,6 +41,14 @@ const FILTERS: Array<{ label: string; value: RosterFilter }> = [
 
 const AGENT_INITIAL_MESSAGES: EmbeddedCopilotMessage[] = [];
 
+function isLpAgentDeployment(deployment: RosterDeployment): boolean {
+  return deployment.filters.includes("lp-zia");
+}
+
+function getAgentDetailHref(deployment: RosterDeployment): string {
+  return isLpAgentDeployment(deployment) ? `/agents/lp/${deployment.id}` : `/agents/${deployment.id}`;
+}
+
 export function OgAgentWorkspace() {
   const { network, networkId, setNetworkId } = useOgNetwork();
   const wallet = useWalletConnection(networkId);
@@ -308,7 +316,7 @@ function buildHealth(workspace: OgAgentWorkspace | null) {
   const deployed = deployedCount > 0;
   const vaultReady = workspace?.vault.ready === true;
   const warnings = (workspace?.vault.warnings.length ?? 0) + (workspace?.storage.warnings.length ?? 0);
-  const openPositions = workspace?.vault.sellablePositions?.length ?? 0;
+  const openPositions = (workspace?.vault.sellablePositions?.length ?? 0) + (workspace?.vault.sellableLpPositions?.length ?? 0);
   return [
     {
       detail: `${deployedCount} total agent${deployedCount === 1 ? "" : "s"}`,
@@ -565,7 +573,8 @@ function AgentCard({
   const tradeCount = logs.filter((entry) => entry.filter === "executed" && (entry.action === "buy" || entry.action === "sell")).length;
   const lastTrade = logs.find((entry) => entry.action === "buy" || entry.action === "sell");
   const lastAction = lastTrade ? `${lastTrade.action} ${formatRelativeTime(lastTrade.createdAt)}` : `proof ${formatRelativeTime(deployment.createdAt)}`;
-  const openPositions = vault.sellablePositions?.length ?? 0;
+  const isLpAgent = isLpAgentDeployment(deployment);
+  const openPositions = isLpAgent ? (vault.sellableLpPositions?.length ?? 0) : (vault.sellablePositions?.length ?? 0);
   const maxPositions = deployment.runtime?.maxPositions ?? 0;
   const sourceCount = deployment.filters.length;
   const isRemoved = "removedAt" in deployment;
@@ -582,7 +591,7 @@ function AgentCard({
       style={{ animationDelay: `${index * 60}ms` }}
     >
       <div className="flex items-start justify-between gap-4">
-        <Link href={`/agents/${deployment.id}`} className="flex min-w-0 flex-1 items-start gap-3 text-left">
+        <Link href={getAgentDetailHref(deployment)} className="flex min-w-0 flex-1 items-start gap-3 text-left">
           <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-primary/20 bg-primary/12 font-heading text-sm font-semibold uppercase tracking-[0.2em] text-primary">
             {deployment.tokenId}
           </div>
@@ -593,12 +602,16 @@ function AgentCard({
                 {status}
               </span>
             </div>
-            <p className="text-sm leading-5 text-muted">0G Policy Vault trading agent with proof-bound Agentic ID evidence.</p>
+            <p className="text-sm leading-5 text-muted">
+              {isLpAgent
+                ? "Zia LP agent for mint, stake, unstake, and zap-out through Policy Vault."
+                : "0G Policy Vault trading agent with proof-bound Agentic ID evidence."}
+            </p>
           </div>
         </Link>
 
         <Link
-          href={`/agents/${deployment.id}`}
+          href={getAgentDetailHref(deployment)}
           className="hidden items-center gap-1 rounded-full border border-line px-3 py-1.5 text-xs text-muted transition-colors hover:border-line-strong hover:text-foreground sm:inline-flex"
         >
           View
@@ -645,7 +658,7 @@ function AgentCard({
           {maxPositions > 0 ? <span>{openPositions}/{maxPositions} positions</span> : null}
         </div>
         <Link
-          href={`/agents/${deployment.id}`}
+          href={getAgentDetailHref(deployment)}
           className="inline-flex h-9 shrink-0 items-center gap-2 rounded-full border border-line bg-panel px-3 text-sm text-foreground transition-[background-color,border-color,transform] hover:bg-panel-strong active:scale-[0.96] sm:hidden"
         >
           View
@@ -679,7 +692,7 @@ function AgentTable({
           </div>
           <span className="text-sm capitalize text-muted">{getDeploymentRosterStatus(deployment, workspace)}</span>
           <span className="truncate font-mono text-xs text-muted">{workspace.vault.vault ? shortHash(workspace.vault.vault) : "--"}</span>
-          <Link href={`/agents/${deployment.id}`} className="inline-flex h-9 items-center rounded-full border border-line px-3 text-sm text-foreground hover:bg-panel">
+          <Link href={getAgentDetailHref(deployment)} className="inline-flex h-9 items-center rounded-full border border-line px-3 text-sm text-foreground hover:bg-panel">
             Open
           </Link>
         </div>

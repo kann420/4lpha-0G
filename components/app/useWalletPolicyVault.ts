@@ -14,7 +14,7 @@ import {
   type TransactionReceipt,
   type WalletClient,
 } from "viem";
-import { useAccount, useChainId, useSwitchChain } from "wagmi";
+import { useAccount, useChainId, useSignMessage, useSwitchChain } from "wagmi";
 import {
   getPolicyVaultCreationConfig,
   getPolicyVaultFactoryAddress,
@@ -27,6 +27,7 @@ import {
   type PolicyVaultFactoryVersion,
   type PolicyVaultPolicy,
 } from "@/lib/contracts/policy-vault";
+import { buildCopilotWalletAccessMessage } from "@/lib/copilot/wallet-access";
 import type { OgNetworkConfig } from "@/lib/types";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -43,13 +44,17 @@ export interface WalletPolicyVaultState {
   activeVaultVersion?: number;
   isCreating: boolean;
   isDiscovering: boolean;
+  isMigratingToV3: boolean;
   legacyVaults: VersionedVault[];
   migrateVault: () => Promise<void>;
+  migrateVaultToV3: () => Promise<void>;
   migrationRequired: boolean;
   refreshVaultAddress: () => Promise<void>;
   statusText: string;
   vaultAddress: Address | null;
   vaults: Address[];
+  v3MigrationAvailable: boolean;
+  v3VaultAddress: Address | null;
   versionedVaults: VersionedVault[];
 }
 
@@ -72,7 +77,14 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
   const [versionedVaults, setVersionedVaults] = useState<VersionedVault[]>([]);
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const [isMigratingToV3, setIsMigratingToV3] = useState(false);
   const [statusText, setStatusText] = useState("Connect a wallet to resolve its Policy Vault.");
+  // V3 singleton (mainnet-only, deployer-owned, resolved from the off-chain registry
+  // via /api/vault/v3-status). When present it supersedes the latest V2 factory vault
+  // as the active vault, and the v2 -> v3 migrate panel becomes available.
+  const [v3VaultAddress, setV3VaultAddress] = useState<Address | null>(null);
+  const [legacyV2Balance, setLegacyV2Balance] = useState<bigint>(0n);
+  const signMessage = useSignMessage();
   const requestIdRef = useRef(0);
   const factoryAddress = getPolicyVaultFactoryAddress(network.id);
   const factoryVersions = useMemo(() => getPolicyVaultFactoryVersions(network.id), [network.id]);
@@ -92,6 +104,8 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
       setVaultAddress(null);
       setVaults([]);
       setVersionedVaults([]);
+      setV3VaultAddress(null);
+      setLegacyV2Balance(0n);
       setStatusText("Connect a wallet to resolve its Policy Vault.");
       return;
     }
@@ -100,6 +114,8 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
       setVaultAddress(null);
       setVaults([]);
       setVersionedVaults([]);
+      setV3VaultAddress(null);
+      setLegacyV2Balance(0n);
       setStatusText("PolicyVaultFactory is not configured for this network.");
       return;
     }
@@ -128,11 +144,46 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
           ? `Resolved active Policy Vault V${active?.version ?? "?"} for this wallet.`
           : "No Policy Vault found for this wallet yet.",
       );
+
+      // Mainnet-only: resolve the V3 singleton from the off-chain registry. When a
+      // V3 exists for this owner it becomes the active vault (V2 factory vaults are
+      // treated as legacy). The v2 -> v3 migrate panel is gated on the legacy V2
+      // still holding native 0G, so we read its balance here.
+      if (network.id === "mainnet" && walletAccount.address && requestIdRef.current === requestId) {
+        try {
+          const v3Response = await fetch(
+            `/api/vault/v3-status?ownerAddress=${walletAccount.address}`,
+          );
+          if (v3Response.ok) {
+            const payload = (await v3Response.json()) as { data?: { v3VaultAddress?: Address | null } };
+            const v3 = (payload.data?.v3VaultAddress ?? null) as Address | null;
+            setV3VaultAddress(v3);
+            if (v3) {
+              setVaultAddress(v3);
+              const legacy = verified.at(-1);
+              if (legacy) {
+                const balance = await publicClient.getBalance({ address: legacy.vault });
+                if (requestIdRef.current === requestId) {
+                  setLegacyV2Balance(balance);
+                }
+              } else {
+                setLegacyV2Balance(0n);
+              }
+            } else {
+              setLegacyV2Balance(0n);
+            }
+          }
+        } catch {
+          // V3 registry lookup is best-effort; the V2 path stays usable.
+        }
+      }
     } catch {
       if (requestIdRef.current === requestId) {
         setVaultAddress(null);
         setVaults([]);
         setVersionedVaults([]);
+        setV3VaultAddress(null);
+        setLegacyV2Balance(0n);
         setStatusText("Could not scan PolicyVaultFactory logs from this RPC.");
       }
     } finally {
@@ -358,6 +409,139 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
     walletAccount.isConnected,
   ]);
 
+  const migrateVaultToV3 = useCallback(async () => {
+    if (!walletAccount.isConnected || !walletAccount.address) {
+      setStatusText("Connect the owner wallet before migrating to V3.");
+      return;
+    }
+    if (!v3VaultAddress) {
+      setStatusText("No V3 Policy Vault is registered for this wallet.");
+      return;
+    }
+    if (creationConfig === null) {
+      setStatusText(readiness.reason);
+      return;
+    }
+    const legacy = versionedVaults.at(-1);
+    if (!legacy) {
+      setStatusText("No legacy V2 vault is available for migration.");
+      return;
+    }
+
+    setIsMigratingToV3(true);
+    try {
+      if (connectedChainId !== network.chainId) {
+        setStatusText(`Switching wallet to ${network.networkName}.`);
+        await switchChain.switchChainAsync({ chainId: network.chainId });
+      }
+      const walletClient = await getWalletClient(chain);
+      const [account] = await walletClient.getAddresses();
+      if (account.toLowerCase() !== walletAccount.address.toLowerCase()) {
+        throw new Error("Wallet account changed before V3 vault migration.");
+      }
+
+      // V3 is deployer-owned; the connected wallet must be that owner (demo path:
+      // user == deployer). Reusing the V2 owner check (V3 exposes the same owner()).
+      setStatusText("Verifying V3 vault ownership before migration.");
+      await verifyVaultOwner(publicClient, v3VaultAddress, account);
+
+      setStatusText("Checking legacy vault token positions before migration.");
+      await assertLegacyVaultIsNativeOnly(publicClient, legacy.vault, account, creationConfig.allowedTokens);
+
+      const legacyBalance = await publicClient.getBalance({ address: legacy.vault });
+      if (legacyBalance > 0n) {
+        setStatusText("Withdrawing native 0G from legacy vault to owner wallet.");
+        const withdrawSimulation = await publicClient.simulateContract({
+          account,
+          address: legacy.vault,
+          abi: policyVaultAbi,
+          functionName: "withdrawNative",
+          args: [legacyBalance],
+        });
+        const withdrawTxHash = await walletClient.writeContract(withdrawSimulation.request);
+        await waitForReceipt(publicClient, withdrawTxHash);
+
+        setStatusText("Depositing migrated 0G into the V3 Policy Vault.");
+        const depositSimulation = await publicClient.simulateContract({
+          account,
+          address: v3VaultAddress,
+          abi: policyVaultAbi,
+          functionName: "depositNative",
+          value: legacyBalance,
+        });
+        const depositTxHash = await walletClient.writeContract(depositSimulation.request);
+        await waitForReceipt(publicClient, depositTxHash);
+      }
+
+      setStatusText("Pausing and revoking the legacy vault executor.");
+      await writeBestEffortOwnerTx({
+        account,
+        address: legacy.vault,
+        functionName: "setPaused",
+        publicClient,
+        walletClient,
+        args: [true],
+      });
+      await writeBestEffortOwnerTx({
+        account,
+        address: legacy.vault,
+        functionName: "revokeExecutor",
+        publicClient,
+        walletClient,
+        args: [],
+      });
+
+      // Re-point the owner's agent records to V3 and re-enable each agent key on V3
+      // (server-side, DEPLOYER pays gas). Funds movement is already complete, so a
+      // failure here is non-fatal — the user can retry the agent re-point from /agents.
+      setStatusText("Re-pointing agent records to the V3 vault.");
+      try {
+        const message = buildCopilotWalletAccessMessage({
+          address: account,
+          chainId: network.chainId,
+          networkId: network.id,
+        });
+        const signature = await signMessage.signMessageAsync({ message });
+        const response = await fetch("/api/agents/migrate-vault", {
+          body: JSON.stringify({ wallet: { address: account, chainId: network.chainId, message, signature } }),
+          headers: { "Content-Type": "application/json" },
+          method: "POST",
+        });
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
+          setStatusText(`Funds moved to V3. Agent re-point skipped: ${payload.error?.message ?? "unknown error"}.`);
+        }
+      } catch (error) {
+        setStatusText(
+          `Funds moved to V3. Agent re-point skipped: ${error instanceof Error ? error.message : "unknown error"}.`,
+        );
+      }
+
+      await discoverVaults();
+      setStatusText("Vault migration to PolicyVaultV3 completed.");
+    } catch (error) {
+      setStatusText(error instanceof Error ? sanitizeWalletError(error.message) : "V3 vault migration failed.");
+    } finally {
+      setIsMigratingToV3(false);
+    }
+  }, [
+    chain,
+    connectedChainId,
+    creationConfig,
+    discoverVaults,
+    network.chainId,
+    network.id,
+    network.networkName,
+    publicClient,
+    readiness.reason,
+    signMessage,
+    switchChain,
+    v3VaultAddress,
+    versionedVaults,
+    walletAccount.address,
+    walletAccount.isConnected,
+  ]);
+
   const activeVaultVersion = versionedVaults.at(-1)?.version;
   const latestFactoryVersion = factoryVersions.at(-1)?.version;
 
@@ -367,11 +551,16 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
     factoryAddress,
     isCreating,
     isDiscovering,
+    isMigratingToV3,
     legacyVaults: latestFactoryVersion === undefined
       ? []
       : versionedVaults.filter((entry) => entry.version < latestFactoryVersion),
     migrateVault,
+    migrateVaultToV3,
+    // Suppress the v1 -> v2 factory panel once a V3 singleton exists; the v2 -> v3
+    // panel takes over and creating a fresh V2 via factory would be a step backward.
     migrationRequired:
+      v3VaultAddress === null &&
       versionedVaults.length > 0 &&
       latestFactoryVersion !== undefined &&
       (activeVaultVersion ?? 0) < latestFactoryVersion,
@@ -379,6 +568,8 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
     statusText,
     vaultAddress,
     vaults,
+    v3MigrationAvailable: v3VaultAddress !== null && legacyV2Balance > 0n,
+    v3VaultAddress,
     versionedVaults,
   };
 }

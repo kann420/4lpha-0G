@@ -29,11 +29,11 @@ import { useAccount, useChainId, useSwitchChain } from "wagmi";
 import { policyVaultAbi } from "@/lib/contracts/policy-vault";
 import type { OgNetworkConfig } from "@/lib/types";
 
-const inputShellClass =
-  "flex h-11 items-center rounded-full border border-line bg-panel px-4 transition-colors focus-within:border-amber/40 focus-within:bg-panel";
-
 const buttonClass =
   "inline-flex h-11 items-center justify-center gap-2 rounded-full px-4 text-sm font-semibold transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-45";
+
+// Pre-flight validation regex — mirrors parsePositiveAmount's accepted shape.
+const POSITIVE_AMOUNT = /^(?:0|[1-9]\d*)(?:\.\d{1,18})?$/;
 
 export function VaultActionPanel({
   factoryAddress,
@@ -61,6 +61,7 @@ export function VaultActionPanel({
   const [vaultBalance, setVaultBalance] = useState<string>("--");
   const [statusText, setStatusText] = useState("Configure a deployed vault address to enable live controls.");
   const [statusTxHash, setStatusTxHash] = useState<Hex | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const walletAccount = useAccount();
   const connectedChainId = useChainId();
   const switchChain = useSwitchChain();
@@ -89,6 +90,10 @@ export function VaultActionPanel({
     isDiscoveringVault;
   const canSetWithdrawAll =
     !ownerControlDisabled && Number.isFinite(Number(vaultBalance)) && Number(vaultBalance) > 0;
+  const depositValid = POSITIVE_AMOUNT.test(deposit.trim()) && Number(deposit.trim()) > 0;
+  const withdrawValid = POSITIVE_AMOUNT.test(withdraw.trim()) && Number(withdraw.trim()) > 0;
+  const showDepositError = !ownerControlDisabled && !depositValid;
+  const showWithdrawError = !ownerControlDisabled && !withdrawValid;
   const railSetupStatus = getRailSetupStatus({
     factoryAddress,
     isCreatingVault,
@@ -100,12 +105,14 @@ export function VaultActionPanel({
   });
 
   const refreshVault = useCallback(async () => {
+    setRefreshing(true);
     if (vaultAddress === null) {
       setOwner(null);
       setVaultBalance("--");
       setPaused(false);
       setRevoked(false);
       setStatusText("No deployed vault address is configured for this network.");
+      setRefreshing(false);
       return;
     }
 
@@ -123,6 +130,8 @@ export function VaultActionPanel({
       setStatusText("Vault state refreshed from 0G RPC.");
     } catch {
       setStatusText("Could not read vault state from the selected 0G RPC.");
+    } finally {
+      setRefreshing(false);
     }
   }, [publicClient, vaultAddress]);
 
@@ -187,7 +196,10 @@ export function VaultActionPanel({
   }
 
   return (
-    <aside className="rounded-[24px] border border-line bg-panel-solid-strong p-4 sm:p-5 lg:rounded-[30px] xl:sticky xl:top-8 xl:self-start">
+    <aside
+      className="animate-feed-reveal rounded-hero border border-line bg-panel-solid-strong p-4 sm:p-5 lg:rounded-[30px] xl:sticky xl:top-8 xl:self-start"
+      style={{ animationDelay: "240ms" }}
+    >
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted">Actions</p>
@@ -216,7 +228,13 @@ export function VaultActionPanel({
 
         <label className="grid gap-2">
           <span className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted">Add 0G</span>
-          <div className={inputShellClass}>
+          <div
+            className={`flex h-11 items-center rounded-full border bg-panel px-4 transition-colors focus-within:bg-panel ${
+              showDepositError
+                ? "border-rose/40"
+                : "border-line focus-within:border-amber/40"
+            }`}
+          >
             <input
               type="text"
               inputMode="decimal"
@@ -229,6 +247,9 @@ export function VaultActionPanel({
             />
             <span className="pl-3 text-xs font-semibold text-amber">0G</span>
           </div>
+          {showDepositError ? (
+            <span className="px-1 text-xs text-rose">Enter a positive 0G amount (up to 18 decimals).</span>
+          ) : null}
         </label>
 
         <button
@@ -255,7 +276,13 @@ export function VaultActionPanel({
 
         <label className="mt-2 grid gap-2">
           <span className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted">Withdraw 0G</span>
-          <div className="flex h-11 items-center rounded-full border border-line bg-panel px-3 transition-colors focus-within:border-primary/40 focus-within:bg-panel">
+          <div
+            className={`flex h-11 items-center gap-2 rounded-full border bg-panel px-3 transition-colors focus-within:bg-panel ${
+              showWithdrawError
+                ? "border-rose/40"
+                : "border-line focus-within:border-primary/40"
+            }`}
+          >
             <input
               type="text"
               inputMode="decimal"
@@ -270,12 +297,15 @@ export function VaultActionPanel({
               type="button"
               disabled={!canSetWithdrawAll}
               onClick={() => setWithdraw(normalizeBalanceInput(vaultBalance))}
-              className="mr-2 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-semibold text-primary transition-colors hover:border-primary/35 hover:bg-primary/18 disabled:cursor-not-allowed disabled:border-line disabled:bg-panel disabled:text-muted"
+              className="ml-auto rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-semibold text-primary transition-colors hover:border-primary/35 hover:bg-primary/18 disabled:cursor-not-allowed disabled:border-line disabled:bg-panel disabled:text-muted"
             >
               All
             </button>
             <span className="text-xs font-semibold text-primary">0G</span>
           </div>
+          {showWithdrawError ? (
+            <span className="px-1 text-xs text-rose">Enter a positive 0G amount (up to 18 decimals).</span>
+          ) : null}
         </label>
 
         <button
@@ -341,7 +371,7 @@ export function VaultActionPanel({
               }
               className={`${buttonClass} border ${
                 paused
-                  ? "border-amber/24 bg-amber/12 text-amber hover:bg-amber/16"
+                  ? "border-amber/20 bg-amber/[0.1] text-amber hover:bg-amber/[0.16]"
                   : "border-line bg-panel text-foreground hover:border-line-strong hover:bg-panel-strong"
               }`}
             >
@@ -365,7 +395,7 @@ export function VaultActionPanel({
               }
               className={`${buttonClass} border ${
                 revoked
-                  ? "border-rose/24 bg-rose/12 text-rose hover:bg-rose/16"
+                  ? "border-rose/20 bg-rose/[0.1] text-rose hover:bg-rose/[0.16]"
                   : "border-line bg-panel text-foreground hover:border-line-strong hover:bg-panel-strong"
               }`}
             >
@@ -404,7 +434,15 @@ export function VaultActionPanel({
         <RailStatus
           icon={<ShieldCheck className="h-4 w-4" />}
           label="Balance"
-          value={vaultAddress === null ? "--" : `${formatBalanceLabel(vaultBalance)} 0G`}
+          value={
+            refreshing && vaultAddress !== null ? (
+              <span className="inline-block h-3 w-16 animate-pulse rounded-full bg-panel-strong" />
+            ) : vaultAddress === null ? (
+              "--"
+            ) : (
+              `${formatBalanceLabel(vaultBalance)} 0G`
+            )
+          }
           tone="cyan"
         />
       </div>
@@ -456,7 +494,7 @@ function VaultRailStatus({
     );
 
   return (
-    <div className={`rounded-[18px] border px-4 py-3 ${toneClass}`}>
+    <div className={`rounded-card border px-4 py-3 ${toneClass}`}>
       <div className="flex items-center justify-between gap-3">
         <span className="inline-flex min-w-0 items-center gap-2 text-sm font-semibold">
           {icon}
@@ -464,7 +502,9 @@ function VaultRailStatus({
         </span>
         <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] opacity-70">Vault</span>
       </div>
-      <p className="mt-1 truncate text-xs leading-5 text-muted">{status.detail}</p>
+      <p className="mt-1 truncate text-xs leading-5 text-muted" title={status.detail}>
+        {status.detail}
+      </p>
     </div>
   );
 }
@@ -478,7 +518,7 @@ function RailStatus({
   icon: React.ReactNode;
   label: string;
   tone: "amber" | "cyan" | "emerald" | "rose" | "slate";
-  value: string;
+  value: React.ReactNode;
 }) {
   const toneClass =
     tone === "emerald"
@@ -492,7 +532,7 @@ function RailStatus({
             : "text-muted";
 
   return (
-    <div className="flex min-h-10 items-center justify-between gap-3 rounded-[14px] bg-panel px-3 py-2.5">
+    <div className="flex min-h-10 items-center justify-between gap-3 rounded-tile bg-panel px-3 py-2.5">
       <span className="inline-flex min-w-0 items-center gap-2 text-xs text-muted">
         {icon}
         <span className="truncate">{label}</span>
