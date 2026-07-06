@@ -17,7 +17,7 @@ export function useOgNetwork(): {
 
   function setNetworkId(value: OgNetworkId) {
     try {
-      window.localStorage.setItem(OG_NETWORK_STORAGE_KEY, value === "mainnet" ? value : DEFAULT_OG_NETWORK_ID);
+      window.localStorage.setItem(OG_NETWORK_STORAGE_KEY, value);
       window.dispatchEvent(new Event("4lpha-0g-network-change"));
     } catch {}
   }
@@ -46,6 +46,10 @@ function subscribeToNetwork(onStoreChange: () => void): () => void {
 }
 
 function getNetworkSnapshot(): OgNetworkId {
+  try {
+    const stored = window.localStorage.getItem(OG_NETWORK_STORAGE_KEY);
+    if (stored === "testnet" || stored === "mainnet") return stored;
+  } catch {}
   return DEFAULT_OG_NETWORK_ID;
 }
 
