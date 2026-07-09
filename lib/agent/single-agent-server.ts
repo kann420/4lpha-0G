@@ -2713,6 +2713,33 @@ export async function listAllAgentDeployments(): Promise<OgAgentDeploymentRecord
   return roster.active;
 }
 
+// Admin cleanup enumeration: every ACTIVE agent across ALL owners INCLUDING on-chain
+// reconstructed records. Unlike listAllAgentDeployments (includeOnChain: false), this resolves
+// each owner's roster with includeOnChain: true so agents that were minted from another
+// environment (e.g. a local dev machine) and only exist on-chain — never written into THIS
+// (prod) registry — are surfaced. Used by scripts/tombstone-owner-agents.ts to tombstone
+// abandoned test agents that a local-only remove never recorded here. Owner set is derived from
+// both the registry and the on-chain mints so on-chain-only owners are covered.
+export async function listAllActiveAgentsIncludingOnChain(): Promise<OgAgentDeploymentRecord[]> {
+  const identity = await resolveAgenticIdAddress();
+  const [registry, onChainRecords] = await Promise.all([
+    readAgentDeploymentRegistryArtifact(),
+    readOnChainAgentDeploymentRecords(identity.address).catch(() => [] as OgAgentDeploymentRecord[]),
+  ]);
+  const owners = new Set<string>();
+  for (const record of registry?.agents ?? []) owners.add(record.owner.toLowerCase());
+  for (const record of onChainRecords) owners.add(record.owner.toLowerCase());
+  const merged: OgAgentDeploymentRecord[] = [];
+  for (const owner of owners) {
+    const roster = await readAgentDeploymentRoster(identity.address, {
+      ownerAddress: owner as Address,
+      includeOnChain: true,
+    });
+    merged.push(...roster.active);
+  }
+  return mergeAgentDeploymentRecords(merged);
+}
+
 // An LP agent is identified by the "lp-zia" filter (mirrors lp-worker.ts isLpDeployment).
 export function isLpAgentFilters(filters: readonly string[] | undefined): boolean {
   return (filters ?? []).some((filterId) => filterId.toLowerCase() === "lp-zia");

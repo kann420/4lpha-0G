@@ -52,6 +52,7 @@
     "agent:lp:worker": "node --conditions=react-server --import tsx scripts/og-agent-lp-worker.ts",
     "agent:lp:worker:once": "node --conditions=react-server --import tsx scripts/og-agent-lp-worker.ts --once",
     "agent:lp:worker:execute:once": "node --conditions=react-server --import tsx scripts/og-agent-lp-worker.ts --once --execute",
+    "tombstone:owners": "node --conditions=react-server --import tsx scripts/tombstone-owner-agents.ts",
     "smoke:ai-scan": "tsx scripts/smoke-ai-scan.ts",
     "smoke:trade:mainnet": "tsx scripts/preflight-mainnet-trade.ts",
     "smoke:trade:mainnet:live": "tsx scripts/live-mainnet-curated-roundtrip.ts",
