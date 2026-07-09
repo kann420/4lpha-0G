@@ -40,6 +40,7 @@ import { useWalletConnection } from "@/components/wallet/useWalletConnection";
 import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import { buildCopilotWalletAccessMessage } from "@/lib/copilot/wallet-access";
 import { policyVaultAgentKeyAbi } from "@/lib/contracts/policy-vault";
+import { saveTestnetRehearsalRecord } from "@/lib/agent/testnet-rehearsal";
 import { getOgNetwork } from "@/lib/og/networks";
 import { type OgAgentFilterId, type OgAgentWorkspace } from "@/lib/agent/single-agent";
 
@@ -136,6 +137,7 @@ export function OgAgentCreateWorkspace() {
   const router = useRouter();
   const { network, networkId, setNetworkId } = useOgNetwork();
   const wallet = useWalletConnection(networkId);
+  const isTestnetRehearsal = networkId === "testnet";
   const signMessage = useSignMessage();
   const [workspace, setWorkspace] = useState<OgAgentWorkspace | null>(null);
   const [name, setName] = useState("");
@@ -172,6 +174,14 @@ export function OgAgentCreateWorkspace() {
   const [walletAccessByKey, setWalletAccessByKey] = useState<Record<string, string>>({});
 
   async function loadWorkspace() {
+    if (isTestnetRehearsal) {
+      setWorkspace(null);
+      setIsLoading(false);
+      setExecutionTarget("Galileo mock adapter");
+      setExecutionMode("Testnet rehearsal / mock adapter");
+      setStatusText("Testnet rehearsal uses a local mock adapter. No Agentic ID, 0G Storage upload, or mainnet funds are touched.");
+      return;
+    }
     if (!wallet.address) {
       setWorkspace(null);
       setIsLoading(false);
@@ -212,7 +222,7 @@ export function OgAgentCreateWorkspace() {
 
   useEffect(() => {
     void loadWorkspace();
-  }, [wallet.address]);
+  }, [wallet.address, networkId]);
 
   const activeStrategy = useMemo(() => getStrategyTemplate(strategyTemplate), [strategyTemplate]);
   const selectedFilterIds = activeStrategy.filterIds;
@@ -226,13 +236,15 @@ export function OgAgentCreateWorkspace() {
   const ownerAddress = workspace?.vault.owner;
   const isOwnerWallet = Boolean(wallet.address && ownerAddress && wallet.address.toLowerCase() === ownerAddress.toLowerCase());
   const walletAccessKey = wallet.address ? `${networkId}:${network.chainId}:${wallet.address.toLowerCase()}` : undefined;
-  const walletActionMessage = getOwnerWalletMessage({
-    isConnected: wallet.isConnected,
-    isOwnerWallet,
-    isWrongChain: wallet.isWrongChain,
-    ownerAddress,
-    walletAddress: wallet.address,
-  });
+  const walletActionMessage = isTestnetRehearsal
+    ? undefined
+    : getOwnerWalletMessage({
+        isConnected: wallet.isConnected,
+        isOwnerWallet,
+        isWrongChain: wallet.isWrongChain,
+        ownerAddress,
+        walletAddress: wallet.address,
+      });
 
   const latestDeployment = workspace?.agents.at(-1);
   const hasExistingAgents = Boolean(latestDeployment);
@@ -240,11 +252,13 @@ export function OgAgentCreateWorkspace() {
     const issues: string[] = [];
     if (name.trim().length < 3) issues.push("Agent name must be at least 3 characters.");
     if (!selectedFilterIds.length) issues.push("Select a strategy template.");
-    if (!wallet.isConnected || !isOwnerWallet) issues.push("Policy Vault owner wallet must sign this Agentic ID update.");
-    if (workspace && workspace.vault.ready !== true) issues.push("Policy Vault must be ready.");
-    if (workspace && workspace.storage.uploadReady !== true) issues.push("0G Storage upload must be ready.");
+    if (!isTestnetRehearsal) {
+      if (!wallet.isConnected || !isOwnerWallet) issues.push("Policy Vault owner wallet must sign this Agentic ID update.");
+      if (workspace && workspace.vault.ready !== true) issues.push("Policy Vault must be ready.");
+      if (workspace && workspace.storage.uploadReady !== true) issues.push("0G Storage upload must be ready.");
+    }
     return issues;
-  }, [isOwnerWallet, name, selectedFilterIds.length, wallet.isConnected, workspace]);
+  }, [isOwnerWallet, isTestnetRehearsal, name, selectedFilterIds.length, wallet.isConnected, workspace]);
 
   const canDeploy = validationIssues.length === 0 && !isDeploying && !isLoading;
   const selectedRouteLabel = selectedFilterDetails.length
@@ -315,9 +329,16 @@ export function OgAgentCreateWorkspace() {
       return;
     }
     setIsDeploying(true);
-    setStatusText("Uploading redacted metadata to 0G Storage and minting Agentic ID.");
+    setStatusText(isTestnetRehearsal ? "Starting Galileo rehearsal with the mock adapter." : "Uploading redacted metadata to 0G Storage and minting Agentic ID.");
     dispatchSigmaPetReaction("agent.deploy.start", { force: true });
     try {
+      if (isTestnetRehearsal) {
+        saveTestnetRehearsalRecord({ kind: "trading", name });
+        setStatusText("Trading rehearsal ready. Use the testnet quote panel to trigger a mock adapter trade.");
+        dispatchSigmaPetReaction("agent.deploy.success", { force: true });
+        router.push("/agents");
+        return;
+      }
       const walletProof = await ensureOwnerWalletProof();
       const response = await fetch("/api/agents/deploy", {
         body: JSON.stringify({
@@ -455,7 +476,9 @@ export function OgAgentCreateWorkspace() {
               <div className="space-y-2">
                 <h1 className="text-4xl font-semibold tracking-tight text-foreground">Create Agent</h1>
                 <p className="max-w-3xl text-base leading-7 text-muted">
-                  Configure a 0G-only trading agent, bind it to the Policy Vault, and mint an Agentic ID evidence record.
+                  {isTestnetRehearsal
+                    ? "Start a Galileo rehearsal trading agent with a mock adapter. No Agentic ID, 0G Storage upload, or mainnet funds are touched."
+                    : "Configure a 0G-only trading agent, bind it to the Policy Vault, and mint an Agentic ID evidence record."}
                 </p>
               </div>
               <button
@@ -503,8 +526,10 @@ export function OgAgentCreateWorkspace() {
                   <Shield className="h-5 w-5" />
                 </span>
                 <div>
-                  <p className="text-sm font-semibold text-foreground">0G Mainnet</p>
-                  <p className="text-sm text-muted">Policy Vault / Agentic ID / 0G Storage</p>
+                  <p className="text-sm font-semibold text-foreground">{isTestnetRehearsal ? "0G Galileo Testnet" : "0G Mainnet"}</p>
+                  <p className="text-sm text-muted">
+                    {isTestnetRehearsal ? "Testnet rehearsal / mock adapter / local record" : "Policy Vault / Agentic ID / 0G Storage"}
+                  </p>
                 </div>
               </div>
               <span className="w-fit rounded-full border border-line bg-panel px-4 py-2 text-sm font-semibold text-foreground">
@@ -568,7 +593,9 @@ export function OgAgentCreateWorkspace() {
                 </button>
               </div>
               <p className="max-w-2xl text-sm leading-6 text-muted">
-                Optional avatar metadata will stay redacted until Agentic ID media upload is enabled.
+                {isTestnetRehearsal
+                  ? "Avatar upload is skipped for rehearsal mode; the local testnet record stays in this browser session."
+                  : "Optional avatar metadata will stay redacted until Agentic ID media upload is enabled."}
               </p>
             </div>
           </FormPanel>
@@ -710,7 +737,7 @@ export function OgAgentCreateWorkspace() {
           </FormPanel>
 
           <FormPanel
-            description="Choose the Policy Vault execution target for live deploy."
+            description={isTestnetRehearsal ? "Choose the local mock execution target for the Galileo rehearsal." : "Choose the Policy Vault execution target for live deploy."}
             icon={<Database className="h-5 w-5" />}
             title="Execution Settings"
           >
@@ -732,7 +759,11 @@ export function OgAgentCreateWorkspace() {
                     className={selectClassName}
                   >
                     <option className="bg-panel-solid-strong text-foreground">
-                      {workspace?.vault.vault ? `Policy Vault - ${shortHash(workspace.vault.vault)}` : "Policy Vault"}
+                      {isTestnetRehearsal
+                        ? "Galileo mock adapter"
+                        : workspace?.vault.vault
+                          ? `Policy Vault - ${shortHash(workspace.vault.vault)}`
+                          : "Policy Vault"}
                     </option>
                   </select>
                 </SelectShell>
@@ -748,10 +779,16 @@ export function OgAgentCreateWorkspace() {
 
             <div className="rounded-[18px] border border-line bg-panel px-4 py-3">
               <p className="text-sm font-semibold text-foreground">
-                {workspace?.vault.vault ? `Policy Vault - ${shortHash(workspace.vault.vault)}` : "Policy Vault not loaded"}
+                {isTestnetRehearsal
+                  ? "Galileo mock adapter"
+                  : workspace?.vault.vault
+                    ? `Policy Vault - ${shortHash(workspace.vault.vault)}`
+                    : "Policy Vault not loaded"}
               </p>
               <p className="mt-1 text-sm leading-6 text-muted">
-                Live trades use narrow vault methods only. The executor cannot withdraw or arbitrary-call from this screen.
+                {isTestnetRehearsal
+                  ? "Rehearsal trades use typed quote and policy preview only. No vault transaction is broadcast."
+                  : "Live trades use narrow vault methods only. The executor cannot withdraw or arbitrary-call from this screen."}
               </p>
             </div>
           </FormPanel>
@@ -870,8 +907,16 @@ export function OgAgentCreateWorkspace() {
           <section className="rounded-[28px] border border-line bg-panel-solid-strong/94 p-5 lg:p-6">
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
               <div className="grid gap-3 sm:grid-cols-3">
-                <ReviewMetric icon={<FileCheck2 className="h-4 w-4" />} label="Agentic ID" value={workspace?.identity.address ? shortHash(workspace.identity.address) : "Not configured"} />
-                <ReviewMetric icon={<Shield className="h-4 w-4" />} label="Vault" value={workspace?.vault.vault ? shortHash(workspace.vault.vault) : "Not loaded"} />
+                <ReviewMetric
+                  icon={<FileCheck2 className="h-4 w-4" />}
+                  label={isTestnetRehearsal ? "Identity" : "Agentic ID"}
+                  value={isTestnetRehearsal ? "Disabled" : workspace?.identity.address ? shortHash(workspace.identity.address) : "Not configured"}
+                />
+                <ReviewMetric
+                  icon={<Shield className="h-4 w-4" />}
+                  label={isTestnetRehearsal ? "Adapter" : "Vault"}
+                  value={isTestnetRehearsal ? "Mock" : workspace?.vault.vault ? shortHash(workspace.vault.vault) : "Not loaded"}
+                />
                 <ReviewMetric icon={<Brain className="h-4 w-4" />} label="Strategy" value={activeStrategy.label} />
               </div>
 
@@ -892,7 +937,7 @@ export function OgAgentCreateWorkspace() {
                   className="inline-flex h-12 items-center justify-center gap-2 rounded-full bg-primary px-5 text-sm font-semibold text-on-primary transition-[filter,transform] hover:brightness-105 active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   {isDeploying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                  Deploy Agent
+                  {isTestnetRehearsal ? "Start Rehearsal" : "Deploy Agent"}
                 </button>
               </div>
             </div>

@@ -16,6 +16,7 @@ import {
   Shield,
   TrendingUp,
 } from "lucide-react";
+import { AgentRouteTradePanel } from "@/components/app/AgentRouteTradePanel";
 import { AppShell } from "@/components/app/AppShell";
 import {
   COPILOT_MOBILE_PANEL_CLASS,
@@ -25,6 +26,7 @@ import {
 import { useOgNetwork } from "@/components/app/useOgNetwork";
 import { useWalletConnection } from "@/components/wallet/useWalletConnection";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { readTestnetRehearsals, type TestnetRehearsalRecord } from "@/lib/agent/testnet-rehearsal";
 import type { OgAgentDeploymentRecord, OgAgentWorkspace, OgRemovedAgentRecord } from "@/lib/agent/single-agent";
 import type { CopilotContextItem } from "@/lib/types";
 
@@ -60,6 +62,7 @@ export function OgAgentWorkspace() {
   const [mobileChatOpen, setMobileChatOpen] = useState(false);
   const [activeFilter, setActiveFilter] = useState<RosterFilter>("all");
   const [rosterView, setRosterView] = useState<RosterView>("grid");
+  const [testnetRehearsals, setTestnetRehearsals] = useState<TestnetRehearsalRecord[]>([]);
 
   async function loadWorkspace() {
     if (!wallet.address) {
@@ -97,6 +100,22 @@ export function OgAgentWorkspace() {
     void loadWorkspace();
   }, [networkId, wallet.address]);
 
+  useEffect(() => {
+    if (networkId !== "testnet") {
+      return;
+    }
+    function refreshRehearsals() {
+      setTestnetRehearsals(readTestnetRehearsals());
+    }
+    refreshRehearsals();
+    window.addEventListener("storage", refreshRehearsals);
+    window.addEventListener("4lpha-0g-testnet-rehearsal-change", refreshRehearsals);
+    return () => {
+      window.removeEventListener("storage", refreshRehearsals);
+      window.removeEventListener("4lpha-0g-testnet-rehearsal-change", refreshRehearsals);
+    };
+  }, [networkId]);
+
   const isMainnetAgentScope = networkId === "mainnet";
   const scopedWorkspace = isMainnetAgentScope ? workspace : null;
   const agentDeployments = scopedWorkspace?.agents ?? [];
@@ -110,7 +129,7 @@ export function OgAgentWorkspace() {
     );
   }, [activeFilter, agentDeployments, removedDeployments, scopedWorkspace]);
 
-  const health = isMainnetAgentScope ? buildHealth(scopedWorkspace) : buildNetworkEmptyHealth(network.label);
+  const health = isMainnetAgentScope ? buildHealth(scopedWorkspace) : buildTestnetRehearsalHealth(testnetRehearsals);
   const copilotContext = useMemo(
     () => buildWorkspaceCopilotContext(scopedWorkspace, network.label, isLoading && isMainnetAgentScope),
     [isLoading, isMainnetAgentScope, network.label, scopedWorkspace],
@@ -124,26 +143,33 @@ export function OgAgentWorkspace() {
               <section className="rounded-[24px] border border-line bg-panel-solid-strong px-4 py-5 shadow-[0_28px_100px_rgba(0,0,0,0.24)] lg:rounded-[30px] lg:px-8 lg:py-6">
             <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
               <div className="max-w-[36rem] space-y-2.5">
-                <p className="text-[11px] uppercase tracking-[0.32em] text-primary/60">Agent workspace</p>
+                <p className="text-[11px] uppercase tracking-[0.32em] text-primary/60">
+                  {isMainnetAgentScope ? "Agent workspace" : "Testnet rehearsal"}
+                </p>
                 <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl lg:text-4xl">
-                  Create your Agent
+                  {isMainnetAgentScope ? "Create your Agent" : "Mock adapter rehearsal"}
                 </h1>
                 <p className="max-w-2xl text-sm leading-6 text-muted lg:text-base">
-                  Single 0G trading agent backed by Policy Vault execution and Agentic ID evidence.
+                  {isMainnetAgentScope
+                    ? "Single 0G trading agent backed by Policy Vault execution and Agentic ID evidence."
+                    : "Create local Galileo agents, preview policy-bound routes, and trigger mock adapter execution without touching mainnet funds."}
                 </p>
               </div>
 
               <div className="flex flex-col gap-3 sm:items-start lg:min-w-[24.25rem] lg:items-end">
                 <div className="flex flex-nowrap items-center gap-2.5 lg:gap-3">
                   <div className="inline-flex h-12 items-center justify-center rounded-full border border-line bg-panel px-4 text-xs uppercase tracking-[0.24em] text-muted">
-                    0G / POLICY VAULT / ERC-7857
+                    {isMainnetAgentScope ? "0G / POLICY VAULT / ERC-7857" : "0G / TESTNET / MOCK"}
                   </div>
                   <button
                     type="button"
                     onClick={() => {
-                      if (isMainnetAgentScope) void loadWorkspace();
+                      if (isMainnetAgentScope) {
+                        void loadWorkspace();
+                      } else {
+                        setTestnetRehearsals(readTestnetRehearsals());
+                      }
                     }}
-                    disabled={!isMainnetAgentScope}
                     className="inline-flex h-12 items-center rounded-full border border-line bg-panel px-4 text-sm font-medium text-foreground transition-colors hover:bg-panel active:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <RefreshCcw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
@@ -159,13 +185,22 @@ export function OgAgentWorkspace() {
                     Create Agent
                   </Link>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => setNetworkId("mainnet")}
-                    className="inline-flex h-12 items-center rounded-full bg-primary px-5 text-sm font-semibold text-on-primary transition-[filter,transform] hover:brightness-105 active:scale-[0.96]"
-                  >
-                    View Mainnet Agent
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <Link
+                      href="/agents/create"
+                      className="inline-flex h-12 items-center rounded-full bg-primary px-5 text-sm font-semibold text-on-primary transition-[filter,transform] hover:brightness-105 active:scale-[0.96]"
+                    >
+                      <Plus className="mr-1 h-4 w-4" />
+                      Trading
+                    </Link>
+                    <Link
+                      href="/agents/create/lp"
+                      className="inline-flex h-12 items-center rounded-full border border-line bg-panel px-5 text-sm font-semibold text-foreground transition-colors hover:bg-panel-strong"
+                    >
+                      <Droplets className="mr-1 h-4 w-4" />
+                      LP
+                    </Link>
+                  </div>
                 )}
               </div>
             </div>
@@ -179,6 +214,17 @@ export function OgAgentWorkspace() {
 
               <HealthStrip items={health} />
 
+              {!isMainnetAgentScope ? (
+                <>
+                  <TestnetRehearsalPanel records={testnetRehearsals} />
+                  <AgentRouteTradePanel
+                    networkId={networkId}
+                    networkLabel={network.networkName}
+                  />
+                </>
+              ) : null}
+
+              {isMainnetAgentScope ? (
               <section className="flex flex-col gap-5">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div className="space-y-1.5">
@@ -268,6 +314,7 @@ export function OgAgentWorkspace() {
               />
             )}
               </section>
+              ) : null}
             </div>
           </div>
 
@@ -360,37 +407,39 @@ function buildHealth(workspace: OgAgentWorkspace | null) {
   ] as const;
 }
 
-function buildNetworkEmptyHealth(networkLabel: string) {
+function buildTestnetRehearsalHealth(records: readonly TestnetRehearsalRecord[]) {
+  const tradingCount = records.filter((record) => record.kind === "trading").length;
+  const lpCount = records.filter((record) => record.kind === "lp").length;
   return [
     {
-      detail: `No ${networkLabel} agent`,
-      label: "Live agents",
-      tone: "neutral",
-      value: "0",
+      detail: "Local browser session only",
+      label: "Rehearsals",
+      tone: records.length ? "positive" : "neutral",
+      value: String(records.length),
     },
     {
-      detail: "Mainnet agent hidden",
-      label: "Running now",
-      tone: "neutral",
-      value: "0",
+      detail: tradingCount ? "Mock adapter route ready" : "Create a trading rehearsal",
+      label: "Trading",
+      tone: tradingCount ? "positive" : "neutral",
+      value: String(tradingCount),
     },
     {
-      detail: "No open positions right now",
-      label: "Open positions",
-      tone: "neutral",
-      value: "0",
+      detail: lpCount ? "Mock LP workspace ready" : "Create an LP rehearsal",
+      label: "LP agents",
+      tone: lpCount ? "positive" : "neutral",
+      value: String(lpCount),
     },
     {
-      detail: "No realized PnL tracked yet",
-      label: "Net PnL",
+      detail: "Agentic ID is disabled",
+      label: "Identity",
       tone: "neutral",
-      value: "0 0G",
+      value: "off",
     },
     {
-      detail: "Mainnet agent hidden",
-      label: "Attention needed",
+      detail: "0G Storage upload is disabled",
+      label: "Storage",
       tone: "neutral",
-      value: "0",
+      value: "off",
     },
   ] as const;
 }
@@ -528,6 +577,77 @@ function NetworkEmptyState({
         </Link>
       ) : null}
     </div>
+  );
+}
+
+function TestnetRehearsalPanel({ records }: { records: readonly TestnetRehearsalRecord[] }) {
+  return (
+    <section className="rounded-[28px] border border-amber/20 bg-amber/[0.06] p-5 shadow-[0_18px_58px_rgba(0,0,0,0.18)]">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="max-w-3xl">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.26em] text-amber">Testnet rehearsal / mock adapter</p>
+          <h2 className="mt-2 text-xl font-semibold text-foreground">Galileo flow without mainnet side effects</h2>
+          <p className="mt-2 text-sm leading-6 text-muted">
+            These records live only in this browser session. They do not mint ERC-7857 Agentic ID, upload to 0G Storage, or move mainnet funds.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            href="/agents/create"
+            className="inline-flex h-10 items-center gap-2 rounded-full bg-primary px-4 text-sm font-semibold text-on-primary transition-[filter,transform] hover:brightness-105 active:scale-[0.96]"
+          >
+            <TrendingUp className="h-4 w-4" />
+            Trading
+          </Link>
+          <Link
+            href="/agents/create/lp"
+            className="inline-flex h-10 items-center gap-2 rounded-full border border-line bg-panel px-4 text-sm font-semibold text-foreground transition-colors hover:bg-panel-strong"
+          >
+            <Droplets className="h-4 w-4" />
+            LP
+          </Link>
+        </div>
+      </div>
+
+      <div className="mt-5 grid gap-3 lg:grid-cols-2">
+        {records.length ? (
+          records.map((record) => (
+            <Link
+              key={`${record.kind}:${record.id}`}
+              href={record.detailHref}
+              className="rounded-[22px] border border-line bg-panel-solid-strong p-4 transition-[border-color,transform] hover:-translate-y-0.5 hover:border-line-strong"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-base font-semibold text-foreground">{record.name}</p>
+                  <p className="mt-1 text-xs font-semibold uppercase tracking-[0.18em] text-muted">
+                    {record.kind === "lp" ? "LP Agent" : "Trading Agent"} · Galileo · mock
+                  </p>
+                </div>
+                <span className="rounded-full border border-green/20 bg-green/10 px-2.5 py-1 text-[11px] font-semibold text-green">
+                  ready
+                </span>
+              </div>
+              <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                <AgentMetric label="Adapter" value={record.adapter} />
+                <AgentMetric label="Identity" value={record.identity} />
+                <AgentMetric label="Storage" value={record.storage} />
+              </div>
+              <p className="mt-3 text-xs leading-5 text-muted">
+                Created {formatRelativeTime(record.createdAt)}. Open to continue the mock rehearsal.
+              </p>
+            </Link>
+          ))
+        ) : (
+          <div className="rounded-[22px] border border-line bg-panel p-4 lg:col-span-2">
+            <p className="text-sm font-semibold text-foreground">No local rehearsal yet</p>
+            <p className="mt-1 text-sm leading-6 text-muted">
+              Start a Trading or LP rehearsal from the buttons above. The result will appear here without any server deploy call.
+            </p>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 

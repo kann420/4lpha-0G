@@ -16,6 +16,7 @@ import { AutomationModuleCard } from "@/components/agents/lp/AutomationModuleCar
 import { LpRangePreview } from "@/components/agents/lp/LpRangePreview";
 import { ZiaPoweredBadge } from "@/components/agents/lp/ZiaPoweredBadge";
 import { MOCK_LP_POOLS } from "@/lib/agent/lp/mock-lp-data";
+import { saveTestnetRehearsalRecord } from "@/lib/agent/testnet-rehearsal";
 import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import { buildLpDeployActionConsentMessage, type LpDeployConsentStep } from "@/lib/copilot/wallet-access";
 import { getOgNetwork } from "@/lib/og/networks";
@@ -90,8 +91,9 @@ const AUTOMATION_MODULES = [
 
 export function LpAgentCreateWorkspace() {
   const { network, networkId, setNetworkId } = useOgNetwork();
+  const isTestnetRehearsal = networkId === "testnet";
   const router = useRouter();
-  const wallet = useWalletConnection("mainnet");
+  const wallet = useWalletConnection(networkId);
   const signMessage = useSignMessage();
   const [draft, setDraft] = useState<LpAgentDraft>(INITIAL_DRAFT);
   const [workspace, setWorkspace] = useState<OgAgentWorkspace | null>(null);
@@ -129,6 +131,19 @@ export function LpAgentCreateWorkspace() {
 
   useEffect(() => {
     if (!minValid) return;
+    if (isTestnetRehearsal) {
+      setPoolDiscovery({
+        pools: MOCK_LP_POOLS,
+        qualifyingCount: MOCK_LP_POOLS.filter((pool) => {
+          const max = draft.maxAprPct.trim() ? Number(draft.maxAprPct) : Infinity;
+          return pool.aprPct >= minApr && pool.aprPct <= max;
+        }).length,
+        total: MOCK_LP_POOLS.length,
+        source: "mock-fallback",
+        warning: "Testnet rehearsal uses deterministic mock LP pools.",
+      });
+      return;
+    }
     const controller = new AbortController();
     const qs = `minAprPct=${encodeURIComponent(String(minApr))}${
       draft.maxAprPct.trim() ? `&maxAprPct=${encodeURIComponent(draft.maxAprPct)}` : ""
@@ -151,11 +166,21 @@ export function LpAgentCreateWorkspace() {
         // Network/abort error — keep the existing state (MOCK seed or last good).
       });
     return () => controller.abort();
-  }, [draft.maxAprPct, minApr, minValid]);
+  }, [draft.maxAprPct, isTestnetRehearsal, minApr, minValid]);
 
   // Count how many Zia pools satisfy the APR filter — the LLM picks among these.
   useEffect(() => {
     let cancelled = false;
+
+    if (isTestnetRehearsal) {
+      setModelCatalog({
+        defaultModel: undefined,
+        models: [],
+        status: "ready",
+      });
+      setDraft((current) => ({ ...current, llmPrimaryModel: "", llmFallbackModel: "" }));
+      return;
+    }
 
     setModelCatalog((current) => ({
       defaultModel: current.defaultModel,
@@ -212,9 +237,15 @@ export function LpAgentCreateWorkspace() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isTestnetRehearsal]);
 
   useEffect(() => {
+    if (isTestnetRehearsal) {
+      setWorkspace(null);
+      setWorkspaceLoading(false);
+      setStatusText("Testnet rehearsal uses the mock LP adapter. No Agentic ID, 0G Storage upload, or mainnet vault action will run.");
+      return;
+    }
     if (!wallet.address) {
       setWorkspace(null);
       setWorkspaceLoading(false);
@@ -248,7 +279,7 @@ export function LpAgentCreateWorkspace() {
         if (!controller.signal.aborted) setWorkspaceLoading(false);
       });
     return () => controller.abort();
-  }, [wallet.address]);
+  }, [isTestnetRehearsal, wallet.address]);
 
   const qualifyingPoolCount = minValid ? poolDiscovery.qualifyingCount : 0;
 
@@ -302,23 +333,25 @@ export function LpAgentCreateWorkspace() {
   const validationIssues = useMemo(() => {
     const issues: string[] = [];
     if (!nameValid) issues.push("Agent name must be at least 3 characters.");
-    if (!wallet.isConnected) issues.push("Connect the Policy Vault owner wallet.");
-    if (wallet.isConnected && !isOwnerWallet) issues.push("Connected wallet must match the Policy Vault owner.");
-    if (workspaceLoading) issues.push("Policy Vault readiness is still loading.");
-    if (workspace && !vaultReadyForDeploy) {
-      if (hasLpEntryFundingWarning(workspace.vault.warnings ?? [])) {
-        issues.push("Fund LP Entry from V4 Swap before deploy.");
-      } else if (isOnlyZeroBalanceWarning(workspace.vault.warnings ?? [])) {
-        issues.push("Add a vault top-up or fund the Policy Vault before deploy.");
-      } else {
-        issues.push("Policy Vault must be ready.");
+    if (!isTestnetRehearsal) {
+      if (!wallet.isConnected) issues.push("Connect the Policy Vault owner wallet.");
+      if (wallet.isConnected && !isOwnerWallet) issues.push("Connected wallet must match the Policy Vault owner.");
+      if (workspaceLoading) issues.push("Policy Vault readiness is still loading.");
+      if (workspace && !vaultReadyForDeploy) {
+        if (hasLpEntryFundingWarning(workspace.vault.warnings ?? [])) {
+          issues.push("Fund LP Entry from V4 Swap before deploy.");
+        } else if (isOnlyZeroBalanceWarning(workspace.vault.warnings ?? [])) {
+          issues.push("Add a vault top-up or fund the Policy Vault before deploy.");
+        } else {
+          issues.push("Policy Vault must be ready.");
+        }
       }
+      if (!vaultAddress) issues.push("Policy Vault address must be resolved.");
     }
-    if (!vaultAddress) issues.push("Policy Vault address must be resolved.");
     if (!depositValid) issues.push("Deposit must be blank, zero, or a decimal with <= 18 fractional digits.");
     if (qualifyingPoolCount <= 0) issues.push("At least one allowlisted Zia pool must match the APR filter.");
     return issues;
-  }, [depositValid, isOwnerWallet, nameValid, qualifyingPoolCount, vaultAddress, vaultReadyForDeploy, wallet.isConnected, workspace, workspaceLoading]);
+  }, [depositValid, isOwnerWallet, isTestnetRehearsal, nameValid, qualifyingPoolCount, vaultAddress, vaultReadyForDeploy, wallet.isConnected, workspace, workspaceLoading]);
   const formValid =
     nameValid &&
     minValid &&
@@ -343,6 +376,14 @@ export function LpAgentCreateWorkspace() {
     setStatusText("Preparing single-use LP deploy consent.");
     dispatchSigmaPetReaction("lp.deploy.start", { force: true });
     try {
+      if (isTestnetRehearsal) {
+        saveTestnetRehearsalRecord({ kind: "lp", name: draft.name });
+        window.sessionStorage.setItem("lp-draft", JSON.stringify({ name: draft.name.trim() }));
+        setStatusText("LP rehearsal ready. Opening the mock adapter workspace.");
+        dispatchSigmaPetReaction("lp.deploy.no-mint", { force: true });
+        router.push("/agents/lp/lp-mock-001");
+        return;
+      }
       if (!wallet.address || !vaultAddress || depositNative0G === null) {
         throw new Error("Wallet, vault, and deposit inputs must be ready before deploy.");
       }
@@ -457,12 +498,22 @@ export function LpAgentCreateWorkspace() {
               <div className="space-y-2">
                 <h1 className="text-4xl font-semibold tracking-tight text-foreground">Create LP Agent</h1>
                 <p className="max-w-3xl text-base leading-7 text-muted">
-                  Configure a 0G-only LP agent, bind it to the Policy Vault, and mint an Agentic ID evidence record. Single-sided 0G → Zia Uniswap v3 LP.
+                  {isTestnetRehearsal
+                    ? "Start a Galileo LP rehearsal with mock pools and a mock adapter. No Agentic ID, 0G Storage upload, or mainnet vault action will run."
+                    : "Configure a 0G-only LP agent, bind it to the Policy Vault, and mint an Agentic ID evidence record. Single-sided 0G -> Zia Uniswap v3 LP."}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-3">
-                <ZiaPoweredBadge size="md" />
-                <WalletConnectButton compact networkId="mainnet" />
+                {isTestnetRehearsal ? (
+                  <span className="inline-flex h-9 items-center rounded-full border border-amber/20 bg-amber/10 px-3 text-xs font-semibold text-amber">
+                    Testnet rehearsal / mock adapter
+                  </span>
+                ) : (
+                  <>
+                    <ZiaPoweredBadge size="md" />
+                    <WalletConnectButton compact networkId="mainnet" />
+                  </>
+                )}
               </div>
             </div>
           </header>
@@ -494,14 +545,18 @@ export function LpAgentCreateWorkspace() {
                 </button>
               </div>
               <p className="max-w-2xl text-sm leading-6 text-muted">
-                Optional avatar metadata will stay redacted until Agentic ID media upload is enabled.
+                {isTestnetRehearsal
+                  ? "Avatar upload is skipped for rehearsal mode; the local testnet record stays in this browser session."
+                  : "Optional avatar metadata will stay redacted until Agentic ID media upload is enabled."}
               </p>
             </div>
           </FormPanel>
 
           {/* Pool Selection Policy — APR filter for the LLM's autonomous pool pick. */}
           <FormPanel
-            description="The agent (LLM via 0G Compute Router) auto-picks a qualifying Zia v3 W0G-leg pool at mint time. You set the fence; the vault enforces it on-chain."
+            description={isTestnetRehearsal
+              ? "The rehearsal picks from deterministic mock W0G-leg pools so users can understand the LP flow quickly."
+              : "The agent (LLM via 0G Compute Router) auto-picks a qualifying Zia v3 W0G-leg pool at mint time. You set the fence; the vault enforces it on-chain."}
             icon={<Bot className="h-5 w-5" />}
             title="Pool Selection Policy"
           >
@@ -544,7 +599,9 @@ export function LpAgentCreateWorkspace() {
               value={minValid && aprRangeValid ? `${qualifyingPoolCount} of ${poolDiscovery.total} Zia pools match` : "—"}
             />
             <p className="text-xs leading-5 text-muted">
-              APR is the advertised staking-reward APR from the Zia vault. The LLM chooses among matching pools; the vault rejects any pool outside the allowlist.
+              {isTestnetRehearsal
+                ? "APR and pool metrics are fabricated for rehearsal only; no Zia staking rewards are claimed."
+                : "APR is the advertised staking-reward APR from the Zia vault. The LLM chooses among matching pools; the vault rejects any pool outside the allowlist."}
             </p>
             {poolDiscovery.source === "mock-fallback" ? (
               <p className="text-xs leading-5 text-amber">
@@ -557,7 +614,7 @@ export function LpAgentCreateWorkspace() {
               Total exposure is bounded by the vault balance; per-position cap is the
               granular risk control so no single LP NFT eats too much of the deposit. */}
           <FormPanel
-            description="Hard limits the Policy Vault enforces on-chain. The LLM cannot exceed these regardless of its decision."
+            description={isTestnetRehearsal ? "Rehearsal limits shape the mock decision and explain the intended vault policy." : "Hard limits the Policy Vault enforces on-chain. The LLM cannot exceed these regardless of its decision."}
             icon={<Bot className="h-5 w-5" />}
             title="Risk Policy"
           >
@@ -595,14 +652,15 @@ export function LpAgentCreateWorkspace() {
             {!maxPositionsValid ? <p className="text-xs text-rose">Max positions must be an integer 1–3.</p> : null}
             {!maxPerPositionValid ? <p className="text-xs text-rose">Max 0G per position must be greater than 0.</p> : null}
             <p className="text-xs leading-5 text-muted">
-              Max positions caps concurrent LP NFTs the agent may hold. Max 0G per position caps how much the agent may
-              deploy into a single LP NFT — total exposure is bounded by your vault deposit.
+              {isTestnetRehearsal
+                ? "These limits are local rehearsal settings; no LP NFT is minted and no vault balance changes."
+                : "Max positions caps concurrent LP NFTs the agent may hold. Max 0G per position caps how much the agent may deploy into a single LP NFT - total exposure is bounded by your vault deposit."}
             </p>
           </FormPanel>
 
           {/* LLM Model - uses the same Router catalog as Copilot/chat. */}
           <FormPanel
-            description="The agent's autonomous pool and range decisions route through the 0G Compute Router. Pick the primary model and fallback model for the loop."
+            description={isTestnetRehearsal ? "Model selection is display-only in rehearsal mode; the mock adapter path stays local." : "The agent's autonomous pool and range decisions route through the 0G Compute Router. Pick the primary model and fallback model for the loop."}
             icon={<Sparkles className="h-5 w-5" />}
             title="LLM Model"
           >
@@ -642,16 +700,21 @@ export function LpAgentCreateWorkspace() {
             </div>
             <Readout
               label="Reasoning path"
-              value="0G Compute Router · server-only"
+              value={isTestnetRehearsal ? "Local rehearsal decision" : "0G Compute Router - server-only"}
             />
             <p className="text-xs leading-5 text-muted">
-              The Router never handles funds — it only returns a (pool, band, amount) decision. The Policy Vault
-              enforces it on-chain. Model options are fetched server-side from the same Router catalog used by Copilot/chat.
+              {isTestnetRehearsal
+                ? "No Router call is made by testnet deploy; the flow explains the intended pool, range, and amount decision."
+                : "The Router never handles funds - it only returns a (pool, band, amount) decision. The Policy Vault enforces it on-chain. Model options are fetched server-side from the same Router catalog used by Copilot/chat."}
             </p>
           </FormPanel>
 
           {/* Price Range & Deposit — range band options (Full / ±5% / ±12% / ±20% / Custom). */}
-          <FormPanel description="Single-sided zap-in: 0G → W0G → swap to pair → mint." icon={<Bot className="h-5 w-5" />} title="Price Range & Deposit">
+          <FormPanel
+            description={isTestnetRehearsal ? "Mock single-sided path: 0G budget -> mock pair -> simulated LP position." : "Single-sided zap-in: 0G -> W0G -> swap to pair -> mint."}
+            icon={<Bot className="h-5 w-5" />}
+            title="Price Range & Deposit"
+          >
             {/* "Let the LLM decide" — for users who don't know which band to pick. */}
             <label className="inline-flex cursor-pointer items-center gap-3 py-1">
               <input
@@ -749,10 +812,12 @@ export function LpAgentCreateWorkspace() {
                 <p className="mt-1 text-xs text-rose">Use blank, zero, or a decimal with no more than 18 digits after the dot.</p>
               ) : null}
               <p className="mt-1 text-xs leading-5 text-muted">
-                Default is no top-up. A deposit tx is included only when this amount is greater than zero.
+                {isTestnetRehearsal
+                  ? "This is a mock budget only. No deposit transaction is included."
+                  : "Default is no top-up. A deposit tx is included only when this amount is greater than zero."}
               </p>
             </Field>
-            <Readout label="Zap-in path" value="0G → W0G → swap to pair → mint" />
+            <Readout label="Zap-in path" value={isTestnetRehearsal ? "mock 0G -> mock LP preview" : "0G -> W0G -> swap to pair -> mint"} />
           </FormPanel>
 
           {/* Automation Controls — 4 cards ported from 4alpha. All coming soon. */}
@@ -773,7 +838,7 @@ export function LpAgentCreateWorkspace() {
           </FormPanel>
 
           {/* Deploy Review */}
-          <FormPanel description="Confirm the LP agent setup before deploying." icon={<Bot className="h-5 w-5" />} title="Deploy Review">
+          <FormPanel description={isTestnetRehearsal ? "Confirm the LP rehearsal setup before starting the mock adapter workspace." : "Confirm the LP agent setup before deploying."} icon={<Bot className="h-5 w-5" />} title="Deploy Review">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <ReviewMetric icon={<Bot className="h-3.5 w-3.5" />} label="Agent" value={nameValid ? draft.name : "—"} />
               <ReviewMetric
@@ -801,15 +866,15 @@ export function LpAgentCreateWorkspace() {
               <ReviewMetric icon={<Bot className="h-3.5 w-3.5" />} label="Max / position" value={maxPerPositionValid ? `${draft.maxPerPosition0G} 0G` : "—"} />
               <ReviewMetric icon={<Sparkles className="h-3.5 w-3.5" />} label="Primary model" value={modelSelectionLabel(modelCatalog, draft.llmPrimaryModel)} />
               <ReviewMetric icon={<Sparkles className="h-3.5 w-3.5" />} label="Fallback model" value={modelSelectionLabel(modelCatalog, draft.llmFallbackModel)} />
-              <ReviewMetric icon={<Bot className="h-3.5 w-3.5" />} label="Vault" value={vaultAddress ? shortAddress(vaultAddress) : "not ready"} />
-              <ReviewMetric icon={<Bot className="h-3.5 w-3.5" />} label="Deposit" value={depositRequested ? `${depositNative0G} 0G` : "No top-up"} />
+              <ReviewMetric icon={<Bot className="h-3.5 w-3.5" />} label={isTestnetRehearsal ? "Adapter" : "Vault"} value={isTestnetRehearsal ? "Mock" : vaultAddress ? shortAddress(vaultAddress) : "not ready"} />
+              <ReviewMetric icon={<Bot className="h-3.5 w-3.5" />} label={isTestnetRehearsal ? "Mock budget" : "Deposit"} value={depositRequested ? `${depositNative0G} 0G` : isTestnetRehearsal ? "Use mock balance" : "No top-up"} />
               {fundFromSwapRequested ? (
                 <ReviewMetric icon={<Bot className="h-3.5 w-3.5" />} label="LP Entry fund" value={`${fundLpEntryFromSwap0G} 0G from V4 Swap`} />
               ) : null}
               <ReviewMetric
                 icon={<Bot className="h-3.5 w-3.5" />}
                 label="First cycle"
-                value="Scan + mint immediately"
+                value={isTestnetRehearsal ? "Preview only" : "Scan + mint immediately"}
               />
             </div>
             <div className="mt-4 rounded-[18px] border border-line bg-panel px-4 py-3">
@@ -820,7 +885,9 @@ export function LpAgentCreateWorkspace() {
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-foreground">{statusText}</p>
                   <p className="mt-1 text-xs leading-5 text-muted">
-                    Signed steps: mint Agentic ID + enable agent key{fundFromSwapRequested ? " + fund LP Entry from V4 Swap" : ""}{depositRequested ? " + deposit native 0G" : ""} + scan/mint now. Auto-mint stays ON for later cycles; toggle it off on the detail page.
+                    {isTestnetRehearsal
+                      ? "Rehearsal steps: save local testnet record + open mock LP workspace. Identity and storage stay disabled."
+                      : `Signed steps: mint Agentic ID + enable agent key${fundFromSwapRequested ? " + fund LP Entry from V4 Swap" : ""}${depositRequested ? " + deposit native 0G" : ""} + scan/mint now. Auto-mint stays ON for later cycles; toggle it off on the detail page.`}
                   </p>
                   {submitError ? <p className="mt-2 text-xs font-semibold text-rose">{submitError}</p> : null}
                 </div>
@@ -833,7 +900,7 @@ export function LpAgentCreateWorkspace() {
                 disabled={!formValid || submitting}
                 className="inline-flex h-12 flex-1 items-center justify-center gap-2 rounded-full bg-primary px-4 text-sm font-semibold text-on-primary transition-[filter,transform] hover:brightness-105 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {submitting ? "Signing..." : "Sign & Create LP Agent"}
+                {submitting ? (isTestnetRehearsal ? "Starting..." : "Signing...") : isTestnetRehearsal ? "Start LP Rehearsal" : "Sign & Create LP Agent"}
                 {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
               </button>
               <Link

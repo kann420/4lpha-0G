@@ -200,6 +200,10 @@ export function LpAgentDetailPage({ agentId }: { agentId: string }) {
     position: OgAgentVaultLpPosition,
     successMessage: string,
   ) {
+    if (isMockAgent) {
+      flash("Testnet rehearsal only. No LP transaction is broadcast.");
+      return;
+    }
     const key = `${position.tokenId}:${action.replace("lp-", "")}`;
     setPendingAction(key);
     dispatchSigmaPetReaction(action === "lp-stake" ? "lp.stake.start" : "lp.unstake.start", { force: true });
@@ -219,6 +223,10 @@ export function LpAgentDetailPage({ agentId }: { agentId: string }) {
   }
 
   async function runZapOutAction(position: OgAgentVaultLpPosition) {
+    if (isMockAgent) {
+      flash("Testnet rehearsal only. Zap-out is simulated by the mock adapter.");
+      return;
+    }
     const key = `${position.tokenId}:zap-out`;
     setPendingAction(key);
     dispatchSigmaPetReaction("lp.zap.start", { force: true });
@@ -454,7 +462,13 @@ export function LpAgentDetailPage({ agentId }: { agentId: string }) {
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                <ZiaPoweredBadge size="md" />
+                {isMockAgent ? (
+                  <span className="inline-flex h-9 items-center rounded-tile border border-amber/20 bg-amber/[0.1] px-3 text-sm font-semibold text-amber">
+                    Mock adapter
+                  </span>
+                ) : (
+                  <ZiaPoweredBadge size="md" />
+                )}
                 <button
                   type="button"
                   onClick={isPaused ? onResume : onPause}
@@ -485,11 +499,11 @@ export function LpAgentDetailPage({ agentId }: { agentId: string }) {
             </div>
             {draftName ? (
               <p className="mt-3 text-[11px] font-semibold text-primary">
-                Just created: {draftName}. {live ? "Live snapshot loaded." : "Loading live snapshot."}
+                Just created: {draftName}. {isMockAgent ? "Rehearsal workspace ready." : live ? "Live snapshot loaded." : "Loading live snapshot."}
               </p>
             ) : null}
             {isMockAgent ? (
-              <p className="mt-1 text-[11px] font-semibold text-amber">MOCK LP AGENT — owner actions (Pause / Resume / Remove) are disabled. No real vault is connected.</p>
+              <p className="mt-1 text-[11px] font-semibold text-amber">TESTNET REHEARSAL - owner actions are disabled, identity/storage are disabled, and no transaction is broadcast.</p>
             ) : null}
             {actionMessage ? <p className="mt-3 text-[11px] font-semibold text-amber">{actionMessage}</p> : null}
           </section>
@@ -511,6 +525,7 @@ export function LpAgentDetailPage({ agentId }: { agentId: string }) {
             <LpAgentSidebar
               vault={vaultAddress}
               adapter={lpAdapter}
+              mode={isMockAgent ? "testnet-rehearsal" : "mainnet"}
               policyVaultV3={vaultAddress}
               proofRegistry={proofRegistry}
               maxPositions={maxPositions}
@@ -522,10 +537,10 @@ export function LpAgentDetailPage({ agentId }: { agentId: string }) {
                 configured: live?.workspace.identity.configured ?? Boolean(liveDeployment?.identityAddress),
                 deployTxHash: liveDeployment?.deployTxHash,
                 enableTxHash: liveDeployment?.agentKeyEnableTxHash,
-                note: live?.workspace.identity.note,
-                standard: live?.workspace.identity.label ?? liveDeployment?.standard ?? "ERC-7857",
-                storageRoot: liveDeployment?.storageRoot,
-                tokenId: liveDeployment?.tokenId,
+                note: isMockAgent ? "Testnet rehearsal only. No Agentic ID was minted." : live?.workspace.identity.note,
+                standard: isMockAgent ? "Disabled" : live?.workspace.identity.label ?? liveDeployment?.standard ?? "ERC-7857",
+                storageRoot: isMockAgent ? undefined : liveDeployment?.storageRoot,
+                tokenId: isMockAgent ? undefined : liveDeployment?.tokenId,
                 vault: vaultAddress,
               }}
             />
@@ -540,6 +555,10 @@ export function LpAgentDetailPage({ agentId }: { agentId: string }) {
               pendingAction={pendingAction}
               onMintBootstrap={() => {
                 dispatchSigmaPetReaction("lp.manual-mint.open", { force: true });
+                if (isMockAgent) {
+                  flash("Testnet rehearsal only. Mock LP positions are preloaded; no mint is broadcast.");
+                  return;
+                }
                 setMintTarget({});
               }}
               onStakePosition={(position) =>
@@ -553,12 +572,17 @@ export function LpAgentDetailPage({ agentId }: { agentId: string }) {
 
             <LpPolicyControls
               agentId={agentId}
-              vault={live || isMockAgent ? vaultAddress : undefined}
+              vault={!isMockAgent && live ? vaultAddress : undefined}
               autoMint={autoMint}
               isRefreshingLogs={isSnapshotLoading}
+              mode={isMockAgent ? "testnet-rehearsal" : "mainnet"}
               onAutoMintChange={setAutoMint}
               onRefreshLogs={() => {
                 dispatchSigmaPetReaction("lp.refresh", { force: true });
+                if (isMockAgent) {
+                  flash("Rehearsal log is local; no live snapshot is fetched.");
+                  return;
+                }
                 void refreshSnapshot();
               }}
               automation={{
@@ -582,7 +606,7 @@ export function LpAgentDetailPage({ agentId }: { agentId: string }) {
       </main>
 
       <LpManualMintDialog
-        open={Boolean(live || isMockAgent) && mintTarget !== null}
+        open={Boolean(live) && mintTarget !== null}
         agentId={agentId}
         vault={vaultAddress}
         target={mintTarget}

@@ -8,6 +8,7 @@ import { ZiaPoweredBadge } from "@/components/agents/lp/ZiaPoweredBadge";
 
 export function OgAgentCreateChoice() {
   const { network, networkId, setNetworkId } = useOgNetwork();
+  const isTestnetRehearsal = networkId === "testnet";
 
   return (
     <AppShell network={network} networkId={networkId} onNetworkChange={setNetworkId}>
@@ -19,12 +20,17 @@ export function OgAgentCreateChoice() {
                 <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted">Agent create</p>
                 <h1 className="text-3xl font-semibold tracking-tight text-foreground lg:text-4xl">Choose agent type</h1>
                 <p className="max-w-2xl text-sm leading-6 text-muted">
-                  Configure a 0G mainnet agent. Deploy a Trading Agent for buy/sell routes, or an LP Agent for single-sided 0G → Zia Uniswap v3 LP. Each deploy mints a separate Agentic ID record.
+                  {isTestnetRehearsal
+                    ? "Start a Galileo rehearsal for Trading or LP agents. The setup creates a local mock-adapter record only: no Agentic ID, no 0G Storage upload, and no mainnet funds."
+                    : "Configure a 0G mainnet agent. Deploy a Trading Agent for buy/sell routes, or an LP Agent for single-sided 0G -> Zia Uniswap v3 LP. Each deploy mints a separate Agentic ID record."}
                 </p>
               </div>
 
               <div className="grid grid-cols-2 gap-2 text-xs sm:flex sm:flex-wrap sm:justify-end">
-                {["0G mainnet", "Policy Vault", "Agentic ID", "Owner reviewed"].map((item) => (
+                {(isTestnetRehearsal
+                  ? ["0G Galileo", "Mock adapter", "Identity off", "Storage off"]
+                  : ["0G mainnet", "Policy Vault", "Agentic ID", "Owner reviewed"]
+                ).map((item) => (
                   <span key={item} className="rounded-lg border border-line bg-panel px-3 py-2 text-center font-semibold text-muted">
                     {item}
                   </span>
@@ -47,15 +53,17 @@ export function OgAgentCreateChoice() {
               <div className="mt-5 space-y-2.5">
                 <h2 className="text-2xl font-semibold tracking-tight text-foreground">Trading Agent</h2>
                 <p className="max-w-xl text-sm leading-6 text-muted">
-                  Mainnet route filters, Policy Vault execution, and Agentic ID mint in one deployment flow.
+                  {isTestnetRehearsal
+                    ? "Local Galileo rehearsal with route quote, policy preview, and mock adapter execution. No wallet signature or storage step."
+                    : "Mainnet route filters, Policy Vault execution, and Agentic ID mint in one deployment flow."}
                 </p>
               </div>
 
               <div className="mt-6 divide-y divide-line border-y border-line">
                 {[
-                  { icon: Activity, label: "Route", value: "0G / ZIA / Oku" },
-                  { icon: Shield, label: "Control", value: "Vault policy" },
-                  { icon: Zap, label: "Mode", value: "Single-agent runtime" },
+                  { icon: Activity, label: "Route", value: isTestnetRehearsal ? "agent-aura stub" : "0G / ZIA / Oku" },
+                  { icon: Shield, label: "Control", value: isTestnetRehearsal ? "Policy preview" : "Vault policy" },
+                  { icon: Zap, label: "Mode", value: isTestnetRehearsal ? "Mock adapter" : "Single-agent runtime" },
                 ].map((metric) => (
                   <div key={metric.label} className="grid grid-cols-[1.25rem_minmax(6rem,0.7fr)_minmax(0,1fr)] items-center gap-3 py-3">
                     <metric.icon className="h-4 w-4 text-muted" />
@@ -69,13 +77,13 @@ export function OgAgentCreateChoice() {
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Network</p>
                 <div className="inline-flex w-full rounded-full border border-line bg-panel-solid-strong p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] sm:w-fit">
                   <span className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-full bg-invert px-4 text-sm font-semibold text-invert-ink shadow-[0_10px_24px_rgba(0,0,0,0.28)] sm:flex-none">
-                    0G Mainnet
+                    {isTestnetRehearsal ? "0G Galileo Testnet" : "0G Mainnet"}
                   </span>
                 </div>
               </div>
 
               <Link href="/agents/create/trading" className="mt-auto inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-on-primary transition-[filter,transform] hover:brightness-105 active:scale-[0.96]">
-                <span>Open setup</span>
+                <span>{isTestnetRehearsal ? "Start rehearsal" : "Open setup"}</span>
                 <ArrowRight className="h-4 w-4" />
               </Link>
             </article>
@@ -85,21 +93,29 @@ export function OgAgentCreateChoice() {
                 <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-primary/10 bg-primary/12 text-primary">
                   <Droplets className="h-5 w-5" />
                 </div>
-                <ZiaPoweredBadge />
+                {isTestnetRehearsal ? (
+                  <span className="rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-muted">
+                    Mock adapter
+                  </span>
+                ) : (
+                  <ZiaPoweredBadge />
+                )}
               </div>
 
               <div className="mt-5 space-y-2.5">
                 <h2 className="text-2xl font-semibold tracking-tight text-foreground">LP Agents</h2>
                 <p className="max-w-xl text-sm leading-6 text-muted">
-                  Single-sided 0G → Zia Uniswap v3 LP through the Policy Vault. APR filter, pool picker, and automation controls (coming soon).
+                  {isTestnetRehearsal
+                    ? "Pick a deterministic mock LP pool and open a local rehearsal workspace. No nonce, wallet signature, ERC-7857 mint, 0G Storage upload, or Zia staking."
+                    : "Single-sided 0G -> Zia Uniswap v3 LP through the Policy Vault. APR filter, pool picker, and automation controls (coming soon)."}
                 </p>
               </div>
 
               <div className="mt-6 divide-y divide-line border-y border-line">
                 {[
-                  { icon: Droplets, label: "Pool", value: "W0G-leg Zia v3" },
-                  { icon: Shield, label: "Range", value: "Full / narrow" },
-                  { icon: Zap, label: "Mode", value: "Single-sided zap" },
+                  { icon: Droplets, label: "Pool", value: isTestnetRehearsal ? "Mock W0G / USDC" : "W0G-leg Zia v3" },
+                  { icon: Shield, label: "Range", value: isTestnetRehearsal ? "Preview only" : "Full / narrow" },
+                  { icon: Zap, label: "Mode", value: isTestnetRehearsal ? "Local rehearsal" : "Single-sided zap" },
                 ].map((metric) => (
                   <div key={metric.label} className="grid grid-cols-[1.25rem_minmax(6rem,0.7fr)_minmax(0,1fr)] items-center gap-3 py-3">
                     <metric.icon className="h-4 w-4 text-muted" />
@@ -113,13 +129,13 @@ export function OgAgentCreateChoice() {
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Network</p>
                 <div className="inline-flex w-full rounded-full border border-line bg-panel-solid-strong p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] sm:w-fit">
                   <span className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-full bg-invert px-4 text-sm font-semibold text-invert-ink shadow-[0_10px_24px_rgba(0,0,0,0.28)] sm:flex-none">
-                    0G Mainnet
+                    {isTestnetRehearsal ? "0G Galileo Testnet" : "0G Mainnet"}
                   </span>
                 </div>
               </div>
 
               <Link href="/agents/create/lp" className="mt-auto inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-on-primary transition-[filter,transform] hover:brightness-105 active:scale-[0.96]">
-                <span>Open setup</span>
+                <span>{isTestnetRehearsal ? "Start LP rehearsal" : "Open setup"}</span>
                 <ArrowRight className="h-4 w-4" />
               </Link>
             </article>

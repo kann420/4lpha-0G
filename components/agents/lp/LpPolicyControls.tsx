@@ -38,6 +38,7 @@ export function LpPolicyControls({
   vault,
   autoMint,
   isRefreshingLogs = false,
+  mode = "mainnet",
   onAutoMintChange,
   onRefreshLogs,
 }: {
@@ -49,6 +50,7 @@ export function LpPolicyControls({
   vault?: string;
   autoMint?: boolean;
   isRefreshingLogs?: boolean;
+  mode?: "mainnet" | "testnet-rehearsal";
   onAutoMintChange?: (next: boolean) => void;
   onRefreshLogs?: () => void;
 }) {
@@ -137,7 +139,7 @@ export function LpPolicyControls({
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Agent log</p>
             <p className="mt-1 flex items-center gap-2 text-[11px] text-muted">
               <span className="h-1.5 w-1.5 rounded-full bg-green" />
-              Live stream active - 30s fallback refresh
+              {mode === "testnet-rehearsal" ? "Local rehearsal log" : "Live stream active - 30s fallback refresh"}
             </p>
           </div>
           {onRefreshLogs ? (

@@ -63,8 +63,13 @@ function AgentRouteTradePanelBody({
   const [preview, setPreview] = useState<AgentTradePreview | null>(null);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
+  const isMockAdapterPreview = networkId !== "mainnet";
   const [statusText, setStatusText] = useState(
-    firstRoute ? "Route selected. Refresh quote to preview proof bundle." : "No routes for this network.",
+    firstRoute
+      ? isMockAdapterPreview
+        ? "Route selected. Refresh quote to preview the mock policy bundle."
+        : "Route selected. Refresh quote to preview proof bundle."
+      : "No routes for this network.",
   );
 
   const clearPreview = useCallback(() => {
@@ -79,9 +84,15 @@ function AgentRouteTradePanelBody({
       setAmountIn(nextRoute?.defaultAmountIn ?? "0.05");
       setSide(nextRoute?.defaultSide ?? "buy");
       clearPreview();
-      setStatusText(nextRoute ? "Route selected. Refresh quote to preview proof bundle." : "No routes for this network.");
+      setStatusText(
+        nextRoute
+          ? isMockAdapterPreview
+            ? "Route selected. Refresh quote to preview the mock policy bundle."
+            : "Route selected. Refresh quote to preview proof bundle."
+          : "No routes for this network.",
+      );
     },
-    [clearPreview, networkRoutes],
+    [clearPreview, isMockAdapterPreview, networkRoutes],
   );
 
   const requestTrade = useCallback(
@@ -92,11 +103,15 @@ function AgentRouteTradePanelBody({
 
       if (intent === "preview") {
         setIsPreviewing(true);
-        setStatusText("Fetching server route quote.");
+        setStatusText(isMockAdapterPreview ? "Fetching mock adapter quote." : "Fetching server route quote.");
         dispatchSigmaPetReaction("trade.quote.start", { force: true });
       } else {
         setIsExecuting(true);
-        setStatusText("Sending trade request to server executor route.");
+        setStatusText(
+          isMockAdapterPreview
+            ? "Sending rehearsal request to the mock adapter."
+            : "Sending trade request to server executor route.",
+        );
         dispatchSigmaPetReaction("trade.execute.start", { force: true });
       }
 
@@ -141,7 +156,9 @@ function AgentRouteTradePanelBody({
         } else {
           setStatusText(
             payload.data.preview.proofBundle.policyDecision === "allow"
-              ? "Quote and proof bundle ready."
+              ? isMockAdapterPreview
+                ? "Mock quote and policy preview ready."
+                : "Quote and proof bundle ready."
               : "Quote preview requires review before execution.",
           );
           dispatchSigmaPetReaction("trade.quote.ready", { force: true });
@@ -156,7 +173,7 @@ function AgentRouteTradePanelBody({
         setIsExecuting(false);
       }
     },
-    [amountIn, networkId, onPreviewChange, operatorKey, selectedRoute, side, slippageBps],
+    [amountIn, isMockAdapterPreview, networkId, onPreviewChange, operatorKey, selectedRoute, side, slippageBps],
   );
 
   const canExecute =
@@ -179,7 +196,9 @@ function AgentRouteTradePanelBody({
             </div>
           </div>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-muted">
-            Server route stages quote, policy hash, and audit proof data before any vault executor action.
+            {isMockAdapterPreview
+              ? "Testnet rehearsal stages quote and policy preview through a mock adapter. No transaction, 0G Storage upload, or mainnet executor action is broadcast."
+              : "Server route stages quote, policy hash, and audit proof data before any vault executor action."}
           </p>
         </div>
         <span className="shrink-0 rounded-full border border-line bg-panel px-3 py-1.5 text-xs font-semibold text-muted">
@@ -309,16 +328,18 @@ function AgentRouteTradePanelBody({
           </div>
         </div>
 
-        <RouteProofPreview preview={preview} route={selectedRoute} />
+        <RouteProofPreview isMockAdapterPreview={isMockAdapterPreview} preview={preview} route={selectedRoute} />
       </div>
     </section>
   );
 }
 
 function RouteProofPreview({
+  isMockAdapterPreview,
   preview,
   route,
 }: {
+  isMockAdapterPreview: boolean;
   preview: AgentTradePreview | null;
   route: AgentTradeRouteOption | undefined;
 }) {
@@ -361,7 +382,7 @@ function RouteProofPreview({
         />
         <ProofMetric
           icon={<Database className="h-3.5 w-3.5" />}
-          label="Storage root"
+          label={isMockAdapterPreview ? "Mock root" : "Storage root"}
           value={preview?.proofBundle.storageRoot ?? "--"}
         />
         <ProofMetric
@@ -374,7 +395,10 @@ function RouteProofPreview({
       <div className="grid gap-2 border-t border-line pt-3">
         <HashLine label="Route hash" value={preview?.quote.routeHash ?? "--"} />
         <HashLine label="Quote hash" value={preview?.quote.quoteHash ?? "--"} />
-        <HashLine label="Proof tx" value={preview?.proofBundle.proofTxHash ?? "pending"} />
+        <HashLine
+          label={isMockAdapterPreview ? "Stub proof id" : "Proof tx"}
+          value={preview?.proofBundle.proofTxHash ?? "pending"}
+        />
       </div>
     </aside>
   );
