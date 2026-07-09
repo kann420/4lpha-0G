@@ -100,6 +100,8 @@ The vault path uses deployed 0G contracts and curated routes rather than a legac
 - **V2 (multi-user, swap-only).** The app resolves each connected wallet's vault through `PolicyVaultFactoryV2.vaultOf(wallet)`. A new user creates a new vault instance from the deployed V2 factory; the factory, adapter, proof registry, and AgenticID contracts do not need to be redeployed for each user. V2 is the vault for every browser user — trading agent, deposit, Copilot, AI scan.
 - **V3 (singleton, deployer/owner-only, swap + LP).** V3 preserves the V2 swap surface byte-for-byte and adds the LP primitive layer (`zapInMintLp`, `stakeLp`, `unstakeLp`, `zapOut`, and a reserved `claimRewards` slot that reverts `RewardsNotConfigured` until Zia ships a claim ABI). V3 is **owner-only by design**: there is no on-chain V3 factory on 0G mainnet (`PolicyVaultFactoryV3` exceeds EIP-170's 24KB deployed-bytecode cap, so it is retained for EDR/local tests only). The deployer/server deploys a V3 singleton directly via `scripts/create-mainnet-vault-v3.ts` and tracks `owner => vaultAddress` in an off-chain registry (`.data/deployments/mainnet-policy-vault-v3-registry.json`). The server resolver `resolveMainnetV3VaultForOwner` returns the V3 vault only for the deployer (registry/env entry) and falls back to V2 for everyone else. The LP Agent gates on `vaultVersion >= 3 && lpAdapter != address(0)`.
 
+**V4 (in progress, per-user, three-way split).** V4 splits the vault into `PolicyVaultV4Swap` + `PolicyVaultV4LpEntry` + `PolicyVaultV4LpExit`, registered per owner in a shared `VaultRegistryV4` (owner-called `register*(vault)`, not self-registration, to close a registry-spoofing loss-of-funds path), with a new `ZiaLpAdapterV4`. Unlike V3, V4 vaults are per-user again — the trio deploys from the UI with the connected wallet instead of a deployer-only singleton — while keeping every V2 swap and V3 LP capability plus a guided V1/V2/V3 → V4 migration flow. Shared infra (`VaultRegistryV4`, `ZiaLpAdapterV4`) is deployed on 0G mainnet and the swap path has executed a real trade end-to-end; the LP entry/exit thirds and the in-app migration flow are still being hardened on the `fix/vault-v4-blockers` branch and are not yet the default path for new users. Treat V4 as active development, not a documented, shipped surface, until this section is updated again.
+
 `PolicyVaultFactoryV2` (version `2`) is the active factory and the source of truth for new V2 vault creation. `PolicyVaultFactory` (V1) remains deployed as a legacy factory: the app still discovers V1 vaults so existing operators keep working, and offers an in-app migration from a V1 vault to a V2 vault. The V2 vault adds agent-scoped positions: every trade request carries a `bytes32 agentKey`, so trades and exposure are tracked per agent inside one owner vault instead of one vault per agent.
 
 ### 0G Mainnet
@@ -214,6 +216,8 @@ Copilot is available as an embedded chat rail inside AI Scan and Agents. All LLM
 
 For executable trade commands, Copilot uses Zia (TradeGPT) route context for quote and route selection, then submits only allowlisted buy/sell requests through the 0G Policy Vault. The vault remains the on-chain enforcement layer for spend caps, min-out, deadlines, executor scope, and proof binding.
 
+Market-overview questions are grounded with live data instead of relying on model recall: the server-side chat route calls the CoinMarketCap MCP endpoint (stateless `tools/call`, configured in `.mcp.json` + `CMC_API_KEY`) for price/market context, then hands that context to the 0G Compute Router, which stays the sole reasoning path. Grounding is optional — an empty `CMC_API_KEY` disables it and Copilot falls back to its framework prompt.
+
 ### Agents
 
 `/agents` is the trading agent workspace. It covers:
@@ -324,6 +328,15 @@ OG_COMPUTE_VERIFY_TEE=false
 ```
 
 Use server-only secrets for Compute Router access. Do not expose them through `NEXT_PUBLIC_*`, logs, or browser storage.
+
+### Copilot Market Data (CoinMarketCap MCP)
+
+```env
+CMC_API_KEY=
+CMC_MCP_BASE_URL=https://mcp.coinmarketcap.com/mcp
+```
+
+Server-only, reused from the local CoinMarketCap MCP wiring in `.mcp.json`. The Copilot chat route calls this endpoint server-side to ground market-overview answers in live data before handing context to the 0G Compute Router. Leave `CMC_API_KEY` empty to disable grounding.
 
 ### 0G Storage
 
