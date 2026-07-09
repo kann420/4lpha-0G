@@ -9,6 +9,13 @@ export async function GET(request: Request) {
   const agentId = searchParams.get("agentId") ?? undefined;
   const live = isTruthy(searchParams.get("live"));
   const ownerAddress = readMainnetOwnerAddress(searchParams.get("ownerAddress"));
+  // The roster is scoped by ownerAddress. Without it, readAgentDeploymentRoster's
+  // filter is empty and matches every deployment across every owner (active AND
+  // removed) — this endpoint must never serve that unscoped roster to a caller
+  // that hasn't identified a wallet.
+  if (!ownerAddress) {
+    return NextResponse.json({ error: { code: "owner_required", message: "Connect a wallet to load its agent workspace." } }, { status: 400 });
+  }
   const workspace = await loadOgAgentWorkspace({ agentId, live, ownerAddress });
   return NextResponse.json({
     data: workspace,

@@ -14,14 +14,16 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/app/AppShell";
 import { VaultActionPanel } from "@/components/app/VaultActionPanel";
+import { VaultPocketsPanel } from "@/components/app/VaultPocketsPanel";
 import { useOgNetwork } from "@/components/app/useOgNetwork";
-import { useWalletPolicyVault } from "@/components/app/useWalletPolicyVault";
+import { useWalletPolicyVault, type V4MigrationResult } from "@/components/app/useWalletPolicyVault";
 import {
   getPolicyVaultReadiness,
   UNBOUNDED_POLICY_LIMIT,
   type PolicyVaultPolicy,
 } from "@/lib/contracts/policy-vault";
 import { CURATED_MAINNET_POLICY_VAULT_ROUTES } from "@/lib/contracts/curated-routes";
+import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import type { OgNetworkConfig } from "@/lib/types";
 import { formatUnits, parseEther, type Address } from "viem";
 import { useAccount, useBalance } from "wagmi";
@@ -83,6 +85,33 @@ export function VaultSurface() {
       enabled: walletVault.vaultAddress !== null,
     },
   });
+  const lpEntryBalance = useBalance({
+    address: walletVault.v4LpEntryAddress ?? undefined,
+    chainId: network.chainId,
+    query: { enabled: walletVault.v4LpEntryAddress !== null },
+  });
+  const lpExitBalance = useBalance({
+    address: walletVault.v4LpExitAddress ?? undefined,
+    chainId: network.chainId,
+    query: { enabled: walletVault.v4LpExitAddress !== null },
+  });
+  const isV4Vault =
+    walletVault.v4SwapAddress !== null &&
+    walletVault.v4LpEntryAddress !== null &&
+    walletVault.v4LpExitAddress !== null;
+  // M7 FIX: for V4 the "Vault 0G" tile must show the TOTAL across all three thirds
+  // (Swap/Trading + LP Entry + LP Exit), not just the Swap third.
+  const vaultBalanceData =
+    isV4Vault && vaultBalance.data
+      ? {
+          decimals: vaultBalance.data.decimals,
+          symbol: vaultBalance.data.symbol,
+          value:
+            vaultBalance.data.value +
+            (lpEntryBalance.data?.value ?? 0n) +
+            (lpExitBalance.data?.value ?? 0n),
+        }
+      : vaultBalance.data;
 
   function refreshBalances() {
     if (walletAccount.address !== undefined) {
@@ -91,7 +120,24 @@ export function VaultSurface() {
     if (walletVault.vaultAddress !== null) {
       void vaultBalance.refetch();
     }
+    if (walletVault.v4LpEntryAddress !== null) {
+      void lpEntryBalance.refetch();
+    }
+    if (walletVault.v4LpExitAddress !== null) {
+      void lpExitBalance.refetch();
+    }
   }
+
+  const hasRegisteredV4 =
+    walletVault.v4SwapAddress !== null &&
+    walletVault.v4LpEntryAddress !== null &&
+    walletVault.v4LpExitAddress !== null;
+  const showV4SetupPanel =
+    walletAccount.isConnected &&
+    network.id === "mainnet" &&
+    !hasRegisteredV4 &&
+    !walletVault.v4MigrationAvailable;
+  const showV4MigrationPanel = walletAccount.isConnected && network.id === "mainnet" && walletVault.v4MigrationAvailable;
 
   return (
     <AppShell network={network} networkId={networkId} onNetworkChange={setNetworkId}>
@@ -108,7 +154,7 @@ export function VaultSurface() {
                   loading: ownerBalance.isLoading,
                 })}
                 vaultBalanceLabel={readVaultBalanceLabel({
-                  balance: vaultBalance.data,
+                  balance: vaultBalanceData,
                   error: vaultBalance.isError,
                   loading: vaultBalance.isLoading,
                   vaultAddress: walletVault.vaultAddress,
@@ -125,10 +171,53 @@ export function VaultSurface() {
                 network={network}
                 onCreateVault={walletVault.createVault}
                 onRefreshVaultAddress={walletVault.refreshVaultAddress}
+                legacyCreateAvailable={network.id !== "mainnet"}
                 vaultAddress={walletVault.vaultAddress}
                 walletConnected={walletAccount.isConnected}
               />
             </div>
+            {isV4Vault && walletVault.v4SwapAddress && walletVault.v4LpEntryAddress ? (
+              <div className="animate-feed-reveal min-w-0" style={{ animationDelay: "150ms" }}>
+                <VaultPocketsPanel
+                  lpEntryVaultAddress={walletVault.v4LpEntryAddress}
+                  lpExitVaultAddress={walletVault.v4LpExitAddress}
+                  network={network}
+                  onVaultStateChange={refreshBalances}
+                  swapVaultAddress={walletVault.v4SwapAddress}
+                />
+              </div>
+            ) : null}
+            {showV4SetupPanel ? (
+              <div className="animate-feed-reveal min-w-0" style={{ animationDelay: "160ms" }}>
+                <VaultV4Panel
+                  disabled={walletVault.isCreating || walletVault.isDiscovering}
+                  network={network}
+                  onCreate={walletVault.createVaultV4}
+                  status={walletVault.statusText}
+                  v4LpEntryAddress={walletVault.v4LpEntryAddress}
+                  v4LpExitAddress={walletVault.v4LpExitAddress}
+                  v4MigrationAvailable={walletVault.v4MigrationAvailable}
+                  v4SwapAddress={walletVault.v4SwapAddress}
+                  walletConnected={walletAccount.isConnected}
+                />
+              </div>
+            ) : null}
+            {showV4MigrationPanel ? (
+              <div className="animate-feed-reveal min-w-0" style={{ animationDelay: "170ms" }}>
+                <VaultV4OneButtonMigrationPanel
+                  disabled={
+                    walletVault.isMigratingToV4 ||
+                    walletVault.isCreating ||
+                    walletVault.isDiscovering
+                  }
+                  error={walletVault.v4MigrateError}
+                  migrate={walletVault.migrateToV4}
+                  network={network}
+                  result={walletVault.v4MigrateResult}
+                  status={walletVault.statusText}
+                />
+              </div>
+            ) : null}
             {walletVault.migrationRequired ? (
               <div className="animate-feed-reveal min-w-0" style={{ animationDelay: "180ms" }}>
                 <VaultMigrationPanel
@@ -159,6 +248,8 @@ export function VaultSurface() {
             factoryAddress={walletVault.factoryAddress}
             isCreatingVault={walletVault.isCreating}
             isDiscoveringVault={walletVault.isDiscovering}
+            lpEntryVaultAddress={walletVault.v4LpEntryAddress}
+            lpExitVaultAddress={walletVault.v4LpExitAddress}
             network={network}
             onRefreshVaultAddress={walletVault.refreshVaultAddress}
             onVaultStateChange={refreshBalances}
@@ -281,6 +372,7 @@ function FundManualDepositPanel({
   factoryAddress,
   isCreatingVault,
   isDiscoveringVault,
+  legacyCreateAvailable,
   network,
   onCreateVault,
   onRefreshVaultAddress,
@@ -292,6 +384,7 @@ function FundManualDepositPanel({
   factoryAddress: Address | null;
   isCreatingVault: boolean;
   isDiscoveringVault: boolean;
+  legacyCreateAvailable: boolean;
   network: OgNetworkConfig;
   onCreateVault: (policy?: PolicyVaultPolicy) => Promise<void>;
   onRefreshVaultAddress: () => Promise<void>;
@@ -304,6 +397,7 @@ function FundManualDepositPanel({
   const policyDraft = buildPolicyFromSelection(policyMode, customPolicyForm);
   const displayedPolicyError = policyDraft.ok ? policyError : policyDraft.error;
   const createVaultDisabled =
+    !legacyCreateAvailable ||
     !creationReady ||
     factoryAddress === null ||
     !walletConnected ||
@@ -314,6 +408,7 @@ function FundManualDepositPanel({
   async function copyVaultAddress() {
     if (vaultAddress !== null) {
       await navigator.clipboard.writeText(vaultAddress);
+      dispatchSigmaPetReaction("vault.refresh");
     }
   }
 
@@ -324,7 +419,9 @@ function FundManualDepositPanel({
     }
 
     setPolicyError(null);
+    dispatchSigmaPetReaction("vault.create.start", { force: true });
     await onCreateVault(policyDraft.policy);
+    dispatchSigmaPetReaction("vault.create.success", { force: true });
   }
 
   return (
@@ -343,7 +440,10 @@ function FundManualDepositPanel({
         </div>
         <button
           type="button"
-          onClick={() => void onRefreshVaultAddress()}
+          onClick={() => {
+            dispatchSigmaPetReaction("vault.refresh", { force: true });
+            void onRefreshVaultAddress();
+          }}
           className="inline-flex h-11 items-center gap-2 rounded-full border border-line bg-panel px-3 text-sm text-foreground transition-colors hover:bg-panel-strong"
         >
           <RefreshCcw className="h-4 w-4" />
@@ -375,12 +475,20 @@ function FundManualDepositPanel({
             <div className="flex min-w-0 items-start gap-3">
               <AlertTriangle className="mt-1 h-4 w-4 shrink-0" />
               <div className="min-w-0">
-                <p>Create a wallet vault from the factory before funding controls are enabled.</p>
+                <p>
+                  {legacyCreateAvailable
+                    ? "Create a wallet vault from the factory before funding controls are enabled."
+                    : "Create a V4 Policy Vault before funding controls are enabled."}
+                </p>
                 <p className="mt-1 text-xs text-amber/70">
-                  {creationReady ? "No deployed vault address is configured." : creationStatus}
+                  {legacyCreateAvailable
+                    ? (creationReady ? "No deployed vault address is configured." : creationStatus)
+                    : "No V4 vault is registered for this wallet yet."}
                 </p>
               </div>
             </div>
+            {legacyCreateAvailable ? (
+              <>
             <div className="rounded-card border border-line bg-background/20 p-3">
               <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
                 <div>
@@ -493,6 +601,8 @@ function FundManualDepositPanel({
                 {isCreatingVault ? "Creating Vault" : "Create Wallet Vault"}
               </button>
             </div>
+              </>
+            ) : null}
           </div>
         </div>
       ) : (
@@ -611,11 +721,154 @@ function VaultMigrationPanel({
         <button
           type="button"
           disabled={disabled}
-          onClick={() => void onMigrate()}
+          onClick={() => {
+            dispatchSigmaPetReaction("vault.migrate.start", { force: true });
+            void onMigrate()
+              .then(() => dispatchSigmaPetReaction("vault.migrate.success", { force: true }))
+              .catch(() => undefined);
+          }}
           className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full border border-amber/20 bg-amber/[0.1] px-4 text-sm font-semibold text-amber transition hover:bg-amber/[0.16] disabled:cursor-not-allowed disabled:opacity-60"
         >
           {disabled ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
           Migrate vault
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function VaultV4Panel({
+  disabled,
+  network,
+  onCreate,
+  status,
+  v4LpEntryAddress,
+  v4LpExitAddress,
+  v4MigrationAvailable,
+  v4SwapAddress,
+  walletConnected,
+}: {
+  disabled: boolean;
+  network: OgNetworkConfig;
+  onCreate: () => Promise<void>;
+  status: string;
+  v4LpEntryAddress: Address | null;
+  v4LpExitAddress: Address | null;
+  v4MigrationAvailable: boolean;
+  v4SwapAddress: Address | null;
+  walletConnected: boolean;
+}) {
+  const hasV4 = v4SwapAddress !== null && v4LpEntryAddress !== null && v4LpExitAddress !== null;
+  const createDisabled = disabled || !walletConnected || network.id !== "mainnet" || hasV4;
+
+  return (
+    <section className="rounded-card border border-line bg-panel-solid-strong p-5">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <ShieldCheck className="h-4 w-4 text-green" />
+            V4 Policy Vault
+          </div>
+          <p className="mt-2 text-sm leading-6 text-muted">
+            Three owner-deployed vault thirds are resolved through VaultRegistryV4: Swap, LP Entry, and LP Exit.
+          </p>
+          <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
+            <V4AddressTile label="Swap" value={v4SwapAddress} />
+            <V4AddressTile label="LP Entry" value={v4LpEntryAddress} />
+            <V4AddressTile label="LP Exit" value={v4LpExitAddress} />
+          </div>
+          {v4MigrationAvailable ? (
+            <p className="mt-3 text-xs leading-5 text-amber">
+              Legacy vault state detected. Create the V4 trio before migrating funds or LP custody.
+            </p>
+          ) : null}
+          <p className="mt-3 text-xs leading-5 text-muted">{status}</p>
+        </div>
+        <button
+          type="button"
+          disabled={createDisabled}
+          onClick={() => {
+            dispatchSigmaPetReaction("vault.create.start", { force: true });
+            void onCreate()
+              .then(() => dispatchSigmaPetReaction("vault.create.success", { force: true }))
+              .catch(() => undefined);
+          }}
+          className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full border border-green/20 bg-green/[0.1] px-4 text-sm font-semibold text-green transition hover:bg-green/[0.16] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {disabled ? <Loader2 className="h-4 w-4 animate-spin" /> : <WalletCards className="h-4 w-4" />}
+          {hasV4 ? "V4 registered" : "Create V4 Vault"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function V4AddressTile({ label, value }: { label: string; value: Address | null }) {
+  return (
+    <div className="min-w-0 rounded-tile border border-line bg-panel px-3 py-2">
+      <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-muted">{label}</p>
+      <p className="mt-1 truncate font-mono text-[11px] text-foreground" title={value ?? "Not registered"}>
+        {value ?? "Not registered"}
+      </p>
+    </div>
+  );
+}
+
+function VaultV4OneButtonMigrationPanel({
+  disabled,
+  error,
+  migrate,
+  network,
+  result,
+  status,
+}: {
+  disabled: boolean;
+  error: string | null;
+  migrate: () => Promise<void>;
+  network: OgNetworkConfig;
+  result: V4MigrationResult | null;
+  status: string;
+}) {
+  const busy = disabled;
+  return (
+    <section className="rounded-card border border-amber/20 bg-amber/[0.06] p-5">
+      <div className="flex items-center gap-2 text-sm font-semibold text-amber">
+        <ShieldCheck className="h-4 w-4" />
+        Migrate to V4
+      </div>
+      <p className="mt-2 text-sm leading-6 text-muted">
+        Create or reuse your wallet-owned V4 trio, preserve V3 LP NFTs when present, move native 0G into V4 Swap, and
+        activate V4 through VaultRegistryV4.
+      </p>
+
+      {result ? (
+        <p className="mt-3 break-words rounded-card border border-green/20 bg-green/[0.06] p-3 text-xs leading-5 text-green">
+          V4 migration complete for {result.oldVault}. Re-pointed agents: {result.repointedAgents?.length ?? 0}.
+          Source retired: {result.retired ? "yes" : "no"}.
+        </p>
+      ) : null}
+
+      {error ? (
+        <p className="mt-3 break-words rounded-card border border-red/20 bg-red/[0.06] p-3 text-xs leading-5 text-red">
+          {error}
+        </p>
+      ) : null}
+
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-xs leading-5 text-muted">{status}</p>
+        <button
+          type="button"
+          disabled={busy || network.id !== "mainnet"}
+          onClick={() => {
+            dispatchSigmaPetReaction("vault.migrate.start", { force: true });
+            void migrate()
+              .then(() => dispatchSigmaPetReaction("vault.migrate.success", { force: true }))
+              .catch(() => undefined);
+          }}
+          className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full border border-green/20 bg-green/[0.1] px-4 text-sm font-semibold text-green transition hover:bg-green/[0.16] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <WalletCards className="h-4 w-4" />}
+          Migrate to V4
         </button>
       </div>
     </section>
@@ -652,7 +905,12 @@ function VaultV3MigrationPanel({
         <button
           type="button"
           disabled={disabled}
-          onClick={() => void onMigrate()}
+          onClick={() => {
+            dispatchSigmaPetReaction("vault.migrate.start", { force: true });
+            void onMigrate()
+              .then(() => dispatchSigmaPetReaction("vault.migrate.success", { force: true }))
+              .catch(() => undefined);
+          }}
           className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full border border-amber/20 bg-amber/[0.1] px-4 text-sm font-semibold text-amber transition hover:bg-amber/[0.16] disabled:cursor-not-allowed disabled:opacity-60"
         >
           {disabled ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
@@ -663,6 +921,101 @@ function VaultV3MigrationPanel({
   );
 }
 
+/*
+function VaultV3UnlimitedPanel({
+  currentVaultAddress,
+  disabled,
+  error,
+  onMigrate,
+  result,
+  status,
+}: {
+  currentVaultAddress: Address;
+  disabled: boolean;
+  error: string | null;
+  onMigrate: () => Promise<void>;
+  result: {
+    newVault: Address;
+    withdrawnAmount0G: string;
+    depositAmount0G: string;
+    migratedAgents: string[];
+    restartRequired: boolean;
+    envLocalUpdated: boolean;
+  } | null;
+  status: string;
+}) {
+  const [confirmed, setConfirmed] = useState(false);
+  const busy = disabled;
+  return (
+    <section className="rounded-card border border-amber/20 bg-amber/[0.06] p-5">
+      <div className="flex items-center gap-2 text-sm font-semibold text-amber">
+        <AlertTriangle className="h-4 w-4" />
+        Redeploy Policy Vault (unlimited caps)
+      </div>
+      <p className="mt-2 text-sm leading-6 text-muted">
+        Deploys a <span className="text-foreground">new</span> Policy Vault with effectively-unlimited caps (1M 0G per-action +
+        daily, unbounded LP exposure), moves <span className="text-foreground">all</span> native 0G from the current vault,
+        re-points <span className="text-foreground">all</span> your agents at it, and updates <code className="font-mono text-[11px]">.env.local</code>.
+        Real gas — the deployer pays. Use this to abandon a vault that was tightened on-chain (tighten is irreversible).
+      </p>
+      <p className="mt-2 break-all font-mono text-[11px] leading-5 text-muted">
+        Current vault: {currentVaultAddress}
+      </p>
+      <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs leading-5 text-muted">
+        <input
+          type="checkbox"
+          checked={confirmed}
+          disabled={busy}
+          onChange={(event) => setConfirmed(event.target.checked)}
+          className="mt-0.5 h-4 w-4 shrink-0 accent-amber"
+        />
+        <span>
+          I understand this deploys a new on-chain vault, moves real funds from the current vault, re-points all agents,
+          and that I must <span className="text-foreground">restart the dev server</span> afterward so the autonomous worker
+          uses the new vault.
+        </span>
+      </label>
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-xs leading-5 text-muted">{status}</p>
+        <button
+          type="button"
+          disabled={busy || !confirmed}
+          onClick={() => void onMigrate()}
+          className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full border border-amber/20 bg-amber/[0.1] px-4 text-sm font-semibold text-amber transition hover:bg-amber/[0.16] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+          Migrate to new vault
+        </button>
+      </div>
+      {error ? (
+        <p className="mt-3 break-words rounded-card border border-red/20 bg-red/[0.06] p-3 text-xs leading-5 text-red">
+          {error}
+        </p>
+      ) : null}
+      {result ? (
+        <div className="mt-3 rounded-card border border-green/20 bg-green/[0.06] p-3 text-xs leading-5 text-muted">
+          <div className="flex items-center gap-2 font-semibold text-green">
+            <CheckCircle2 className="h-4 w-4" />
+            Migration complete
+          </div>
+          <p className="mt-2 break-all font-mono text-[11px] leading-5">New vault: {result.newVault}</p>
+          <p className="mt-1">
+            Moved {result.withdrawnAmount0G} 0G (deposited {result.depositAmount0G} 0G after gas reserve). Re-pointed{" "}
+            {result.migratedAgents.length} agent{result.migratedAgents.length === 1 ? "" : "s"}.
+          </p>
+          {result.envLocalUpdated ? (
+            <p className="mt-1">.env.local updated (backup at .env.local.bak).</p>
+          ) : null}
+          <p className="mt-2 font-semibold text-amber">
+            Restart the dev server so the autonomous worker reads the new vault&apos;s policy.
+          </p>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+*/
 function PolicyPreview({ policy }: { policy: PolicyVaultPolicy }) {
   const rows = [
     { label: "Per trade", value: formatPolicyLimit(policy.perTradeCap0G) },

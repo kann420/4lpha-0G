@@ -60,7 +60,7 @@ export async function withdrawMainnetVaultNative(input: {
     );
   }
 
-  const vault = await resolveMainnetV3VaultForOwner(input.owner);
+  const vault = await resolveMainnetV3VaultForOwner(input.owner, publicClient);
   if (!vault) {
     throw new OgAgentDeployError(
       "No V3 Policy Vault is registered for this owner. Run npm run vault:mainnet:create:v3 first.",

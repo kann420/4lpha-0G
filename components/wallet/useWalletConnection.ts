@@ -37,6 +37,11 @@ export function useWalletConnection(targetNetworkId: OgNetworkId = DEFAULT_OG_NE
     disconnect: disconnect.disconnect,
     isConnected: account.isConnected,
     isConnecting: connect.isPending,
+    // True only while wagmi is rehydrating a previously-connected wallet on
+    // mount. Callers that gate an initial fetch on `address` should wait for
+    // this to clear first, otherwise they fire once with no address and
+    // again moments later once wagmi finishes reconnecting.
+    isReconnecting: account.status === "reconnecting",
     isSwitchingChain: switchChain.isPending,
     isWrongChain,
     maskedAddress,

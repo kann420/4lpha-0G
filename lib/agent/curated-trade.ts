@@ -35,6 +35,8 @@ import {
   policyVaultV2TradeAbi,
   type PolicyVaultPolicy,
 } from "@/lib/contracts/policy-vault";
+import { policyVaultV4SwapAbi } from "@/lib/contracts/policy-vault-v4";
+import { makeMainnetTransport } from "@/lib/og/mainnet-rpc";
 import { uploadBytesTo0GStorage } from "@/lib/og/storage-upload";
 import { proofRegistryAbi as PROOF_REGISTRY_ABI } from "@/lib/contracts/proof-registry-abi";
 
@@ -273,7 +275,8 @@ export async function executeCuratedTrade(input: CuratedTradeExecutionInput): Pr
     throw new Error("Vault policy hash was not available for the trade proof.");
   }
 
-  await assertVaultCanUseRuntime(runtime, vaultAddress, executorAccount.address, proofAccount.address);
+  const isV4Swap = await isV4SwapVault(runtime, vaultAddress);
+  await assertVaultCanUseRuntime(runtime, vaultAddress, executorAccount.address, proofAccount.address, isV4Swap);
 
   const block = await runtime.publicClient.getBlock();
   const deadlineWindow = BigInt(quote.deadlineSeconds);
@@ -282,14 +285,29 @@ export async function executeCuratedTrade(input: CuratedTradeExecutionInput): Pr
   const tokenIn = input.side === "buy" ? zeroAddress : route.tokenOut;
   const tokenOut = input.side === "buy" ? route.tokenOut : zeroAddress;
   const agentKey = input.agentKey;
-  const supportsAgentKeys = await vaultSupportsAgentKeys(runtime, vaultAddress);
-  if (supportsAgentKeys && agentKey === undefined) {
-    throw new Error("PolicyVaultV2 execution requires an agent key.");
+  // V4 Swap always requires an enabled agent key. Legacy vaults keep the V2 probe.
+  let includeAgentKey: boolean;
+  if (isV4Swap) {
+    if (agentKey === undefined) {
+      throw new Error("V4 Swap execution requires an agent key.");
+    }
+    if (!(await isAgentKeyEnabled(runtime, vaultAddress, agentKey))) {
+      throw new Error("V4 agent key is not enabled for this agent.");
+    }
+    includeAgentKey = true;
+  } else {
+    const supportsAgentKeys = await vaultSupportsAgentKeys(runtime, vaultAddress);
+    if (supportsAgentKeys && agentKey === undefined) {
+      throw new Error("PolicyVaultV2 execution requires an agent key.");
+    }
+    const isV2 = agentKey !== undefined ? await isAgentKeyEnabled(runtime, vaultAddress, agentKey) : false;
+    if (agentKey !== undefined && !isV2) {
+      throw new Error("PolicyVaultV2 agent key is not enabled for this agent.");
+    }
+    includeAgentKey = isV2;
   }
-  const isV2 = agentKey !== undefined ? await isAgentKeyEnabled(runtime, vaultAddress, agentKey) : false;
-  if (agentKey !== undefined && !isV2) {
-    throw new Error("PolicyVaultV2 agent key is not enabled for this agent.");
-  }
+  const tradeAbi = isV4Swap ? (policyVaultV4SwapAbi as Abi) : tradeAbiForVersion(includeAgentKey);
+  const actionHashAbi = isV4Swap ? (policyVaultV4SwapAbi as Abi) : (policyVaultAbi as Abi);
 
   const agentRef = input.agentRef ?? AGENT_REF;
   const baseAudit = {
@@ -310,7 +328,7 @@ export async function executeCuratedTrade(input: CuratedTradeExecutionInput): Pr
     minOutBps: quote.minOutBps,
     policySnapshotHash,
     copilotAudit: input.copilotAudit,
-    ...(isV2 ? { agentKey } : {}),
+    ...(includeAgentKey ? { agentKey } : {}),
   };
   const storage = await uploadTradeAudit(baseAudit);
 
@@ -321,7 +339,7 @@ export async function executeCuratedTrade(input: CuratedTradeExecutionInput): Pr
     auditRoot: storage.auditRoot,
     deadline,
     nonce,
-    ...(isV2 ? { agentKey } : {}),
+    ...(includeAgentKey ? { agentKey } : {}),
     policySnapshotHash,
     poolId: quote.route.id,
     quotedAmountOut: BigInt(quote.quotedAmountOut),
@@ -331,13 +349,13 @@ export async function executeCuratedTrade(input: CuratedTradeExecutionInput): Pr
   };
   const vaultActionHash = await runtime.publicClient.readContract({
     address: vaultAddress,
-    abi: tradeAbiForVersion(isV2),
+    abi: tradeAbi,
     functionName: "vaultActionHashFor",
     args: [input.side === "buy", draftRequest],
   }) as Hex;
   const actionHash = await runtime.publicClient.readContract({
     address: vaultAddress,
-    abi: policyVaultAbi,
+    abi: actionHashAbi,
     functionName: "actionHashFor",
     args: [vaultActionHash, storage.auditRoot, policySnapshotHash],
   }) as Hex;
@@ -370,7 +388,7 @@ export async function executeCuratedTrade(input: CuratedTradeExecutionInput): Pr
   const tradeSimulation = await runtime.publicClient.simulateContract({
     account: executorAccount.address,
     address: vaultAddress,
-    abi: tradeAbiForVersion(isV2),
+    abi: tradeAbi,
     functionName,
     args: [tradeRequest],
   });
@@ -478,7 +496,11 @@ function resolveMainnetRuntime() {
   requireMainnetFlags();
   const rpcUrl = requireEnv("OG_RPC_URL");
   const chain = make0GMainnetChain(rpcUrl);
-  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
+  // Prefer quiknode with public fallback and batch read bursts to stay under
+  // quiknode's ~15 req/s ceiling (see makeMainnetTransport). Vault-state reads
+  // (readVaultState) fire ~11 calls at once; batching collapses them so the
+  // trade quote does not 429.
+  const publicClient = createPublicClient({ chain, transport: makeMainnetTransport() });
   const factory = getLatestPolicyVaultFactoryVersion("mainnet");
   if (!factory) {
     throw new Error("Missing mainnet Policy Vault factory configuration.");
@@ -624,13 +646,7 @@ async function readTokenMeta(runtime: Runtime, token: Address): Promise<{ decima
   };
 }
 
-async function readVaultState(
-  runtime: Runtime,
-  vault: Address,
-  route: CuratedPolicyVaultRoute,
-  side: CuratedTradeSide,
-  amountIn: bigint,
-): Promise<{
+interface VaultTradeState {
   dailySpent0G: bigint;
   dailyWindowStart: bigint;
   lastTradeAt: bigint;
@@ -640,7 +656,90 @@ async function readVaultState(
   policy: PolicyVaultPolicy;
   policySnapshotHash: Hex;
   warnings: string[];
-}> {
+}
+
+// Detects whether `vault` is a V4 Swap third (exposes swapAdapter()) vs a legacy
+// V2/V3 vault (exposes adapter()), then reads state with the matching ABI. The
+// V4 Swap vault renamed adapter()->swapAdapter() and dropped the allowlist/window
+// getters, so reading it with the legacy ABI reverts (adapter()) and forces every
+// route into a permanent hold. Self-detecting keeps every caller correct.
+async function readVaultState(
+  runtime: Runtime,
+  vault: Address,
+  route: CuratedPolicyVaultRoute,
+  side: CuratedTradeSide,
+  amountIn: bigint,
+): Promise<VaultTradeState> {
+  const swapAdapter = (await runtime.publicClient
+    .readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "swapAdapter" })
+    .catch(() => null)) as Address | null;
+  if (swapAdapter) {
+    return readV4SwapVaultState(runtime, vault, side, amountIn, swapAdapter);
+  }
+  return readLegacyVaultState(runtime, vault, route, side, amountIn);
+}
+
+// V4 Swap third: fewer getters than V3. Token/pool allowlist is enforced on-chain
+// inside buy()/sell() (no public getter), so allowlist warnings are omitted here
+// and surfaced by the execution simulate (NotAllowed) before any spend. minOut and
+// caps come from the swap Policy struct, which is field-compatible with PolicyVaultPolicy.
+async function readV4SwapVaultState(
+  runtime: Runtime,
+  vault: Address,
+  side: CuratedTradeSide,
+  amountIn: bigint,
+  swapAdapter: Address,
+): Promise<VaultTradeState> {
+  const [block, owner, executor, proofRegistry, paused, executorRevoked, policySnapshotHash, rawPolicy, nativeBalance, dailySpent0G, openExposure0G] =
+    await Promise.all([
+      runtime.publicClient.getBlock(),
+      runtime.publicClient.readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "owner" }) as Promise<Address>,
+      runtime.publicClient.readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "executor" }) as Promise<Address>,
+      runtime.publicClient.readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "proofRegistry" }) as Promise<Address>,
+      runtime.publicClient.readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "paused" }) as Promise<boolean>,
+      runtime.publicClient.readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "executorRevoked" }) as Promise<boolean>,
+      runtime.publicClient.readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "policyHash" }) as Promise<Hex>,
+      runtime.publicClient.readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "policy" }),
+      runtime.publicClient.getBalance({ address: vault }),
+      runtime.publicClient.readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "dailySpent0G" }) as Promise<bigint>,
+      runtime.publicClient.readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "openExposure0G" }) as Promise<bigint>,
+    ]);
+
+  const warnings: string[] = [];
+  const policy = normalizePolicy(rawPolicy);
+  if (!owner || owner === zeroAddress) warnings.push("Vault owner could not be resolved.");
+  if (executor.toLowerCase() !== runtime.executor.toLowerCase()) warnings.push("Vault executor does not match server executor.");
+  if (swapAdapter.toLowerCase() !== runtime.adapter.toLowerCase()) warnings.push("Vault adapter is not the curated route adapter.");
+  if (proofRegistry.toLowerCase() !== runtime.proofRegistry.toLowerCase()) warnings.push("Vault proof registry does not match server config.");
+  if (paused) warnings.push("Vault is paused.");
+  if (executorRevoked) warnings.push("Vault executor is revoked.");
+  if (side === "buy") {
+    // V4 Swap has no dailyWindowStart getter; pass the current block timestamp as
+    // the window start so recorded dailySpent0G is always treated as in-window
+    // (conservative — never under-counts). The vault re-enforces the true window.
+    warnings.push(...validateBuySpendReadiness({ amountIn, blockTimestamp: block.timestamp, dailySpent0G, dailyWindowStart: block.timestamp, lastTradeAt: 0n, nativeBalance, openExposure0G, policy }));
+  }
+
+  return {
+    dailySpent0G,
+    dailyWindowStart: block.timestamp,
+    lastTradeAt: 0n,
+    minOutBps: policy.defaultMinOutBps,
+    nativeBalance,
+    openExposure0G,
+    policy,
+    policySnapshotHash,
+    warnings,
+  };
+}
+
+async function readLegacyVaultState(
+  runtime: Runtime,
+  vault: Address,
+  route: CuratedPolicyVaultRoute,
+  side: CuratedTradeSide,
+  amountIn: bigint,
+): Promise<VaultTradeState> {
   const tokenIn = side === "buy" ? zeroAddress : route.tokenOut;
   const tokenOut = side === "buy" ? route.tokenOut : zeroAddress;
   const [
@@ -751,11 +850,27 @@ function validateBuySpendReadiness({
   return warnings;
 }
 
-async function assertVaultCanUseRuntime(runtime: Runtime, vault: Address, executor: Address, proofOwner: Address) {
+// Detects a V4 Swap third (swapAdapter() exists) vs a legacy V2/V3 vault (adapter()).
+async function isV4SwapVault(runtime: Runtime, vault: Address): Promise<boolean> {
+  return runtime.publicClient
+    .readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "swapAdapter" })
+    .then(() => true, () => false);
+}
+
+async function assertVaultCanUseRuntime(runtime: Runtime, vault: Address, executor: Address, proofOwner: Address, isV4Swap: boolean) {
+  const adapterRead = isV4Swap
+    ? runtime.publicClient.readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "swapAdapter" })
+    : runtime.publicClient.readContract({ address: vault, abi: policyVaultAbi, functionName: "adapter" });
+  const executorRead = isV4Swap
+    ? runtime.publicClient.readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "executor" })
+    : runtime.publicClient.readContract({ address: vault, abi: policyVaultAbi, functionName: "executor" });
+  const proofRegistryRead = isV4Swap
+    ? runtime.publicClient.readContract({ address: vault, abi: policyVaultV4SwapAbi, functionName: "proofRegistry" })
+    : runtime.publicClient.readContract({ address: vault, abi: policyVaultAbi, functionName: "proofRegistry" });
   const [vaultExecutor, vaultAdapter, vaultProofRegistry, registryOwner] = await Promise.all([
-    runtime.publicClient.readContract({ address: vault, abi: policyVaultAbi, functionName: "executor" }),
-    runtime.publicClient.readContract({ address: vault, abi: policyVaultAbi, functionName: "adapter" }),
-    runtime.publicClient.readContract({ address: vault, abi: policyVaultAbi, functionName: "proofRegistry" }),
+    executorRead,
+    adapterRead,
+    proofRegistryRead,
     runtime.publicClient.readContract({ address: runtime.proofRegistry, abi: proofRegistryAbi, functionName: "owner" }),
   ]);
 

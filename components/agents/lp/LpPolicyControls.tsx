@@ -7,6 +7,7 @@ import { AutomationModuleCard } from "@/components/agents/lp/AutomationModuleCar
 import { LpAutoMintToggle } from "@/components/agents/lp/LpAutoMintToggle";
 import { LpStatusPill } from "@/components/agents/lp/LpStatusPill";
 import type { OgAgentLogEntry } from "@/lib/agent/single-agent";
+import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 
 // Right column — Automation Controls (collapsible, default collapsed) + the
 // Agent log (moved here from the center column so it sits below the automation
@@ -74,7 +75,10 @@ export function LpPolicyControls({
       <div className="rounded-card border border-line bg-panel-solid-strong p-4">
         <button
           type="button"
-          onClick={() => setAutomationOpen((v) => !v)}
+          onClick={() => {
+            dispatchSigmaPetReaction("lp.create.form");
+            setAutomationOpen((v) => !v);
+          }}
           aria-expanded={automationOpen}
           className="flex w-full items-center justify-between gap-3 text-left"
         >
@@ -94,7 +98,10 @@ export function LpPolicyControls({
                 <button
                   key={tab.key}
                   type="button"
-                  onClick={() => setActive(tab.key)}
+                  onClick={() => {
+                    dispatchSigmaPetReaction("lp.create.form");
+                    setActive(tab.key);
+                  }}
                   aria-pressed={active === tab.key}
                   className={`flex min-w-0 items-center gap-2 rounded-tile border px-2.5 py-2 text-left text-xs font-semibold transition-colors ${
                     active === tab.key ? "border-primary/50 bg-primary/10 text-primary" : "border-line bg-panel text-muted hover:border-line-strong"

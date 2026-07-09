@@ -7,6 +7,7 @@ import type { Address } from "viem";
 
 import { requestActionConsentNonce } from "@/components/agents/lp/actionConsentNonce";
 import { useOgNetwork } from "@/components/app/useOgNetwork";
+import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import { buildCopilotActionConsentMessage } from "@/lib/copilot/wallet-access";
 
 interface MintDefaults {
@@ -131,6 +132,7 @@ export function LpManualMintDialog({
     }
     setError(null);
     setPending(true);
+    dispatchSigmaPetReaction("lp.mint.start", { force: true });
     try {
       const { nonce, expiresAt } = await requestActionConsentNonce("lp-mint", address);
       const message = buildCopilotActionConsentMessage({
@@ -147,6 +149,7 @@ export function LpManualMintDialog({
         nonce,
         expiresAt,
       });
+      dispatchSigmaPetReaction("wallet.signature.pending", { force: true });
       const signature = await signMessage.signMessageAsync({ message });
       const response = await fetch(`/api/agents/lp/${agentId}/mint`, {
         method: "POST",
@@ -169,11 +172,13 @@ export function LpManualMintDialog({
         const code = json.error?.code ?? "mint_failed";
         const message = json.error?.message ?? "Manual mint failed.";
         setError(`${code}: ${message}`);
+        dispatchSigmaPetReaction("lp.mint.fail", { force: true });
         return;
       }
       onSuccess(json.data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign or request failed.");
+      dispatchSigmaPetReaction("lp.mint.fail", { force: true });
     } finally {
       setPending(false);
     }

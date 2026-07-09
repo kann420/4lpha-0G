@@ -12,6 +12,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { AGENT_TRADE_ROUTES } from "@/lib/agent/trade-catalog";
+import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import type {
   AgentTradePreview,
   AgentTradeResponse,
@@ -92,9 +93,11 @@ function AgentRouteTradePanelBody({
       if (intent === "preview") {
         setIsPreviewing(true);
         setStatusText("Fetching server route quote.");
+        dispatchSigmaPetReaction("trade.quote.start", { force: true });
       } else {
         setIsExecuting(true);
         setStatusText("Sending trade request to server executor route.");
+        dispatchSigmaPetReaction("trade.execute.start", { force: true });
       }
 
       try {
@@ -131,16 +134,22 @@ function AgentRouteTradePanelBody({
               ? execution.reason ?? "Trade blocked by server policy."
               : execution.reason ?? "Trade request accepted by server route.",
           );
+          dispatchSigmaPetReaction(
+            execution.status === "blocked" ? "chat.trade-blocked" : "chat.trade-submitted",
+            { force: true },
+          );
         } else {
           setStatusText(
             payload.data.preview.proofBundle.policyDecision === "allow"
               ? "Quote and proof bundle ready."
               : "Quote preview requires review before execution.",
           );
+          dispatchSigmaPetReaction("trade.quote.ready", { force: true });
         }
       } catch (error) {
         setPreview(null);
         onPreviewChange?.(null);
+        dispatchSigmaPetReaction("chat.trade-failed", { force: true });
         setStatusText(error instanceof Error ? error.message : "Agent trade route failed.");
       } finally {
         setIsPreviewing(false);

@@ -56,6 +56,10 @@ export interface OgAgentDeploymentRecord {
   // above is the V3 singleton the agent now trades through.
   migratedFromVault?: Address;
   migratedAt?: string;
+  vaultVersion?: number;
+  v4SwapVault?: Address;
+  v4LpEntryVault?: Address;
+  v4LpExitVault?: Address;
 }
 
 export interface OgRemovedAgentRecord extends OgAgentDeploymentRecord {
@@ -70,6 +74,13 @@ export interface OgAgentRuntimeSettings {
   maxCapitalPerTrade0G?: string;
   maxHoldingMinutes: number;
   maxPositions: number;
+  minAprPct?: number;
+  maxAprPct?: number | null;
+  // Agent-enforced per-position cap (create-form "Max 0G/position"). The brain
+  // clamps each mint's amount0G to this value server-side; the vault is NOT
+  // tightened — the owner's on-chain caps stay as the hard backstop. Decimal
+  // string (0G, not wei).
+  maxPerPosition0G?: string;
   signalConfidence: number;
   slippageBps: number;
   // LP automation. autoMint=true opts the agent into the autonomous LP mint
@@ -138,8 +149,14 @@ export interface OgAgentVaultSnapshot {
   sellablePositions?: OgAgentVaultPosition[];
   vault?: Address;
   vaultVersion?: number;
+  v4SwapVault?: Address;
+  v4LpEntryVault?: Address;
+  v4LpExitVault?: Address;
+  v4SwapBalance0G?: string;
+  v4LpEntryBalance0G?: string;
+  v4LpExitBalance0G?: string;
   warnings: string[];
-  // V3-only LP fields. Present when vaultVersion >= 3 and the vault has an LP adapter.
+  // LP fields. Present when vaultVersion >= 3 and the resolved vault has an LP adapter.
   lpAdapter?: Address;
   lpPolicy?: {
     perLpActionCap0G: string;
@@ -150,8 +167,8 @@ export interface OgAgentVaultSnapshot {
     minLiquidityFloor: string;
     allowStaking: boolean;
     lpMaxPositions?: number;
-    // Max 0G the agent may deploy into a SINGLE LP NFT (vault-enforced per-position cap).
-    // Total exposure is bounded by the vault balance; this caps each individual position.
+    // Vault-wide per-action ceiling. Agent-level Max 0G/position lives in
+    // deployment.runtime.maxPerPosition0G and may be stricter.
     lpMaxPerPosition0G?: string;
   };
   lpDailySpent0G?: string;
@@ -167,6 +184,9 @@ export interface OgAgentVaultPosition {
   routeId: Hex;
   symbol: string;
   tokenAddress: Address;
+  // Absolute https logo URL for the position avatar, or null when Zia has no
+  // usable logo for that token (falls back to an initials avatar in the UI).
+  logoUrl?: string | null;
 }
 
 export interface OgAgentVaultLpPosition {
@@ -184,6 +204,10 @@ export interface OgAgentVaultLpPosition {
   // read). All optional — when absent the UI shows "—" rather than fake numbers.
   token0Symbol?: string;
   token1Symbol?: string;
+  // Absolute https logo URL for the pair icon, or null when Zia has no usable
+  // logo for that token (falls back to an initials avatar in the UI).
+  token0LogoUrl?: string | null;
+  token1LogoUrl?: string | null;
   token0Decimals?: number;
   token1Decimals?: number;
   // Human-readable leg amounts from getAmountsForLiquidity (decimal string).

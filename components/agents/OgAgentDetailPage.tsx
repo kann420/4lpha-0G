@@ -37,10 +37,13 @@ import {
 import { AppShell } from "@/components/app/AppShell";
 import { useOgNetwork } from "@/components/app/useOgNetwork";
 import { AgentEmptyState, shortHash } from "@/components/agents/OgAgentWorkspace";
+import { TokenAvatar } from "@/components/agents/TokenAvatar";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { WalletConnectButton } from "@/components/wallet";
 import { useWalletConnection } from "@/components/wallet/useWalletConnection";
 import { AGENT_TRADE_ROUTES } from "@/lib/agent/trade-catalog";
 import { policyVaultAgentKeyAbi } from "@/lib/contracts/policy-vault";
+import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import { buildCopilotWalletAccessMessage } from "@/lib/copilot/wallet-access";
 import { getOgNetwork } from "@/lib/og/networks";
 import type { AgentTradeResponse } from "@/lib/types";
@@ -62,6 +65,7 @@ type PositionRowView = {
   canSell: boolean;
   id: string;
   lastActive?: string;
+  logoUrl?: string | null;
   pnl: string;
   routeId?: string;
   token: string;
@@ -200,11 +204,14 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
       throw new Error("Connect the Policy Vault owner wallet first.");
     }
     if (!ownerAddress || wallet.address.toLowerCase() !== ownerAddress.toLowerCase()) {
+      dispatchSigmaPetReaction("wallet.owner-mismatch", { force: true });
       throw new Error("Connected wallet is not the Policy Vault owner.");
     }
     if (wallet.isWrongChain) {
       setActionMessage(`Switching wallet to ${network.networkName}.`);
+      dispatchSigmaPetReaction("wallet.switch.start", { force: true });
       await wallet.switchToOg();
+      dispatchSigmaPetReaction("wallet.switch.success", { force: true });
     }
     const message = buildCopilotWalletAccessMessage({
       address: wallet.address,
@@ -212,6 +219,7 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
       networkId,
     });
     const cached = walletAccessKey ? walletAccessByKey[walletAccessKey] : undefined;
+    if (!cached) dispatchSigmaPetReaction("wallet.signature.pending", { force: true });
     const signature = cached ?? await signMessage.signMessageAsync({ message });
     if (walletAccessKey && !cached) {
       setWalletAccessByKey((current) => ({ ...current, [walletAccessKey]: signature }));
@@ -227,13 +235,16 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
   async function runOwnerAgentStatusAction(action: "arm" | "pause") {
     setActionLoading(action);
     setActionMessage(action === "pause" ? "Pausing agent runtime." : "Arming agent runtime.");
+    dispatchSigmaPetReaction(action === "pause" ? "agent.pause.start" : "agent.arm.start", { force: true });
     try {
       const walletProof = await ensureOwnerWalletProof();
       await setAgentKeyEnabledOnActiveVault(action === "arm");
       const nextWorkspace = await updateAgentRuntimeStatus(action, walletProof);
       setWorkspace(nextWorkspace);
       setActionMessage(action === "pause" ? "Agent runtime paused. Policy Vault funds remain active." : "Agent runtime armed.");
+      dispatchSigmaPetReaction(action === "pause" ? "agent.pause.success" : "agent.arm.success", { force: true });
     } catch (actionError) {
+      dispatchSigmaPetReaction("chat.trade-failed", { force: true });
       setActionMessage(actionError instanceof Error ? sanitizeWalletError(actionError.message) : "Owner action failed.");
     } finally {
       setActionLoading(null);
@@ -243,6 +254,7 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
   async function sellOpenPosition(routeId?: string) {
     setActionLoading("sell");
     setActionMessage("Preparing owner-approved sell request.");
+    dispatchSigmaPetReaction("agent.sell.start", { force: true });
     let temporarilyEnabledAgentKey = false;
     try {
       const walletProof = await ensureOwnerWalletProof();
@@ -258,7 +270,7 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
         const nextWorkspace = await updateAgentRuntimeStatus("pause", walletProof);
         setWorkspace(nextWorkspace);
         setActionMessage("Temporarily enabling the paused agent key for owner-approved exit.");
-        await setAgentKeyEnabledOnActiveVault(true);
+        await setAgentKeyEnabledOnActiveVault(true, { swapOnly: true });
         temporarilyEnabledAgentKey = true;
       }
 
@@ -299,7 +311,7 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
           setActionMessage("Restoring paused agent key after owner-approved exit.");
           let restoreError: unknown;
           try {
-            await setAgentKeyEnabledOnActiveVault(false);
+            await setAgentKeyEnabledOnActiveVault(false, { swapOnly: true });
           } catch (error) {
             restoreError = error;
           }
@@ -316,7 +328,9 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
       }
       await loadWorkspace();
       setActionMessage(submitted > 0 ? `${submitted} sell request${submitted === 1 ? "" : "s"} submitted through Policy Vault.` : "Sell review completed.");
+      dispatchSigmaPetReaction("agent.sell.success", { force: true });
     } catch (actionError) {
+      dispatchSigmaPetReaction("agent.sell.fail", { force: true });
       setActionMessage(actionError instanceof Error ? sanitizeWalletError(actionError.message) : "Sell request failed.");
     } finally {
       setActionLoading(null);
@@ -352,6 +366,7 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
     }
     setActionLoading("remove");
     setActionMessage("Preparing owner-signed remove request.");
+    dispatchSigmaPetReaction("agent.remove.start", { force: true });
     try {
       const walletProof = await ensureOwnerWalletProof();
       const agentKeyDisableTxHash = await setAgentKeyEnabledOnActiveVault(false);
@@ -373,15 +388,20 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
       }
       setWorkspace(payload.data.workspace);
       setActionMessage("Active agent record removed.");
+      dispatchSigmaPetReaction("agent.remove.success", { force: true });
       router.push("/agents");
     } catch (actionError) {
+      dispatchSigmaPetReaction("chat.trade-failed", { force: true });
       setActionMessage(actionError instanceof Error ? sanitizeWalletError(actionError.message) : "Remove request failed.");
     } finally {
       setActionLoading(null);
     }
   }
 
-  async function setAgentKeyEnabledOnActiveVault(enabled: boolean): Promise<Hex | undefined> {
+  async function setAgentKeyEnabledOnActiveVault(
+    enabled: boolean,
+    options?: { swapOnly?: boolean },
+  ): Promise<Hex | undefined> {
     const deployment = workspace?.agent.deployment;
     const vault = workspace?.vault.vault;
     if (!deployment?.agentKey || !vault || (workspace?.vault.vaultVersion ?? 1) < 2) {
@@ -404,16 +424,42 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
     if (!account || !ownerAddress || account.toLowerCase() !== ownerAddress.toLowerCase()) {
       throw new Error("Connected wallet is not the Policy Vault owner.");
     }
-    const txHash = await walletClient.writeContract({
-      account,
-      address: vault,
-      abi: policyVaultAgentKeyAbi,
-      functionName: "setAgentKeyEnabled",
-      args: [deployment.agentKey as Hex, enabled],
-    });
-    setActionMessage(enabled ? "Agent key enable submitted. Waiting for confirmation." : "Agent key disable submitted. Waiting for confirmation.");
-    await waitForReceipt(publicClient, txHash);
-    return txHash;
+    // H8 FIX: for V4, toggle the agent key on ALL THREE thirds. A trading agent runs on the Swap
+    // third, so disabling only the canonical vault (LpEntry) on remove would leave the removed key
+    // live on the Swap vault it trades on (executor-compromise blast radius). Mirrors the LP page.
+    const version = workspace?.vault.vaultVersion ?? 1;
+    const swapVault = workspace?.vault.v4SwapVault;
+    const entryVault = workspace?.vault.v4LpEntryVault;
+    const exitVault = workspace?.vault.v4LpExitVault;
+    // A trading-agent SELL only needs the key on the Swap third (that is where buy/sell + position
+    // units live). swapOnly keeps the paused-exit dance to a single enable + single disable signature
+    // instead of six — far fewer OKX popups, so it can't strand the key half-toggled mid-sequence.
+    // Remove still toggles all three (executor blast-radius safety) via the default all-thirds path.
+    const targets =
+      version >= 4 && swapVault && entryVault && exitVault
+        ? options?.swapOnly
+          ? [swapVault]
+          : [swapVault, entryVault, exitVault]
+        : [vault];
+    let lastHash: Hex | undefined;
+    for (const target of targets) {
+      const txHash = await walletClient.writeContract({
+        account,
+        address: target,
+        abi: policyVaultAgentKeyAbi,
+        functionName: "setAgentKeyEnabled",
+        args: [deployment.agentKey as Hex, enabled],
+        // explicit gas → wallet skips (failing) estimation on 0G
+        gas: 200_000n,
+      });
+      setActionMessage(enabled ? "Agent key enable submitted. Waiting for confirmation." : "Agent key disable submitted. Waiting for confirmation.");
+      const receipt = await waitForReceipt(publicClient, txHash);
+      if (receipt && receipt.status !== "success") {
+        throw new Error(`Agent key transaction ${txHash} reverted on-chain.`);
+      }
+      lastHash = txHash;
+    }
+    return lastHash;
   }
 
   return (
@@ -602,10 +648,7 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
           ) : null}
 
           {isMainnetAgentScope && isLoading && !workspace ? (
-            <section className="rounded-[24px] border border-line bg-panel-solid-strong/92 p-5 text-sm text-muted">
-              <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-              Loading agent state...
-            </section>
+            <TradingAgentDetailSkeleton />
           ) : isMainnetAgentScope && workspace && !deployment ? (
             <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
               <AgentEmptyState />
@@ -712,6 +755,63 @@ export function OgAgentDetailPage({ agentId }: { agentId: string }) {
         </div>
       </main>
     </AppShell>
+  );
+}
+
+function TradingAgentDetailSkeleton() {
+  return (
+    <div className="animate-feed-reveal">
+      <section className="mb-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
+        {Array.from({ length: 4 }, (_, i) => (
+          <div key={i} className="rounded-[22px] border border-line bg-panel p-4">
+            <Skeleton className="h-8 w-8 rounded-xl" />
+            <Skeleton className="mt-3 h-5 w-14" />
+            <Skeleton className="mt-2 h-3 w-24" />
+            <Skeleton className="mt-1 h-2.5 w-full max-w-[8rem]" />
+          </div>
+        ))}
+      </section>
+
+      <div className="grid min-w-0 gap-6 xl:grid-cols-[300px_1fr_380px]">
+        <aside className="min-w-0 space-y-4">
+          {Array.from({ length: 4 }, (_, i) => (
+            <div key={i} className="rounded-[22px] border border-line bg-panel p-4 sm:p-5">
+              <Skeleton className="h-3 w-20" />
+              <div className="mt-4 space-y-3">
+                {Array.from({ length: 4 }, (_, j) => (
+                  <div key={j} className="flex items-center justify-between">
+                    <Skeleton className="h-3 w-20" />
+                    <Skeleton className="h-3 w-16" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </aside>
+
+        <section className="hidden min-w-0 flex-col rounded-[22px] border border-line bg-panel p-4 xl:flex xl:p-5">
+          <Skeleton className="h-3 w-20" />
+          <div className="mt-4 space-y-3">
+            {Array.from({ length: 3 }, (_, i) => (
+              <Skeleton key={i} className="h-16 w-full rounded-2xl" />
+            ))}
+          </div>
+        </section>
+
+        <div className="rounded-[22px] border border-line bg-panel p-4">
+          <Skeleton className="h-3 w-24" />
+          <div className="mt-4 space-y-3">
+            {Array.from({ length: 4 }, (_, i) => (
+              <div key={i} className="space-y-2">
+                <Skeleton className="h-3.5 w-36" />
+                <Skeleton className="h-3 w-full" />
+                <Skeleton className="h-3 w-2/3" />
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -846,7 +946,7 @@ function PositionsPanel({
           <table className="w-full min-w-[560px] border-separate border-spacing-0">
             <thead>
               <tr>
-                {["Token", "Unrealized", "Total P&L", "Balance", "Actions"].map((column) => (
+                {["Token", "Unrealized", "Balance", "Actions"].map((column) => (
                   <th key={column} className="border-b border-line px-3 py-2.5 text-left text-[10px] font-medium uppercase tracking-[0.22em] text-muted first:pl-0 last:pr-0 last:text-right">
                     {column}
                   </th>
@@ -866,7 +966,7 @@ function PositionsPanel({
                 ))
               ) : (
                 <tr>
-                  <td colSpan={5} className="py-12 text-center text-sm text-muted">
+                  <td colSpan={4} className="py-12 text-center text-sm text-muted">
                     {emptyMessage}
                   </td>
                 </tr>
@@ -890,6 +990,7 @@ function normalizeVaultPositionRow(position: OgAgentVaultPosition): PositionRowV
     canSell: BigInt(position.amountRaw) > 0n,
     id: `position-${position.tokenAddress.toLowerCase()}`,
     lastActive: undefined,
+    logoUrl: position.logoUrl,
     pnl: "--",
     routeId: position.routeId,
     token: position.symbol,
@@ -930,7 +1031,7 @@ function PositionRow({
   row: PositionRowView;
   sellDisabled: boolean;
 }) {
-  const initials = row.token
+  const fallbackInitials = row.token
     .split(/[ /-]/)
     .filter(Boolean)
     .slice(0, 2)
@@ -941,9 +1042,7 @@ function PositionRow({
     <tr className="transition-colors hover:bg-panel">
       <td className="py-3 pl-0 pr-3">
         <div className="flex items-center gap-3">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-line bg-panel-strong text-xs font-bold text-muted">
-            {initials || "0G"}
-          </span>
+          <TokenAvatar symbol={row.token} logoUrl={row.logoUrl} initials={fallbackInitials || "0G"} className="h-9 w-9" />
           <div className="min-w-0">
             <p className="truncate text-[13px] font-semibold text-foreground">{row.token}</p>
             {row.lastActive ? <p className="text-[12px] text-muted">{row.lastActive}</p> : null}
@@ -951,7 +1050,6 @@ function PositionRow({
         </div>
       </td>
       <td className="px-3 py-3 text-[13px] font-semibold text-muted">{row.pnl}</td>
-      <td className="px-3 py-3 text-[13px] font-semibold text-muted">{row.total}</td>
       <td className="px-3 py-3 text-right">
         <p className="whitespace-nowrap text-[13px] font-medium text-foreground">{row.balance}</p>
       </td>

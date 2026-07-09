@@ -5,8 +5,12 @@ import {
   buildCopilotActionConsentMessage,
   buildCopilotWalletAccessMessage,
   buildLpDeployActionConsentMessage,
+  buildLpPolicyActionConsentMessage,
+  buildVaultMigrateActionConsentMessage,
+  buildVaultMigrateV4ActionConsentMessage,
   type CopilotWalletAccess,
   type LpDeployConsentStep,
+  type VaultMigrateV4ConsentPhase,
 } from "@/lib/copilot/wallet-access";
 import type { OgNetworkId } from "@/lib/types";
 
@@ -38,10 +42,42 @@ export interface LpDeployActionConsentExpected {
   minAprPct: number;
   maxAprPct: number | null;
   depositNative0G: string;
+  fundLpEntryFromSwap0G: string;
   confirmedSteps: readonly LpDeployConsentStep[];
   triggerFirstMint: boolean;
   nonce: string;
   expiresAt: number;
+}
+
+export interface LpPolicyActionConsentExpected {
+  vault: string;
+  agentId: string;
+  maxPositions: number;
+  maxPerPosition0G: string;
+  minAprPct: number;
+  maxAprPct: number | null;
+  nonce: string;
+  expiresAt: number;
+}
+
+export interface VaultMigrateActionConsentExpected {
+  oldVault: string;
+  capPreset: string;
+  nonce: string;
+  expiresAt: number;
+}
+
+export interface VaultMigrateV4ActionConsentExpected {
+  phase: VaultMigrateV4ConsentPhase;
+  oldVault: string;
+  nonce: string;
+  expiresAt: number;
+  confirmedSteps?: readonly string[];
+  inventoryHash?: string;
+  perNftDecisionsHash?: string;
+  v4SwapAddress?: string;
+  v4LpEntryAddress?: string;
+  v4LpExitAddress?: string;
 }
 
 /**
@@ -135,6 +171,7 @@ export async function validateLpDeployActionConsent(
     minAprPct: expected.minAprPct,
     maxAprPct: expected.maxAprPct,
     depositNative0G: expected.depositNative0G,
+    fundLpEntryFromSwap0G: expected.fundLpEntryFromSwap0G,
     confirmedSteps: expected.confirmedSteps,
     triggerFirstMint: expected.triggerFirstMint,
     nonce: expected.nonce,
@@ -152,6 +189,159 @@ export async function validateLpDeployActionConsent(
     return {
       code: "wallet_signature_invalid",
       message: "LP deploy consent signature could not be verified.",
+      status: 401,
+    };
+  }
+  return undefined;
+}
+
+export async function validateLpPolicyActionConsent(
+  wallet: CopilotWalletAccess | undefined,
+  networkId: OgNetworkId,
+  expectedChainId: number,
+  expected: LpPolicyActionConsentExpected,
+): Promise<CopilotWalletGateError | undefined> {
+  const baseError = validateWalletEnvelope(wallet, expectedChainId);
+  if (baseError) return baseError;
+  if (!wallet) {
+    return { code: "wallet_required", message: "Connect a wallet before signing this action.", status: 401 };
+  }
+  if (!Number.isFinite(expected.expiresAt) || expected.expiresAt <= Math.floor(Date.now() / 1000)) {
+    return { code: "consent_expired", message: "Action consent has expired; re-sign.", status: 401 };
+  }
+  if (!expected.nonce.trim()) {
+    return { code: "consent_invalid", message: "Action consent nonce is required.", status: 400 };
+  }
+  const expectedMessage = buildLpPolicyActionConsentMessage({
+    address: wallet.address,
+    chainId: wallet.chainId,
+    networkId,
+    vault: expected.vault,
+    agentId: expected.agentId,
+    maxPositions: expected.maxPositions,
+    maxPerPosition0G: expected.maxPerPosition0G,
+    minAprPct: expected.minAprPct,
+    maxAprPct: expected.maxAprPct,
+    nonce: expected.nonce,
+    expiresAt: expected.expiresAt,
+  });
+  if (wallet.message !== expectedMessage) {
+    return { code: "wallet_signature_invalid", message: "LP runtime policy consent signature does not match the expected payload.", status: 401 };
+  }
+  const verified = await verifyMessage({
+    address: wallet.address as Address,
+    message: expectedMessage,
+    signature: wallet.signature as Hex,
+  }).catch(() => false);
+  if (!verified) {
+    return {
+      code: "wallet_signature_invalid",
+      message: "LP runtime policy consent signature could not be verified.",
+      status: 401,
+    };
+  }
+  return undefined;
+}
+
+export async function validateVaultMigrateActionConsent(
+  wallet: CopilotWalletAccess | undefined,
+  networkId: OgNetworkId,
+  expectedChainId: number,
+  expected: VaultMigrateActionConsentExpected,
+): Promise<CopilotWalletGateError | undefined> {
+  const baseError = validateWalletEnvelope(wallet, expectedChainId);
+  if (baseError) return baseError;
+  if (!wallet) {
+    return { code: "wallet_required", message: "Connect a wallet before signing this action.", status: 401 };
+  }
+  if (!Number.isFinite(expected.expiresAt) || expected.expiresAt <= Math.floor(Date.now() / 1000)) {
+    return { code: "consent_expired", message: "Action consent has expired; re-sign.", status: 401 };
+  }
+  if (!expected.nonce.trim()) {
+    return { code: "consent_invalid", message: "Action consent nonce is required.", status: 400 };
+  }
+  const expectedMessage = buildVaultMigrateActionConsentMessage({
+    address: wallet.address,
+    chainId: wallet.chainId,
+    networkId,
+    oldVault: expected.oldVault,
+    capPreset: expected.capPreset,
+    nonce: expected.nonce,
+    expiresAt: expected.expiresAt,
+  });
+  if (wallet.message !== expectedMessage) {
+    return { code: "wallet_signature_invalid", message: "Vault migrate consent signature does not match the expected payload.", status: 401 };
+  }
+  const verified = await verifyMessage({
+    address: wallet.address as Address,
+    message: expectedMessage,
+    signature: wallet.signature as Hex,
+  }).catch(() => false);
+  if (!verified) {
+    return {
+      code: "wallet_signature_invalid",
+      message: "Vault migrate consent signature could not be verified.",
+      status: 401,
+    };
+  }
+  return undefined;
+}
+
+export async function validateVaultMigrateV4ActionConsent(
+  wallet: CopilotWalletAccess | undefined,
+  networkId: OgNetworkId,
+  expectedChainId: number,
+  expected: VaultMigrateV4ActionConsentExpected,
+): Promise<CopilotWalletGateError | undefined> {
+  const baseError = validateWalletEnvelope(wallet, expectedChainId);
+  if (baseError) return baseError;
+  if (!wallet) {
+    return { code: "wallet_required", message: "Connect a wallet before signing this action.", status: 401 };
+  }
+  if (!Number.isFinite(expected.expiresAt) || expected.expiresAt <= Math.floor(Date.now() / 1000)) {
+    return { code: "consent_expired", message: "Action consent has expired; re-sign.", status: 401 };
+  }
+  if (!expected.nonce.trim()) {
+    return { code: "consent_invalid", message: "Action consent nonce is required.", status: 400 };
+  }
+  if (expected.phase === "execute") {
+    if (
+      !expected.inventoryHash ||
+      !expected.perNftDecisionsHash ||
+      !expected.v4SwapAddress ||
+      !expected.v4LpEntryAddress ||
+      !expected.v4LpExitAddress
+    ) {
+      return { code: "consent_invalid", message: "V4 execute consent is missing bound migration fields.", status: 400 };
+    }
+  }
+  const expectedMessage = buildVaultMigrateV4ActionConsentMessage({
+    address: wallet.address,
+    chainId: wallet.chainId,
+    networkId,
+    phase: expected.phase,
+    oldVault: expected.oldVault,
+    confirmedSteps: expected.confirmedSteps,
+    inventoryHash: expected.inventoryHash,
+    perNftDecisionsHash: expected.perNftDecisionsHash,
+    v4SwapAddress: expected.v4SwapAddress,
+    v4LpEntryAddress: expected.v4LpEntryAddress,
+    v4LpExitAddress: expected.v4LpExitAddress,
+    nonce: expected.nonce,
+    expiresAt: expected.expiresAt,
+  });
+  if (wallet.message !== expectedMessage) {
+    return { code: "wallet_signature_invalid", message: "Vault migrate-v4 consent signature does not match the expected payload.", status: 401 };
+  }
+  const verified = await verifyMessage({
+    address: wallet.address as Address,
+    message: expectedMessage,
+    signature: wallet.signature as Hex,
+  }).catch(() => false);
+  if (!verified) {
+    return {
+      code: "wallet_signature_invalid",
+      message: "Vault migrate-v4 consent signature could not be verified.",
       status: 401,
     };
   }

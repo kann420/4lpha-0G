@@ -27,6 +27,7 @@ import {
 } from "viem";
 import { useAccount, useChainId, useSwitchChain } from "wagmi";
 import { policyVaultAbi } from "@/lib/contracts/policy-vault";
+import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import type { OgNetworkConfig } from "@/lib/types";
 
 const buttonClass =
@@ -39,6 +40,8 @@ export function VaultActionPanel({
   factoryAddress,
   isCreatingVault,
   isDiscoveringVault,
+  lpEntryVaultAddress = null,
+  lpExitVaultAddress = null,
   network,
   onRefreshVaultAddress,
   onVaultStateChange,
@@ -47,11 +50,31 @@ export function VaultActionPanel({
   factoryAddress: Address | null;
   isCreatingVault: boolean;
   isDiscoveringVault: boolean;
+  // V4 only: the LP Entry third. When present, the panel splits funding into a Trading pocket
+  // (vaultAddress = Swap third) and an LP pocket (lpEntryVaultAddress) with a Move-between control.
+  lpEntryVaultAddress?: Address | null;
+  // V4 only: the LP Exit third. LP zap-out / exit proceeds land here (not in Swap or LpEntry),
+  // so withdraw must be able to source from it — otherwise those funds get stuck (no UI reaches it).
+  lpExitVaultAddress?: Address | null;
   network: OgNetworkConfig;
   onRefreshVaultAddress: () => Promise<void>;
   onVaultStateChange?: () => void;
   vaultAddress: Address | null;
 }) {
+  const isV4 = lpEntryVaultAddress !== null && vaultAddress !== null;
+  const [fundTarget, setFundTarget] = useState<"trading" | "lp">("lp");
+  // The pocket that deposit/withdraw currently target (V4). Pocket balances + the Move-between
+  // control live in the left-column VaultPocketsPanel; this panel keeps the compact target toggle.
+  const activeVaultAddress = isV4 && fundTarget === "lp" ? lpEntryVaultAddress : vaultAddress;
+  // Withdraw sources across ALL thirds (Swap + LpEntry + LpExit), not just the active deposit pocket.
+  // LP exit/zap-out proceeds return to LpExit, which no pocket toggle targets — draining all three on
+  // withdraw guarantees no owner funds can get stranded in a third the UI would otherwise never reach.
+  const withdrawTargets = useMemo<Address[]>(() => {
+    if (isV4 && vaultAddress && lpEntryVaultAddress && lpExitVaultAddress) {
+      return [vaultAddress, lpEntryVaultAddress, lpExitVaultAddress];
+    }
+    return vaultAddress ? [vaultAddress] : [];
+  }, [isV4, vaultAddress, lpEntryVaultAddress, lpExitVaultAddress]);
   const [deposit, setDeposit] = useState("0.01");
   const [withdraw, setWithdraw] = useState("0.01");
   const [paused, setPaused] = useState(false);
@@ -59,6 +82,9 @@ export function VaultActionPanel({
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [owner, setOwner] = useState<Address | null>(null);
   const [vaultBalance, setVaultBalance] = useState<string>("--");
+  // Total native across all withdraw thirds (Swap + LpEntry + LpExit). Feeds withdraw "All" + validation
+  // so a rescue pulls everything, including LpExit proceeds the pocket balance line does not show.
+  const [withdrawableTotal, setWithdrawableTotal] = useState<string>("--");
   const [statusText, setStatusText] = useState("Configure a deployed vault address to enable live controls.");
   const [statusTxHash, setStatusTxHash] = useState<Hex | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -89,7 +115,7 @@ export function VaultActionPanel({
     isCreatingVault ||
     isDiscoveringVault;
   const canSetWithdrawAll =
-    !ownerControlDisabled && Number.isFinite(Number(vaultBalance)) && Number(vaultBalance) > 0;
+    !ownerControlDisabled && Number.isFinite(Number(withdrawableTotal)) && Number(withdrawableTotal) > 0;
   const depositValid = POSITIVE_AMOUNT.test(deposit.trim()) && Number(deposit.trim()) > 0;
   const withdrawValid = POSITIVE_AMOUNT.test(withdraw.trim()) && Number(withdraw.trim()) > 0;
   const showDepositError = !ownerControlDisabled && !depositValid;
@@ -117,8 +143,10 @@ export function VaultActionPanel({
     }
 
     try {
+      // Balance is read from the ACTIVE pocket (Swap or LpEntry) so withdraw-all + validation match
+      // the selected deposit/withdraw target. paused/revoked/owner are vault-level (same across thirds).
       const [balance, pausedValue, revokedValue, ownerValue] = await Promise.all([
-        publicClient.getBalance({ address: vaultAddress }),
+        publicClient.getBalance({ address: (activeVaultAddress ?? vaultAddress) as Address }),
         publicClient.readContract({ address: vaultAddress, abi: policyVaultAbi, functionName: "paused" }),
         publicClient.readContract({ address: vaultAddress, abi: policyVaultAbi, functionName: "executorRevoked" }),
         publicClient.readContract({ address: vaultAddress, abi: policyVaultAbi, functionName: "owner" }),
@@ -127,13 +155,18 @@ export function VaultActionPanel({
       setPaused(pausedValue);
       setRevoked(revokedValue);
       setOwner(ownerValue);
+      // Sum every withdraw third so "All" and validation cover LpExit proceeds too.
+      const targetBalances = await Promise.all(
+        withdrawTargets.map((address) => publicClient.getBalance({ address }).catch(() => 0n)),
+      );
+      setWithdrawableTotal(formatEther(targetBalances.reduce((sum, value) => sum + value, 0n)));
       setStatusText("Vault state refreshed from 0G RPC.");
     } catch {
       setStatusText("Could not read vault state from the selected 0G RPC.");
     } finally {
       setRefreshing(false);
     }
-  }, [publicClient, vaultAddress]);
+  }, [publicClient, vaultAddress, lpEntryVaultAddress, isV4, fundTarget, withdrawTargets]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -150,13 +183,16 @@ export function VaultActionPanel({
     setBusyAction(actionName);
     setStatusTxHash(null);
     setStatusText("Waiting for wallet confirmation.");
+    dispatchVaultActionStart(actionName, paused);
     try {
       if (!walletAccount.isConnected || !walletAccount.address) {
         throw new Error("Connect the vault owner wallet first.");
       }
       if (connectedChainId !== network.chainId) {
         setStatusText(`Switching wallet to ${network.networkName}.`);
+        dispatchSigmaPetReaction("wallet.switch.start", { force: true });
         await switchChain.switchChainAsync({ chainId: network.chainId });
+        dispatchSigmaPetReaction("wallet.switch.success", { force: true });
       }
       const walletClient = await getWalletClient(chain);
       const [account] = await walletClient.getAddresses();
@@ -167,8 +203,10 @@ export function VaultActionPanel({
       });
       setOwner(currentOwner);
       if (account.toLowerCase() !== currentOwner.toLowerCase()) {
+        dispatchSigmaPetReaction("wallet.owner-mismatch", { force: true });
         throw new Error("Connected wallet is not the vault owner.");
       }
+      dispatchSigmaPetReaction("wallet.signature.pending", { force: true });
       const txHash = await action(account, walletClient);
       setStatusTxHash(txHash);
       setStatusText("Transaction submitted. Waiting for confirmation.");
@@ -182,13 +220,16 @@ export function VaultActionPanel({
         await refreshVault();
         onVaultStateChange?.();
         setStatusText("Receipt is still indexing on this RPC. Vault state was refreshed from 0G.");
+        dispatchVaultActionSuccess(actionName, paused);
         return;
       }
       await refreshVault();
       onVaultStateChange?.();
       setStatusText("Transaction confirmed on 0G.");
+      dispatchVaultActionSuccess(actionName, paused);
     } catch (error) {
       setStatusTxHash(null);
+      dispatchVaultActionFailure(actionName, error);
       setStatusText(error instanceof Error ? sanitizeWalletError(error.message) : "Wallet action failed.");
     } finally {
       setBusyAction(null);
@@ -226,8 +267,33 @@ export function VaultActionPanel({
           </p>
         ) : null}
 
+        {isV4 ? (
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setFundTarget("trading")}
+              className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                fundTarget === "trading" ? "border-amber/40 bg-amber/10 text-amber" : "border-line text-muted hover:border-amber/25"
+              }`}
+            >
+              Trading pocket
+            </button>
+            <button
+              type="button"
+              onClick={() => setFundTarget("lp")}
+              className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                fundTarget === "lp" ? "border-primary/40 bg-primary/10 text-primary" : "border-line text-muted hover:border-primary/25"
+              }`}
+            >
+              LP pocket
+            </button>
+          </div>
+        ) : null}
+
         <label className="grid gap-2">
-          <span className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted">Add 0G</span>
+          <span className="text-[11px] font-medium uppercase tracking-[0.22em] text-muted">
+            {isV4 ? `Add 0G → ${fundTarget === "lp" ? "LP" : "Trading"} pocket` : "Add 0G"}
+          </span>
           <div
             className={`flex h-11 items-center rounded-full border bg-panel px-4 transition-colors focus-within:bg-panel ${
               showDepositError
@@ -260,12 +326,13 @@ export function VaultActionPanel({
               const value = parsePositiveAmount(deposit);
               const simulation = await publicClient.simulateContract({
                 account,
-                address: vaultAddress as Address,
+                address: activeVaultAddress as Address,
                 abi: policyVaultAbi,
                 functionName: "depositNative",
                 value,
               });
-              return walletClient.writeContract(simulation.request);
+              // explicit gas → wallet skips (failing) estimation on 0G
+              return walletClient.writeContract({ ...simulation.request, gas: 200_000n });
             })
           }
           className={`${buttonClass} w-full bg-amber text-background hover:bg-amber`}
@@ -296,7 +363,10 @@ export function VaultActionPanel({
             <button
               type="button"
               disabled={!canSetWithdrawAll}
-              onClick={() => setWithdraw(normalizeBalanceInput(vaultBalance))}
+              onClick={() => {
+                dispatchSigmaPetReaction("vault.withdraw.all", { force: true });
+                setWithdraw(normalizeBalanceInput(withdrawableTotal));
+              }}
               className="ml-auto rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-semibold text-primary transition-colors hover:border-primary/35 hover:bg-primary/18 disabled:cursor-not-allowed disabled:border-line disabled:bg-panel disabled:text-muted"
             >
               All
@@ -314,19 +384,38 @@ export function VaultActionPanel({
           onClick={() =>
             runOwnerAction("withdraw", async (account, walletClient) => {
               const amount = parsePositiveAmount(withdraw);
-              const currentBalance = await publicClient.getBalance({ address: vaultAddress as Address });
-              if (amount > currentBalance) {
+              // Read every third's balance, then pull the requested amount across them (Swap → LpEntry
+              // → LpExit). This reaches LpExit proceeds no single pocket exposes. Multiple thirds =
+              // multiple wallet confirmations; each withdrawNative is owner-only and bounded by balance.
+              const balances = await Promise.all(
+                withdrawTargets.map((address) => publicClient.getBalance({ address }).catch(() => 0n)),
+              );
+              const total = balances.reduce((sum, value) => sum + value, 0n);
+              if (amount > total) {
                 throw new Error("Withdraw amount exceeds vault balance.");
               }
-              setVaultBalance(formatEther(currentBalance));
-              const simulation = await publicClient.simulateContract({
-                account,
-                address: vaultAddress as Address,
-                abi: policyVaultAbi,
-                functionName: "withdrawNative",
-                args: [amount],
-              });
-              return walletClient.writeContract(simulation.request);
+              setWithdrawableTotal(formatEther(total));
+              let remaining = amount;
+              let lastTxHash: Hex | null = null;
+              for (let i = 0; i < withdrawTargets.length && remaining > 0n; i += 1) {
+                const take = balances[i] < remaining ? balances[i] : remaining;
+                if (take <= 0n) continue;
+                const simulation = await publicClient.simulateContract({
+                  account,
+                  address: withdrawTargets[i],
+                  abi: policyVaultAbi,
+                  functionName: "withdrawNative",
+                  args: [take],
+                });
+                // explicit gas → wallet skips (failing) estimation on 0G
+                lastTxHash = await walletClient.writeContract({ ...simulation.request, gas: 200_000n });
+                await publicClient.waitForTransactionReceipt({ hash: lastTxHash });
+                remaining -= take;
+              }
+              if (!lastTxHash) {
+                throw new Error("No vault third held a withdrawable balance.");
+              }
+              return lastTxHash;
             })
           }
           className={`${buttonClass} w-full bg-primary text-background hover:bg-primary`}
@@ -339,6 +428,7 @@ export function VaultActionPanel({
           type="button"
           disabled={busyAction !== null || isCreatingVault || isDiscoveringVault}
           onClick={() => {
+            dispatchSigmaPetReaction("vault.refresh", { force: true });
             void Promise.all([refreshVault(), onRefreshVaultAddress()]).then(() => onVaultStateChange?.());
           }}
           className={`${buttonClass} w-full border border-line bg-panel text-foreground hover:border-primary/20 hover:bg-panel-strong`}
@@ -673,6 +763,59 @@ function sanitizeWalletError(message: string): string {
     return `${message.slice(0, 157)}...`;
   }
   return message;
+}
+
+function dispatchVaultActionStart(actionName: string, isPaused: boolean) {
+  if (actionName === "deposit") {
+    dispatchSigmaPetReaction("vault.deposit.start", { force: true });
+    return;
+  }
+  if (actionName === "withdraw") {
+    dispatchSigmaPetReaction("vault.withdraw.start", { force: true });
+    return;
+  }
+  if (actionName === "pause") {
+    dispatchSigmaPetReaction(isPaused ? "vault.resume" : "vault.pause", { force: true });
+    return;
+  }
+  if (actionName === "revoke") {
+    dispatchSigmaPetReaction("vault.revoke", { force: true });
+  }
+}
+
+function dispatchVaultActionSuccess(actionName: string, wasPaused: boolean) {
+  if (actionName === "deposit") {
+    dispatchSigmaPetReaction("vault.deposit.success", { force: true });
+    return;
+  }
+  if (actionName === "withdraw") {
+    dispatchSigmaPetReaction("vault.withdraw.success", { force: true });
+    return;
+  }
+  if (actionName === "pause") {
+    dispatchSigmaPetReaction(wasPaused ? "vault.resume" : "vault.pause", { force: true });
+    return;
+  }
+  if (actionName === "revoke") {
+    dispatchSigmaPetReaction("vault.revoke", { force: true });
+  }
+}
+
+function dispatchVaultActionFailure(actionName: string, error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  if (message.includes("user rejected") || message.includes("rejected request")) {
+    dispatchSigmaPetReaction("wallet.signature.rejected", { force: true });
+    return;
+  }
+  if (actionName === "deposit") {
+    dispatchSigmaPetReaction("vault.deposit.fail", { force: true });
+    return;
+  }
+  if (actionName === "withdraw") {
+    dispatchSigmaPetReaction("vault.withdraw.fail", { force: true });
+    return;
+  }
+  dispatchSigmaPetReaction("wallet.connect.fail", { force: true });
 }
 
 function shortAddress(value: string) {

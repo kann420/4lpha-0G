@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { createPublicClient, formatUnits, getAddress, http, isAddress, type Address } from "viem";
 import { z } from "zod";
 import { canAgentUseTradeRoute, getAgentTradeRoute } from "@/lib/agent/trade-catalog";
-import { agentKeyForDeployment, loadOgAgentWorkspace } from "@/lib/agent/single-agent-server";
+import { agentKeyForDeployment, invalidateOgAgentWorkspaceCache, loadOgAgentWorkspace } from "@/lib/agent/single-agent-server";
 import {
   AgentTradeError,
   buildAgentTradePreview,
@@ -96,6 +96,9 @@ export async function POST(request: Request) {
     }
 
     const { execution, preview } = await executeAgentTrade(tradeRequest);
+    if (execution.status !== "blocked") {
+      invalidateOgAgentWorkspaceCache();
+    }
     const status = execution.status === "blocked" ? 409 : 202;
     return NextResponse.json(agentTradeResponse(networkId, { execution, preview }), { status });
   } catch (error) {
@@ -187,7 +190,13 @@ async function resolveSellPercentAmount(
   }
 
   const workspace = await loadMainnetAgentTradeWorkspace({ agentId, ownerAddress });
-  const vault = workspace.vault.vault;
+  // B5 FIX: for a V4 agent the canonical vault is the LpEntry third, which has no swap position
+  // state (agentPositionUnits/positionUnits) and no buy/sell. Resolve the Swap third for the
+  // percentage-sell read + execution.
+  const vault =
+    (workspace.vault.vaultVersion ?? 1) >= 4 && workspace.vault.v4SwapVault
+      ? workspace.vault.v4SwapVault
+      : workspace.vault.vault;
   if (!vault) {
     throw new AgentTradeError("Policy Vault address is required for percentage sell.", "vault_not_ready", 409);
   }

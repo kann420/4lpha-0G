@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
+  invalidateOgAgentWorkspaceCache,
   loadOgAgentWorkspace,
   migrateOwnerVaultToV3,
   OgAgentDeployError,
@@ -66,6 +67,10 @@ export async function POST(request: Request) {
 
   try {
     const result = await migrateOwnerVaultToV3(owner);
+    // Must invalidate before this reload — same cache key as the
+    // currentWorkspace load above, which would otherwise return the cached
+    // pre-migration workspace.
+    invalidateOgAgentWorkspaceCache();
     const workspace = await loadOgAgentWorkspace({ live: true, ownerAddress });
     return NextResponse.json(
       {

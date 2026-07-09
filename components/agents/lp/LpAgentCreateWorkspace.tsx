@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, Bot, Coins, Loader2, Repeat2, ShieldCheck, Sparkles, TrendingDown, TrendingUp, Upload } from "lucide-react";
+import { formatEther, parseEther } from "viem";
 import { useSignMessage } from "wagmi";
 
 import { AppShell } from "@/components/app/AppShell";
@@ -14,7 +15,8 @@ import { useWalletConnection } from "@/components/wallet/useWalletConnection";
 import { AutomationModuleCard } from "@/components/agents/lp/AutomationModuleCard";
 import { LpRangePreview } from "@/components/agents/lp/LpRangePreview";
 import { ZiaPoweredBadge } from "@/components/agents/lp/ZiaPoweredBadge";
-import { MOCK_LP_AGENT_ID, MOCK_LP_POOLS } from "@/lib/agent/lp/mock-lp-data";
+import { MOCK_LP_POOLS } from "@/lib/agent/lp/mock-lp-data";
+import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import { buildLpDeployActionConsentMessage, type LpDeployConsentStep } from "@/lib/copilot/wallet-access";
 import { getOgNetwork } from "@/lib/og/networks";
 import type { OgAgentWorkspace } from "@/lib/agent/single-agent";
@@ -22,17 +24,15 @@ import type { CopilotModelsResponse } from "@/lib/types";
 
 const MAINNET = getOgNetwork("mainnet");
 
-const DEFAULT_MIN_APR_PCT = 6.9; // Pre-filled minimum APR (editable). Pools below this are filtered out.
-
 const inputClassName =
   "h-12 w-full rounded-full border border-line bg-panel px-4 text-sm font-semibold text-foreground outline-none transition-colors placeholder:text-muted focus:border-primary/40 disabled:cursor-not-allowed disabled:opacity-50";
 
 interface LpAgentDraft {
   name: string;
-  minAprPct: string; // pre-filled with DEFAULT_MIN_APR_PCT; editable. Pool selection filter.
+  minAprPct: string; // blank = no minimum APR filter (0%).
   maxAprPct: string; // empty string = no upper bound. Pool selection filter.
-  maxPositions: string; // max concurrent LP positions the agent may open (vault-enforced).
-  maxPerPosition0G: string; // max 0G the agent may deploy into a SINGLE LP NFT (vault-enforced).
+  maxPositions: string; // max concurrent LP positions the agent may open (agent-enforced).
+  maxPerPosition0G: string; // max 0G the agent may deploy into a SINGLE LP NFT (agent-enforced).
   rangeMode: "full" | "pm5" | "pm12" | "pm20" | "custom";
   llmPicksRange: boolean; // when true, the LLM chooses the optimal band within the APR filter.
   customLowerPct: string; // negative side % (below current), e.g. "7" = -7%.
@@ -46,6 +46,9 @@ interface LpAgentDraft {
 type LpDeployResponse = {
   data?: {
     deployment?: { id?: string };
+    firstMint?: { lpTxHash?: string; tokenId?: string };
+    firstMintError?: string;
+    firstMintRun?: { status?: string; brainSummary?: string; error?: string };
     workspace?: OgAgentWorkspace;
   };
   error?: {
@@ -56,7 +59,7 @@ type LpDeployResponse = {
 
 const INITIAL_DRAFT: LpAgentDraft = {
   name: "",
-  minAprPct: DEFAULT_MIN_APR_PCT.toFixed(1),
+  minAprPct: "",
   maxAprPct: "",
   maxPositions: "3",
   maxPerPosition0G: "0.5",
@@ -99,9 +102,9 @@ export function LpAgentCreateWorkspace() {
   const [modelCatalog, setModelCatalog] = useState<OgModelCatalogState>(EMPTY_OG_MODEL_CATALOG);
   const [openModelDropdown, setOpenModelDropdown] = useState<"fallback" | "primary" | null>(null);
 
-  const minApr = Number(draft.minAprPct);
+  const minApr = draft.minAprPct.trim() === "" ? 0 : Number(draft.minAprPct);
   const maxApr = draft.maxAprPct.trim() === "" ? null : Number(draft.maxAprPct);
-  const minValid = draft.minAprPct.trim() !== "" && Number.isFinite(minApr) && minApr >= 0;
+  const minValid = draft.minAprPct.trim() === "" || (Number.isFinite(minApr) && minApr >= 0);
   const maxValid = draft.maxAprPct.trim() === "" || (Number.isFinite(maxApr) && (maxApr as number) >= 0);
   const aprRangeValid = maxApr === null || (minValid && (maxApr as number) >= minApr);
 
@@ -114,7 +117,7 @@ export function LpAgentCreateWorkspace() {
     pools: readonly typeof MOCK_LP_POOLS[number][];
     qualifyingCount: number;
     total: number;
-    source: "zia-tradegpt-partner" | "mock-fallback";
+    source: "allowlist-fallback" | "mock-fallback" | "zia-tradegpt-partner";
     warning?: string;
   }>(() => ({
     pools: MOCK_LP_POOLS,
@@ -127,14 +130,14 @@ export function LpAgentCreateWorkspace() {
   useEffect(() => {
     if (!minValid) return;
     const controller = new AbortController();
-    const qs = `minAprPct=${encodeURIComponent(draft.minAprPct)}${
+    const qs = `minAprPct=${encodeURIComponent(String(minApr))}${
       draft.maxAprPct.trim() ? `&maxAprPct=${encodeURIComponent(draft.maxAprPct)}` : ""
     }`;
     fetch(`/api/agents/lp/pools?${qs}`, { signal: controller.signal })
       .then(async (res) => {
         const json = (await res.json()) as {
           data: { pools: readonly typeof MOCK_LP_POOLS[number][]; qualifyingCount: number; total: number };
-          meta: { source: "zia-tradegpt-partner" | "mock-fallback"; warning?: string };
+          meta: { source: "allowlist-fallback" | "mock-fallback" | "zia-tradegpt-partner"; warning?: string };
         };
         setPoolDiscovery({
           pools: json.data.pools,
@@ -148,7 +151,7 @@ export function LpAgentCreateWorkspace() {
         // Network/abort error — keep the existing state (MOCK seed or last good).
       });
     return () => controller.abort();
-  }, [draft.minAprPct, draft.maxAprPct, minValid]);
+  }, [draft.maxAprPct, minApr, minValid]);
 
   // Count how many Zia pools satisfy the APR filter — the LLM picks among these.
   useEffect(() => {
@@ -172,19 +175,24 @@ export function LpAgentCreateWorkspace() {
         if (cancelled) {
           return;
         }
+        const allowedModelIds = new Set(["0gm-1.0-35b-a3b", "deepseek-v4-flash"]);
+        const filteredModels = data.models.filter((model) => allowedModelIds.has(model.id));
         setModelCatalog({
-          defaultModel: data.defaultModel,
-          models: data.models,
+          defaultModel:
+            data.defaultModel && allowedModelIds.has(data.defaultModel)
+              ? data.defaultModel
+              : filteredModels[0]?.id,
+          models: filteredModels,
           status: "ready",
         });
         setDraft((current) => ({
           ...current,
           llmPrimaryModel:
-            current.llmPrimaryModel && data.models.some((model) => model.id === current.llmPrimaryModel)
+            current.llmPrimaryModel && filteredModels.some((model) => model.id === current.llmPrimaryModel)
               ? current.llmPrimaryModel
               : "",
           llmFallbackModel:
-            current.llmFallbackModel && data.models.some((model) => model.id === current.llmFallbackModel)
+            current.llmFallbackModel && filteredModels.some((model) => model.id === current.llmFallbackModel)
               ? current.llmFallbackModel
               : "",
         }));
@@ -224,9 +232,10 @@ export function LpAgentCreateWorkspace() {
           throw new Error(payload.error?.message ?? "Unable to load agent workspace.");
         }
         setWorkspace(payload.data);
+        const vaultLabel = payload.data.vault.vaultVersion ? `Policy Vault V${payload.data.vault.vaultVersion}` : "Policy Vault";
         setStatusText(
           payload.data.vault.ready
-            ? "Policy Vault V3 resolved. This deploy will mint an LP Agentic ID and enable its agent key."
+            ? `${vaultLabel} resolved. This deploy will mint an LP Agentic ID and enable its agent key.`
             : payload.data.vault.warnings?.join(" ") || "Policy Vault is not ready.",
         );
       })
@@ -263,7 +272,8 @@ export function LpAgentCreateWorkspace() {
       Number(draft.customUpperPct) > 0 && Number.isFinite(Number(draft.customUpperPct)));
 
   const maxPositionsN = Number(draft.maxPositions);
-  const maxPositionsValid = Number.isInteger(maxPositionsN) && maxPositionsN >= 1 && maxPositionsN <= 10;
+  // LP agents are capped at 3 concurrent positions (product limit).
+  const maxPositionsValid = Number.isInteger(maxPositionsN) && maxPositionsN >= 1 && maxPositionsN <= 3;
   const maxPerPositionN = Number(draft.maxPerPosition0G);
   const maxPerPositionValid = maxPerPositionN > 0 && Number.isFinite(maxPerPositionN);
 
@@ -271,8 +281,23 @@ export function LpAgentCreateWorkspace() {
   const depositNative0G = normalizeOptional0GAmount(draft.depositNative0G);
   const depositValid = depositNative0G !== null;
   const depositRequested = depositNative0G !== null && !isZeroDecimal(depositNative0G);
+  const fundLpEntryFromSwap0G =
+    workspace && maxPerPositionValid
+      ? suggestLpEntryFundFromSwap0G({
+          depositRequested,
+          maxPerPosition0G: draft.maxPerPosition0G,
+          swapBalance0G: workspace.vault.v4SwapBalance0G ?? "0",
+          warnings: workspace.vault.warnings ?? [],
+        })
+      : "0";
+  const fundFromSwapRequested = !isZeroDecimal(fundLpEntryFromSwap0G);
   const ownerAddress = workspace?.vault.owner;
   const vaultAddress = workspace?.vault.vault;
+  const vaultReadyForDeploy = workspace
+    ? workspace.vault.ready === true ||
+      (depositRequested && isLpFundingWarningSet(workspace.vault.warnings ?? [])) ||
+      (fundFromSwapRequested && hasLpEntryFundingWarning(workspace.vault.warnings ?? []))
+    : false;
   const isOwnerWallet = Boolean(wallet.address && ownerAddress && wallet.address.toLowerCase() === ownerAddress.toLowerCase());
   const validationIssues = useMemo(() => {
     const issues: string[] = [];
@@ -280,12 +305,20 @@ export function LpAgentCreateWorkspace() {
     if (!wallet.isConnected) issues.push("Connect the Policy Vault owner wallet.");
     if (wallet.isConnected && !isOwnerWallet) issues.push("Connected wallet must match the Policy Vault owner.");
     if (workspaceLoading) issues.push("Policy Vault readiness is still loading.");
-    if (workspace && workspace.vault.ready !== true) issues.push("Policy Vault must be ready.");
-    if (!vaultAddress) issues.push("Policy Vault V3 address must be resolved.");
+    if (workspace && !vaultReadyForDeploy) {
+      if (hasLpEntryFundingWarning(workspace.vault.warnings ?? [])) {
+        issues.push("Fund LP Entry from V4 Swap before deploy.");
+      } else if (isOnlyZeroBalanceWarning(workspace.vault.warnings ?? [])) {
+        issues.push("Add a vault top-up or fund the Policy Vault before deploy.");
+      } else {
+        issues.push("Policy Vault must be ready.");
+      }
+    }
+    if (!vaultAddress) issues.push("Policy Vault address must be resolved.");
     if (!depositValid) issues.push("Deposit must be blank, zero, or a decimal with <= 18 fractional digits.");
     if (qualifyingPoolCount <= 0) issues.push("At least one allowlisted Zia pool must match the APR filter.");
     return issues;
-  }, [depositValid, isOwnerWallet, nameValid, qualifyingPoolCount, vaultAddress, wallet.isConnected, workspace, workspaceLoading]);
+  }, [depositValid, isOwnerWallet, nameValid, qualifyingPoolCount, vaultAddress, vaultReadyForDeploy, wallet.isConnected, workspace, workspaceLoading]);
   const formValid =
     nameValid &&
     minValid &&
@@ -297,6 +330,9 @@ export function LpAgentCreateWorkspace() {
     validationIssues.length === 0;
 
   function set<K extends keyof LpAgentDraft>(key: K, value: LpAgentDraft[K]) {
+    if (key === "minAprPct" || key === "maxAprPct" || key === "maxPositions" || key === "maxPerPosition0G") {
+      dispatchSigmaPetReaction("lp.create.form");
+    }
     setDraft((prev) => ({ ...prev, [key]: value }));
   }
 
@@ -305,16 +341,28 @@ export function LpAgentCreateWorkspace() {
     setSubmitting(true);
     setSubmitError(null);
     setStatusText("Preparing single-use LP deploy consent.");
+    dispatchSigmaPetReaction("lp.deploy.start", { force: true });
     try {
       if (!wallet.address || !vaultAddress || depositNative0G === null) {
         throw new Error("Wallet, vault, and deposit inputs must be ready before deploy.");
       }
       if (wallet.isWrongChain) {
         setStatusText(`Switching wallet to ${MAINNET.networkName}.`);
+        dispatchSigmaPetReaction("wallet.switch.start", { force: true });
         await wallet.switchToOg();
+        dispatchSigmaPetReaction("wallet.switch.success", { force: true });
       }
+      // The create-form filter (maxPositions + maxPerPosition0G) is enforced
+      // AGENT-side (brain/worker), persisted into the agent's runtime at deploy.
+      // The vault is NOT tightened — the owner's on-chain caps stay as the hard
+      // backstop. tightenPolicy is intentionally NOT part of the deploy consent
+      // (it would clamp the vault's daily cap / exposure below prior spend and
+      // lock all agents out — see lp-singleton-global-daily-cap memory).
       const confirmedSteps: LpDeployConsentStep[] = ["mint-agentic-id", "enable-agent-key"];
+      if (fundFromSwapRequested) confirmedSteps.push("fund-lp-entry-from-v4-swap");
       if (depositRequested) confirmedSteps.push("deposit-native");
+      confirmedSteps.push("first-mint");
+      const triggerFirstMint = true;
       const nonceResponse = await fetch(`/api/agents/lp/deploy/nonce?address=${encodeURIComponent(wallet.address)}`, {
         cache: "no-store",
       });
@@ -336,14 +384,16 @@ export function LpAgentCreateWorkspace() {
         minAprPct: minApr,
         maxAprPct: maxApr,
         depositNative0G,
+        fundLpEntryFromSwap0G,
         confirmedSteps,
-        triggerFirstMint: false,
+        triggerFirstMint,
         nonce: nonceJson.data.nonce,
         expiresAt: nonceJson.data.expiresAt,
       });
       setStatusText("Waiting for owner signature.");
+      dispatchSigmaPetReaction("wallet.signature.pending", { force: true });
       const signature = await signMessage.signMessageAsync({ message });
-      setStatusText("Submitting LP Agent provisioning request.");
+      setStatusText("Submitting LP deploy. The server will scan pools and try the first mint before returning.");
       const response = await fetch("/api/agents/lp/deploy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -356,9 +406,10 @@ export function LpAgentCreateWorkspace() {
             maxAprPct: maxApr,
           },
           depositNative0G,
+          fundLpEntryFromSwap0G,
           llmModel: draft.llmPrimaryModel || undefined,
           confirmedSteps,
-          triggerFirstMint: false,
+          triggerFirstMint,
           nonce: nonceJson.data.nonce,
           expiresAt: nonceJson.data.expiresAt,
           wallet: { address: wallet.address, chainId: MAINNET.chainId, message, signature },
@@ -372,12 +423,22 @@ export function LpAgentCreateWorkspace() {
       if (!agentId) {
         throw new Error("LP agent deployed but response did not include an agent id.");
       }
-      setStatusText("LP Agentic ID minted and agent key enabled.");
+      if (json.data.firstMint?.lpTxHash) {
+        setStatusText("LP Agent created. First scan/mint cycle executed.");
+        dispatchSigmaPetReaction("lp.deploy.mint", { force: true });
+      } else if (json.data.firstMintError) {
+        setStatusText(`LP Agent created. First scan returned: ${json.data.firstMintError}`);
+        dispatchSigmaPetReaction("lp.deploy.no-mint", { force: true });
+      } else {
+        setStatusText("LP Agent created. First scan completed.");
+        dispatchSigmaPetReaction("lp.deploy.no-mint", { force: true });
+      }
       router.push(`/agents/lp/${agentId}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "LP agent deploy failed.";
       setSubmitError(message);
       setStatusText(message);
+      dispatchSigmaPetReaction("lp.deploy.fail", { force: true });
     } finally {
       setSubmitting(false);
     }
@@ -454,6 +515,7 @@ export function LpAgentCreateWorkspace() {
                     step="0.1"
                     value={draft.minAprPct}
                     onChange={(e) => set("minAprPct", e.target.value)}
+                    placeholder="blank = no minimum"
                     className={`${inputClassName} flex-1`}
                   />
                   <span className="text-sm font-semibold text-muted">%</span>
@@ -530,7 +592,7 @@ export function LpAgentCreateWorkspace() {
                 </div>
               </Field>
             </div>
-            {!maxPositionsValid ? <p className="text-xs text-rose">Max positions must be an integer 1–10.</p> : null}
+            {!maxPositionsValid ? <p className="text-xs text-rose">Max positions must be an integer 1–3.</p> : null}
             {!maxPerPositionValid ? <p className="text-xs text-rose">Max 0G per position must be greater than 0.</p> : null}
             <p className="text-xs leading-5 text-muted">
               Max positions caps concurrent LP NFTs the agent may hold. Max 0G per position caps how much the agent may
@@ -741,10 +803,13 @@ export function LpAgentCreateWorkspace() {
               <ReviewMetric icon={<Sparkles className="h-3.5 w-3.5" />} label="Fallback model" value={modelSelectionLabel(modelCatalog, draft.llmFallbackModel)} />
               <ReviewMetric icon={<Bot className="h-3.5 w-3.5" />} label="Vault" value={vaultAddress ? shortAddress(vaultAddress) : "not ready"} />
               <ReviewMetric icon={<Bot className="h-3.5 w-3.5" />} label="Deposit" value={depositRequested ? `${depositNative0G} 0G` : "No top-up"} />
+              {fundFromSwapRequested ? (
+                <ReviewMetric icon={<Bot className="h-3.5 w-3.5" />} label="LP Entry fund" value={`${fundLpEntryFromSwap0G} 0G from V4 Swap`} />
+              ) : null}
               <ReviewMetric
                 icon={<Bot className="h-3.5 w-3.5" />}
-                label="Automation"
-                value="Auto-mint: on (autonomous)"
+                label="First cycle"
+                value="Scan + mint immediately"
               />
             </div>
             <div className="mt-4 rounded-[18px] border border-line bg-panel px-4 py-3">
@@ -755,7 +820,7 @@ export function LpAgentCreateWorkspace() {
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-foreground">{statusText}</p>
                   <p className="mt-1 text-xs leading-5 text-muted">
-                    Signed steps: mint Agentic ID + enable agent key{depositRequested ? " + deposit native 0G" : ""}. Auto-mint is ON by default — the autonomous worker mints within the vault fence when idle; toggle it off on the detail page.
+                    Signed steps: mint Agentic ID + enable agent key{fundFromSwapRequested ? " + fund LP Entry from V4 Swap" : ""}{depositRequested ? " + deposit native 0G" : ""} + scan/mint now. Auto-mint stays ON for later cycles; toggle it off on the detail page.
                   </p>
                   {submitError ? <p className="mt-2 text-xs font-semibold text-rose">{submitError}</p> : null}
                 </div>
@@ -786,9 +851,6 @@ export function LpAgentCreateWorkspace() {
                 ))}
               </div>
             ) : null}
-            <p className="mt-2 text-[11px] text-muted">
-              Demo: <Link href={`/agents/lp/${MOCK_LP_AGENT_ID}`} className="underline-offset-2 hover:underline">view the mock LP detail page</Link> without submitting.
-            </p>
           </FormPanel>
         </div>
       </main>
@@ -861,6 +923,44 @@ function normalizeOptional0GAmount(value: string): string | null {
 
 function isZeroDecimal(value: string): boolean {
   return /^0+(?:\.0+)?$/u.test(value);
+}
+
+function isOnlyZeroBalanceWarning(warnings: string[]): boolean {
+  return warnings.length > 0 && warnings.every((warning) => warning === "Policy Vault has no 0G balance.");
+}
+
+function hasLpEntryFundingWarning(warnings: string[]): boolean {
+  return warnings.some((warning) => warning.startsWith("LP Entry has no 0G balance;"));
+}
+
+function isLpFundingWarningSet(warnings: string[]): boolean {
+  return warnings.length > 0 && warnings.every((warning) => warning === "Policy Vault has no 0G balance." || warning.startsWith("LP Entry has no 0G balance;"));
+}
+
+function suggestLpEntryFundFromSwap0G({
+  depositRequested,
+  maxPerPosition0G,
+  swapBalance0G,
+  warnings,
+}: {
+  depositRequested: boolean;
+  maxPerPosition0G: string;
+  swapBalance0G: string;
+  warnings: string[];
+}): string {
+  if (depositRequested || !hasLpEntryFundingWarning(warnings)) return "0";
+  const maxWei = parse0GAmount(maxPerPosition0G);
+  const swapWei = parse0GAmount(swapBalance0G);
+  if (maxWei === null || swapWei === null || maxWei <= 0n || swapWei <= 0n) return "0";
+  return formatEther(maxWei < swapWei ? maxWei : swapWei);
+}
+
+function parse0GAmount(value: string): bigint | null {
+  try {
+    return parseEther(value.trim());
+  } catch {
+    return null;
+  }
 }
 
 function shortAddress(value: string): string {

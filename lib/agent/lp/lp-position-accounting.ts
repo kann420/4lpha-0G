@@ -24,6 +24,10 @@ export interface LpPoolMeta {
   aprTotal: number | null | undefined;
   aprTrading: number | null | undefined;
   aprStaking: number | null | undefined;
+  // Absolute https logo URL for the pair icon, or null when Zia has no usable
+  // (absolute) logo for that token — see getZiaTokenLogoUrl.
+  token0LogoUrl: string | null;
+  token1LogoUrl: string | null;
 }
 
 export interface LpPositionAccountingInput {

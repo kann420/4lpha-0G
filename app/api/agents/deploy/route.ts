@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
+  assertAgentTypeQuota,
   deploySingleOgAgent,
+  invalidateOgAgentWorkspaceCache,
   loadOgAgentWorkspace,
   OgAgentDeployError,
 } from "@/lib/agent/single-agent-server";
@@ -19,7 +21,7 @@ const requestSchema = z.object({
     .object({
       maxCapitalPerTrade0G: z.string().trim().max(48).optional(),
       maxHoldingMinutes: z.number().int().min(1).max(24 * 60).optional(),
-      maxPositions: z.number().int().min(1).max(8).optional(),
+      maxPositions: z.number().int().min(1).max(5).optional(), // trading agents capped at 5 positions
       signalConfidence: z.number().int().min(1).max(100).optional(),
       slippageBps: z.number().int().min(1).max(1000).optional(),
     })
@@ -56,12 +58,15 @@ export async function POST(request: Request) {
   }
 
   try {
+    // Product limit: at most one trading agent per wallet.
+    await assertAgentTypeQuota(ownerAddress, "trade");
     const deployment = await deploySingleOgAgent({
       filterIds: parsed.data.filterIds,
       name: parsed.data.name,
       ownerAddress,
       runtime: parsed.data.runtime,
     });
+    invalidateOgAgentWorkspaceCache();
     const workspace = await loadOgAgentWorkspace({ agentId: deployment.id, live: true, ownerAddress });
     return NextResponse.json({ data: { deployment, workspace } }, { status: 201 });
   } catch (error) {

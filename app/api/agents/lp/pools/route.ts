@@ -1,24 +1,16 @@
 import "server-only";
 
 import { NextResponse, type NextRequest } from "next/server";
-import { createPublicClient, http, type Address, type Chain } from "viem";
+import type { Address } from "viem";
 
-import {
-  uniswapV3PoolAbi,
-  verifyZappablePool,
-  zappableZiaLpVaults,
-  type ZiaLpVaultConfig,
-} from "@/lib/contracts/zia-lp";
-import { listZiaPools, resolveZiaBaseUrl, ZiaApiError, type ZiaPool } from "@/lib/integrations/zia-tradegpt";
+import { buildPoolCandidateDiscovery, makeMainnetPublicClient } from "@/lib/agent/lp/lp-context";
 import { MOCK_LP_POOLS, type LpPoolOption, type LpPoolTickAprPoint } from "@/lib/agent/lp/mock-lp-data";
+import { zappableZiaLpVaults } from "@/lib/contracts/zia-lp";
 
 // GET /api/agents/lp/pools?minAprPct=&maxAprPct=
-// Returns the live Zia pool discovery, intersected with the vault-allowlisted
-// W0G-leg pools (zappableZiaLpVaults), verified on-chain to actually carry W0G,
-// with the real current tick from slot0. APR surfaced is the STAKING APR
-// (AGENTS.md: advertised APR comes from staking rewards, not total/trading).
-// When the partner URL is unset or unreachable, returns 503 with the MOCK pool
-// set labeled clearly so the create-form demo stays alive.
+// Returns live Zia pool discovery intersected with the vault-allowlisted W0G-leg
+// pools. The LP worker uses the same discovery helper, so APR filtering does
+// not drift between create UI and autonomous execution.
 
 const MAINNET_CHAIN_ID = 16661;
 const MIN_TICK = -887_220;
@@ -29,70 +21,51 @@ export async function GET(request: NextRequest) {
   const minAprPct = parseNonNegNumber(url.searchParams.get("minAprPct"), 0);
   const maxAprPct = parseNonNegNumber(url.searchParams.get("maxAprPct"), Infinity);
 
-  const base = resolveZiaBaseUrl();
-  if ("error" in base) {
-    return NextResponse.json(
-      {
-        data: { pools: MOCK_LP_POOLS, qualifyingCount: MOCK_LP_POOLS.length, total: MOCK_LP_POOLS.length },
-        meta: { source: "mock-fallback", warning: base.error.message },
-      },
-      { status: 503 },
-    );
-  }
-
   try {
-    const apiPools = await listZiaPools();
-    const zappable = zappableZiaLpVaults();
-    const zappableByAddr = new Map<string, ZiaLpVaultConfig>(
-      zappable.map((v) => [v.poolAddress.toLowerCase(), v]),
-    );
-
-    // Intersect: only pools the vault allowlists AND the API returns.
-    const intersected = apiPools.filter((p) => zappableByAddr.has(p.poolAddress.toLowerCase()));
-
-    const publicClient = makeMainnetPublicClient();
-
-    // Verify each candidate actually carries a W0G leg on-chain + read slot0 for
-    // the real current tick. Failures drop the pool (honest: the vault would
-    // reject it anyway).
-    const enriched: LpPoolOption[] = [];
-    for (const pool of intersected) {
-      const vaultCfg = zappableByAddr.get(pool.poolAddress.toLowerCase())!;
-      const verification = await verifyZappablePool(pool.poolAddress, publicClient).catch(() => null);
-      if (!verification) continue;
-      const currentTick = await readCurrentTick(publicClient, pool.poolAddress).catch(() => null);
-      const stakingApr = pool.apr.staking ?? pool.apr.total ?? 0;
-      const tick = currentTick ?? Math.round((MIN_TICK + MAX_TICK) / 2);
-      enriched.push({
+    const vaultByPool = new Map(zappableZiaLpVaults().map((vault) => [vault.poolAddress.toLowerCase(), vault]));
+    const discovery = await buildPoolCandidateDiscovery(makeMainnetPublicClient());
+    const enriched = discovery.candidates.map((pool): LpPoolOption => {
+      const vaultCfg = vaultByPool.get(pool.poolAddress.toLowerCase());
+      const stakingApr = pool.stakingAprPct;
+      return {
         poolAddress: pool.poolAddress,
-        label: pool.name ?? vaultCfg.label,
-        feeLabel: vaultCfg.feeLabel,
-        feeTier: pool.feeTier ?? vaultCfg.feeTier,
-        vaultAddress: vaultCfg.vaultAddress,
+        label: pool.label,
+        feeLabel: vaultCfg?.feeLabel ?? `${pool.feeTier / 10_000}%`,
+        feeTier: pool.feeTier,
+        vaultAddress: vaultCfg?.vaultAddress ?? ("0x0000000000000000000000000000000000000000" as Address),
         aprPct: stakingApr,
-        tvl0G: formatUsd(pool.metrics.tvlUSD),
-        vol24h0G: formatUsd(pool.metrics.volume24h),
+        tvl0G: formatUsd(pool.tvlUSD),
+        vol24h0G: formatUsd(pool.volume24hUSD),
         tickBounds: {
           minTick: MIN_TICK,
           maxTick: MAX_TICK,
-          currentTick: tick,
+          currentTick: pool.currentTick,
           aprByTick: mockAprByTick(MIN_TICK, MAX_TICK, stakingApr),
         },
-      });
+      };
+    });
+
+    if (enriched.length === 0) {
+      return NextResponse.json(
+        {
+          data: { pools: MOCK_LP_POOLS, qualifyingCount: MOCK_LP_POOLS.length, total: MOCK_LP_POOLS.length },
+          meta: { source: "mock-fallback", warning: discovery.warning ?? "No live Zia pools were available." },
+        },
+        { status: 503 },
+      );
     }
 
-    const filtered = enriched.filter((p) => p.aprPct >= minAprPct && p.aprPct <= maxAprPct);
+    const filtered = enriched.filter((pool) => pool.aprPct >= minAprPct && pool.aprPct <= maxAprPct);
     return NextResponse.json({
       data: { pools: filtered, qualifyingCount: filtered.length, total: enriched.length },
-      meta: { source: "zia-tradegpt-partner", chainId: MAINNET_CHAIN_ID },
+      meta: { source: discovery.source, chainId: MAINNET_CHAIN_ID, warning: discovery.warning },
     });
-  } catch (err) {
-    const code = err instanceof ZiaApiError ? err.code : "zia_api_unreachable";
-    const message = err instanceof Error ? err.message : "Zia API unreachable.";
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Zia pool discovery unavailable.";
     return NextResponse.json(
       {
         data: { pools: MOCK_LP_POOLS, qualifyingCount: MOCK_LP_POOLS.length, total: MOCK_LP_POOLS.length },
-        meta: { source: "mock-fallback", warning: `partner API failed (${code}): ${message}` },
+        meta: { source: "mock-fallback", warning: message },
       },
       { status: 503 },
     );
@@ -100,58 +73,27 @@ export async function GET(request: NextRequest) {
 }
 
 function parseNonNegNumber(raw: string | null, fallback: number): number {
-  if (raw === null) return fallback;
+  if (raw === null || raw.trim() === "") return fallback;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
 function formatUsd(usd: number | null | undefined): string {
-  if (usd === null || usd === undefined || !Number.isFinite(usd)) return "—";
+  if (usd === null || usd === undefined || !Number.isFinite(usd)) return "-";
   if (usd >= 1_000_000) return `${(usd / 1_000_000).toFixed(2)}M`;
   if (usd >= 1_000) return `${(usd / 1_000).toFixed(1)}K`;
   return usd.toFixed(0);
 }
 
-async function readCurrentTick(
-  client: ReturnType<typeof makeMainnetPublicClient>,
-  pool: Address,
-): Promise<number | null> {
-  const slot0 = (await client.readContract({
-    address: pool,
-    abi: uniswapV3PoolAbi,
-    functionName: "slot0",
-    args: [],
-  })) as readonly [bigint, number, ...unknown[]];
-  const tick = Number(slot0[1]);
-  return Number.isFinite(tick) ? tick : null;
-}
-
-// Per-tick APR bell curve — visual only. The Zia API returns a single pool APR,
-// not a per-tick distribution, so this is a labeled mock for the histogram.
 function mockAprByTick(minTick: number, maxTick: number, peakApr: number): LpPoolTickAprPoint[] {
   const points: LpPoolTickAprPoint[] = [];
   const steps = 16;
   const span = maxTick - minTick;
-  for (let i = 0; i <= steps; i++) {
+  for (let i = 0; i <= steps; i += 1) {
     const tick = Math.round(minTick + (span * i) / steps);
     const bell = Math.sin(Math.PI * (i / steps));
     const apr = Math.max(1, Math.round(peakApr * bell * 10) / 10);
     points.push({ tick, aprPct: apr });
   }
   return points;
-}
-
-function makeMainnetPublicClient() {
-  const rpcUrl = process.env.OG_RPC_URL?.trim();
-  if (!rpcUrl) throw new Error("OG_RPC_URL is required to read Zia pool slot0.");
-  const chain: Chain = {
-    id: MAINNET_CHAIN_ID,
-    name: "0G Mainnet",
-    nativeCurrency: { decimals: 18, name: "0G", symbol: "0G" },
-    rpcUrls: { default: { http: [rpcUrl] } },
-  };
-  return createPublicClient({
-    chain,
-    transport: http(rpcUrl, { retryCount: 0, timeout: 8_000 }),
-  });
 }

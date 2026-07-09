@@ -14,6 +14,7 @@ import {
   keccak256,
   parseEther,
   stringToHex,
+  type Abi,
   type Address,
   type Chain,
   type Hex,
@@ -621,7 +622,21 @@ export function createMainnetWalletClient(privateKeyEnvName: string) {
   };
 }
 
-type MainnetPublicClient = ReturnType<typeof createMainnetPublicClient>;
+type MainnetPublicClient = {
+  getBytecode: (args: { address: Address }) => Promise<Hex | undefined>;
+  getChainId: () => Promise<number>;
+  getTransactionReceipt: (args: { hash: Hex }) => Promise<{
+    blockNumber: bigint;
+    contractAddress?: Address | null;
+    logs: readonly { data: Hex; topics: [] | [signature: Hex, ...args: Hex[]] }[];
+  }>;
+  readContract: (args: {
+    address: Address;
+    abi: Abi | readonly unknown[];
+    functionName: string;
+    args?: readonly unknown[];
+  }) => Promise<unknown>;
+};
 
 export async function assertMainnetRpc(publicClient: MainnetPublicClient): Promise<number> {
   const chainId = await publicClient.getChainId();
@@ -645,7 +660,7 @@ export async function readFactoryVault(publicClient: MainnetPublicClient, factor
       abi: policyVaultFactoryAbi,
       functionName: "vaultOf",
       args: [owner],
-    }),
+    }) as Address,
   );
 }
 

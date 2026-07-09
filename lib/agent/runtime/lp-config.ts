@@ -37,7 +37,10 @@ export function loadOgAgentLpWorkerConfig(argv: string[] = process.argv.slice(2)
       : readOptionalIntegerEnv("OG_AGENT_LP_WORKER_MAX_CYCLES"),
     once: hasFlag(argv, "--once"),
     ownerAddress: readAddressValue(
-      readValue(argv, "--owner-address") ?? readEnv("OG_AGENT_LP_WORKER_OWNER_ADDRESS"),
+      readValue(argv, "--owner-address")
+        ?? readEnv("OG_AGENT_LP_WORKER_OWNER_ADDRESS")
+        ?? readEnv("OG_AGENT_WORKER_OWNER_ADDRESS")
+        ?? readEnv("MAINNET_VAULT_OWNER_ADDRESS"),
     ),
     processAllAgents: hasFlag(argv, "--all-agents") || readBoolEnv("OG_AGENT_LP_WORKER_ALL_AGENTS", false),
     selectedModel: readValue(argv, "--model") ?? readEnv("OG_AGENT_LP_WORKER_MODEL"),
@@ -68,7 +71,7 @@ function readEnv(name: string): string | undefined {
 function readAddressValue(value: string | undefined): Address | undefined {
   if (!value) return undefined;
   if (!isAddress(value)) {
-    throw new Error("OG_AGENT_LP_WORKER_OWNER_ADDRESS must be a valid EVM address.");
+    throw new Error("LP worker owner address env must be a valid EVM address.");
   }
   return getAddress(value);
 }

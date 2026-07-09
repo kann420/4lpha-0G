@@ -10,6 +10,7 @@ import { findZiaLpVaultByPool, poolIdFromAddress, ZIA_LP_MAINNET, ZIA_LP_VAULTS,
 import { policyVaultV3Abi } from "@/lib/contracts/policy-vault-v3";
 import { makeMainnetPublicClient, readPairedToken } from "@/lib/agent/lp/lp-context";
 import { uniswapV3PoolAbi } from "@/lib/contracts/zia-lp";
+import { removeTokenIdFromRegistry } from "@/lib/agent/lp/lp-position-registry";
 
 // Shared LP exit executor — stake / unstake / zap-out. The vault enforces the
 // on-chain fence; this helper derives the agent key, resolves the position from
@@ -39,6 +40,7 @@ export interface RunLpExitResult {
   tokenId: string;
   poolAddress: Address;
   amountOutMin?: bigint;
+  storageWarning?: string;
 }
 
 export async function runLpExitForAgent(input: RunLpExitInput): Promise<RunLpExitResult> {
@@ -54,7 +56,7 @@ export async function runLpExitForAgent(input: RunLpExitInput): Promise<RunLpExi
   // the real `vault.warnings` surfaced for non-transient states (paused /
   // executorRevoked / chain mismatch / V2 / swap-only vault) — so those are
   // already rejected here with an actionable message.
-  const workspace = await loadReadyLpWorkspace(input.deployment);
+  const workspace = await loadReadyLpWorkspace(input.deployment, { allowZeroBalance: true });
   const vault = workspace.vault;
   // loadReadyLpWorkspace only returns when v.lpPolicy is truthy, so this is a
   // TypeScript type-guard (narrowing vault.lpPolicy for the allowStaking read
@@ -152,12 +154,36 @@ export async function runLpExitForAgent(input: RunLpExitInput): Promise<RunLpExi
     agentRef: input.deployment.agentRef,
   });
 
+  // Registry prune on a confirmed full-burn zap-out. The vault only deletes the
+  // NFT's on-chain mappings (lpNftOwner/lpNftPool/etc) on a FULL burn — a partial
+  // liquidity zap-out keeps the NFT recorded (PolicyVaultV3.sol fullBurn path),
+  // so the pool slot is still occupied and the registry entry must stay to keep
+  // dedup blocking that pool. Re-read the position after the tx: if it's gone
+  // (undefined), remove from registry; if it's still live (partial zap), keep.
+  // Best-effort: a registry failure must not turn a successful exit into a 500.
+  if (input.kind === "zap-out") {
+    try {
+      const after = await readLpPositionByTokenId(
+        input.tokenId,
+        input.deployment.vault,
+        agentKey,
+        input.publicClient ?? makeMainnetPublicClient(),
+      );
+      if (after === undefined) {
+        await removeTokenIdFromRegistry(agentKey, input.tokenId);
+      }
+    } catch (err) {
+      console.warn("[lp-registry] zap-out prune failed (non-fatal):", err instanceof Error ? err.message : String(err));
+    }
+  }
+
   return {
     lpTxHash: execution.lpTxHash,
     proofTxHash: execution.proofTxHash,
     tokenId: input.tokenId,
     poolAddress,
     amountOutMin: input.kind === "zap-out" ? input.amountOutMin : undefined,
+    storageWarning: execution.storageWarning,
   };
 }
 

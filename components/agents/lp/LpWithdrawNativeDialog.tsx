@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { ArrowDownToLine } from "lucide-react";
 import { useAccount, useSignMessage } from "wagmi";
 
+import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import { buildCopilotActionConsentMessage } from "@/lib/copilot/wallet-access";
 import { useOgNetwork } from "@/components/app/useOgNetwork";
 import { requestActionConsentNonce } from "@/components/agents/lp/actionConsentNonce";
@@ -66,6 +67,7 @@ export function LpWithdrawNativeDialog({
     }
     setError(null);
     setPending(true);
+    dispatchSigmaPetReaction("vault.withdraw.start", { force: true });
     try {
       const { nonce, expiresAt } = await requestActionConsentNonce("vault-withdraw-native", address);
       const message = buildCopilotActionConsentMessage({
@@ -78,6 +80,7 @@ export function LpWithdrawNativeDialog({
         nonce,
         expiresAt,
       });
+      dispatchSigmaPetReaction("wallet.signature.pending", { force: true });
       const signature = await signMessage.signMessageAsync({ message });
       const response = await fetch("/api/vault/withdraw-native", {
         method: "POST",
@@ -99,8 +102,10 @@ export function LpWithdrawNativeDialog({
         const code = json.error?.code ?? "withdraw_failed";
         const msg = json.error?.message ?? "Withdrawal failed.";
         setError(`${code}: ${msg}`);
+        dispatchSigmaPetReaction("vault.withdraw.fail", { force: true });
         return;
       }
+      dispatchSigmaPetReaction("vault.withdraw.success", { force: true });
       onSuccess({
         txHash: json.data.txHash ?? "",
         amount0G: json.data.amount0G ?? trimmed,
@@ -108,6 +113,7 @@ export function LpWithdrawNativeDialog({
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign or request failed.");
+      dispatchSigmaPetReaction("vault.withdraw.fail", { force: true });
     } finally {
       setPending(false);
     }

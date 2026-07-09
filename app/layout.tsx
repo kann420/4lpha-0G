@@ -28,6 +28,20 @@ export const metadata: Metadata = {
   icons: {
     icon: "/4lpha_logo.svg",
   },
+  openGraph: {
+    title: "4lpha 0G",
+    description:
+      "AI-powered token intelligence and autonomous trading agents on 0G, with Smart Scan for fast risk-aware discovery.",
+    images: [{ url: "/preview.png", width: 1200, height: 630 }],
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "4lpha 0G",
+    description:
+      "AI-powered token intelligence and autonomous trading agents on 0G, with Smart Scan for fast risk-aware discovery.",
+    images: ["/preview.png"],
+  },
 };
 
 export default function RootLayout({

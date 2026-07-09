@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useAccount, useSignMessage } from "wagmi";
 
+import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import { buildCopilotActionConsentMessage } from "@/lib/copilot/wallet-access";
 import { useOgNetwork } from "@/components/app/useOgNetwork";
 import { requestActionConsentNonce } from "@/components/agents/lp/actionConsentNonce";
@@ -48,6 +49,7 @@ export function LpAutoMintToggle({
     setError(null);
     setNote(null);
     setPending(true);
+    dispatchSigmaPetReaction(next ? "lp.auto-mint.on" : "lp.auto-mint.off", { force: true });
     try {
       const { nonce, expiresAt } = await requestActionConsentNonce("lp-automation", address);
       const message = buildCopilotActionConsentMessage({
@@ -61,6 +63,7 @@ export function LpAutoMintToggle({
         nonce,
         expiresAt,
       });
+      dispatchSigmaPetReaction("wallet.signature.pending", { force: true });
       const signature = await signMessage.signMessageAsync({ message });
       const response = await fetch(`/api/agents/lp/${agentId}/automation`, {
         method: "POST",
@@ -79,7 +82,9 @@ export function LpAutoMintToggle({
         setError(`${code}: ${msg}`);
         return;
       }
-      onAutoMintChange(json.data.autoMint ?? next);
+      const resolvedAutoMint = json.data.autoMint ?? next;
+      onAutoMintChange(resolvedAutoMint);
+      dispatchSigmaPetReaction(resolvedAutoMint ? "lp.auto-mint.on" : "lp.auto-mint.off", { force: true });
       setNote(json.data.autoMint ? "Auto-mint ON — worker will mint within the fence." : "Auto-mint OFF.");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sign or request failed.";

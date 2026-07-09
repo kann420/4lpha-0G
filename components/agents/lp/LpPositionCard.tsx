@@ -4,9 +4,22 @@ import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 
 import { LpStatusPill } from "@/components/agents/lp/LpStatusPill";
+import { TokenPairIcon } from "@/components/agents/TokenAvatar";
 import { findMockPoolByAddress } from "@/lib/agent/lp/mock-lp-data";
 import type { MockLpAccounting } from "@/lib/agent/lp/mock-lp-data";
 import type { OgAgentVaultLpPosition } from "@/lib/agent/single-agent";
+
+// Pair-icon symbols: prefer the real Zia-sourced token0Symbol/token1Symbol.
+// Mock positions (and any real position shipped before pool meta resolved)
+// carry no token symbols, so fall back to parsing poolLabel ("USDC/W0G" — the
+// vault config label is always a plain pair with no fee suffix).
+function derivePairSymbols(position: OgAgentVaultLpPosition): [string, string] {
+  if (position.token0Symbol && position.token1Symbol) {
+    return [position.token0Symbol, position.token1Symbol];
+  }
+  const [left, right] = position.poolLabel.split("/");
+  return [left?.trim() || "?", right?.trim() || "?"];
+}
 
 // One LP position card for the detail page center column. Shows the position
 // header (status + tokenId + pool + a user-facing USD price range, with raw
@@ -83,7 +96,6 @@ function buildCells(position: OgAgentVaultLpPosition, mock: MockLpAccounting, is
       {
         label: "APR",
         value: mock.apr.value,
-        subValue: mock.apr.subValue,
         tone: mock.apr.subValue === "staking APR" ? "success" : undefined,
       },
     ];
@@ -128,19 +140,14 @@ function buildCells(position: OgAgentVaultLpPosition, mock: MockLpAccounting, is
   // APR — staked → staking APR (success tone); !staked → trading APR (muted); unknown → "—".
   const aprPct = position.aprPct ?? null;
   const aprValue = aprPct !== null ? `${aprPct.toFixed(2)}%` : "—";
-  const aprSub = position.aprStatus === "staked-earning"
-    ? "staking APR"
-    : position.aprStatus === "unstaked-trading-only"
-      ? "trading APR"
-      : "—";
   const aprTone: CellTone | undefined = position.aprStatus === "staked-earning" ? "success" : undefined;
 
   return [
     { label: "Balance", value: balanceValue, subValue: legs },
     { label: "Assets", value: legs, subValue: assetsSub, compact: true },
-    { label: "Unclaimed fee", value: feeValue, subValue: "on-chain", tone: "success" },
+    { label: "Unclaimed fee", value: feeValue, tone: "success" },
     { label: "Unrealized PnL", value: pnlValue, subValue: pnlSub, tone: pnlTone },
-    { label: "APR", value: aprValue, subValue: aprSub, tone: aprTone },
+    { label: "APR", value: aprValue, tone: aprTone },
   ];
 }
 
@@ -170,22 +177,26 @@ export function LpPositionCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const busy = (action: "stake" | "unstake" | "zap-out") => pendingAction === action;
+  const cardBusy = pendingAction !== null && pendingAction !== undefined;
   const cells = buildCells(position, accounting, isMockAgent);
 
-  // User-facing price range (USD) for the non-stable leg; ticks move to debug expand.
+  // User-facing price range (USD) for the non-stable leg.
   const hasPriceRange = position.priceLowerUSD !== undefined
     && position.priceUpperUSD !== undefined
     && position.priceLowerUSD !== null
     && position.priceUpperUSD !== null;
   const priceRangeLabel = hasPriceRange
     ? `Price range ${formatUSD(position.priceLowerUSD!)} - ${formatUSD(position.priceUpperUSD!)} ${position.priceLabelSymbol ?? ""}`.trim()
-    : `ticks [${position.tickLower}, ${position.tickUpper}]`;
+    : "Price range unavailable";
+
+  const [sym0, sym1] = derivePairSymbols(position);
 
   return (
     <section className="rounded-card border border-line bg-panel-solid-strong p-4">
       {/* Position header — 4alpha WorkspaceHeader style. */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
+          <TokenPairIcon symbol0={sym0} logoUrl0={position.token0LogoUrl} symbol1={sym1} logoUrl1={position.token1LogoUrl} />
           <LpStatusPill value="armed" label={position.staked ? "Staked · In range" : "In range"} />
           <div className="min-w-0">
             <p className="text-sm font-semibold text-foreground">Position #{position.tokenId}</p>
@@ -205,45 +216,39 @@ export function LpPositionCard({
         ))}
       </div>
 
-      {/* Per-position actions. State-disambiguated (B4):
-          - staked → Unstake (back to vault-held)
-          - !staked && allowStaking → Stake (into the Zia stake vault)
-          - !staked → Zap out to 0G (burn + swap + unwrap + native out)
-          The per-position "Mint new NFT in this pool" button was removed — mint a
-          fresh NFT via the empty-state bootstrap or the worker instead. Pending
-          state disables the clicked button to prevent dup clicks. */}
+      {/* Per-position actions. Staked positions can still exit: the page chains
+          unstake -> zap-out because the vault zap-out entrypoint only accepts
+          vault-held NFTs. Pending state disables the clicked button to prevent
+          duplicate submissions. */}
       <div className="mt-3 flex flex-wrap items-center gap-2">
         {position.staked ? (
           <button
             type="button"
             onClick={onUnstake}
-            disabled={busy("unstake")}
+            disabled={cardBusy}
             className="inline-flex h-9 items-center gap-2 rounded-full border border-line bg-panel px-4 text-xs font-semibold text-foreground transition-colors hover:border-line-strong disabled:opacity-60"
           >
             {busy("unstake") ? "Unstaking…" : "Unstake"}
           </button>
-        ) : (
-          <>
-            {allowStaking ? (
-              <button
-                type="button"
-                onClick={onStake}
-                disabled={busy("stake")}
-                className="inline-flex h-9 items-center gap-2 rounded-full border border-line bg-panel px-4 text-xs font-semibold text-foreground transition-colors hover:border-line-strong disabled:opacity-60"
-              >
-                {busy("stake") ? "Staking…" : "Stake"}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={onZapOut}
-              disabled={busy("zap-out")}
-              className="inline-flex h-9 items-center gap-2 rounded-full border border-line bg-panel px-4 text-xs font-semibold text-foreground transition-colors hover:border-line-strong disabled:opacity-60"
-            >
-              {busy("zap-out") ? "Zapping out…" : "Zap out to 0G"}
-            </button>
-          </>
-        )}
+        ) : allowStaking ? (
+          <button
+            type="button"
+            onClick={onStake}
+            disabled={cardBusy}
+            className="inline-flex h-9 items-center gap-2 rounded-full border border-line bg-panel px-4 text-xs font-semibold text-foreground transition-colors hover:border-line-strong disabled:opacity-60"
+          >
+            {busy("stake") ? "Staking…" : "Stake"}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={onZapOut}
+          disabled={cardBusy}
+          title={position.staked ? "Unstake first, then zap out" : undefined}
+          className="inline-flex h-9 items-center gap-2 rounded-full border border-line bg-panel px-4 text-xs font-semibold text-foreground transition-colors hover:border-line-strong disabled:opacity-60"
+        >
+          {busy("zap-out") ? "Zapping out…" : "Zap out to 0G"}
+        </button>
         {/* Expand toggle for the price-range chart. */}
         <button
           type="button"
@@ -258,8 +263,7 @@ export function LpPositionCard({
 
       {/* Expandable price-range chart. Plots the position's [tickLower,
           tickUpper] inside the pool's full tick bounds with a current-tick
-          marker. USD bounds are shown when the Zia pool price is available;
-          raw ticks are surfaced as a debug line under the chart. */}
+          marker. USD bounds are shown when the Zia pool price is available. */}
       {expanded ? <PositionRangeChart position={position} /> : null}
     </section>
   );
@@ -288,9 +292,6 @@ function PositionRangeChart({ position }: { position: OgAgentVaultLpPosition }) 
     <div className="mt-3 rounded-tile border border-line bg-panel p-4">
       <div className="flex items-center justify-between">
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Price range</p>
-        <span className="font-mono text-[11px] text-muted">
-          ticks [{position.tickLower}, {position.tickUpper}]
-        </span>
       </div>
       <div className="relative mt-4 h-3 rounded-full bg-line">
         {/* Position tick range. */}
@@ -307,12 +308,12 @@ function PositionRangeChart({ position }: { position: OgAgentVaultLpPosition }) 
       </div>
       <div className="mt-2 flex justify-between font-mono text-[10px] text-muted">
         <span>{leftLabel}</span>
-        <span className="text-amber">current</span>
+        <span className="text-amber">| current</span>
         <span>{rightLabel}</span>
       </div>
       <p className="mt-2 text-[11px] text-muted">
         {hasPriceRange
-          ? `USD range for the ${position.priceLabelSymbol ?? "non-stable"} leg (ticks shown for debugging).`
+          ? `USD range for the ${position.priceLabelSymbol ?? "non-stable"} leg.`
           : "Position tick range vs the pool's full bounds. USD bounds arrive when the Zia pool price is available."}
       </p>
     </div>

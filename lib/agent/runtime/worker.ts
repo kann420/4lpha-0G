@@ -7,7 +7,7 @@ import {
   type OgAgentVaultPosition,
   type OgAgentWorkspace,
 } from "@/lib/agent/single-agent";
-import { loadOgAgentWorkspace } from "@/lib/agent/single-agent-server";
+import { listAllAgentDeployments, loadOgAgentWorkspace } from "@/lib/agent/single-agent-server";
 import { AGENT_TRADE_ROUTES, canAgentUseTradeRoute } from "@/lib/agent/trade-catalog";
 import { buildAgentTradePreview, executeAgentTrade } from "@/lib/agent/trade-service";
 import { appendOgAgentRun, readOgAgentRuns } from "@/lib/agent/runtime/store";
@@ -86,8 +86,13 @@ async function selectDeploymentsForCycle(config: OgAgentWorkerConfig): Promise<O
     return [workspace.agent.deployment];
   }
 
-  const armed = workspace.agents.filter((deployment) => !deployment.paused);
-  if (config.processAllAgents) {
+  // Community default: with no specific owner configured, enumerate agents across ALL owners so every
+  // user's trading agents run (not just the env-configured owner's). When an owner IS configured, keep
+  // the single-owner roster + honor --all-agents for operator targeting.
+  const communityMode = !config.ownerAddress;
+  const rosterSource = communityMode ? await listAllAgentDeployments() : workspace.agents;
+  const armed = rosterSource.filter((deployment) => !deployment.paused);
+  if (config.processAllAgents || communityMode) {
     return selectReadyAllAgentDeployments(armed, config.ownerAddress);
   }
 
@@ -275,6 +280,16 @@ async function buildCandidates({
   return [];
 }
 
+// The trade (buy/sell) vault is the Swap third for V4 agents. deployment.vault points
+// at the LpEntry third for V4, which has no buy/sell entrypoint and reverts the V3
+// adapter() read — passing it would force a permanent hold. Legacy agents keep their
+// single vault.
+function tradeVaultAddressOf(deployment: OgAgentDeploymentRecord): Address {
+  return (deployment.vaultVersion ?? 1) >= 4 && deployment.v4SwapVault
+    ? deployment.v4SwapVault
+    : deployment.vault;
+}
+
 async function buildBuyCandidates({
   config,
   deployment,
@@ -309,7 +324,7 @@ async function buildBuyCandidates({
       routeId: route.id,
       side: "buy",
       slippageBps: settings.slippageBps,
-      vaultAddress: deployment.vault,
+      vaultAddress: tradeVaultAddressOf(deployment),
     })),
   );
 }
@@ -345,7 +360,7 @@ async function buildSellCandidates({
         routeId: position.routeId,
         side: "sell" as const,
         slippageBps: settings.slippageBps,
-        vaultAddress: deployment.vault,
+        vaultAddress: tradeVaultAddressOf(deployment),
       };
     });
 

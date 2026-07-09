@@ -10,7 +10,10 @@ const decisionSchema = z.object({
   confidence: z.number().min(0).max(100).catch(50),
   reasons: z.array(z.string()).min(1).max(5).catch(["Policy and route context reviewed."]),
   routeId: emptyStringToUndefined(z.string()),
-  sellPercent: emptyStringToUndefined(z.coerce.number().min(1).max(100)),
+  // .catch(undefined): the trade LLM sometimes emits sellPercent "0" (or out-of-range) on a BUY;
+  // treat any invalid sellPercent as "no sell %" instead of failing the whole decision parse
+  // (mirrors the .catch() tolerance on confidence/reasons/slippageBps/summary).
+  sellPercent: emptyStringToUndefined(z.coerce.number().min(1).max(100)).catch(undefined),
   slippageBps: z.number().int().min(1).max(1000).catch(75),
   summary: z.string().min(1).max(500).catch("Reviewed the current 0G Policy Vault context."),
 });

@@ -3,13 +3,13 @@ import { z } from "zod";
 import { isAddress } from "viem";
 
 import { deployLpAgent, type LpDeployStep } from "@/lib/agent/lp/lp-deploy";
-import { loadOgAgentWorkspace, OgAgentDeployError } from "@/lib/agent/single-agent-server";
+import { assertAgentTypeQuota, invalidateOgAgentWorkspaceCache, loadOgAgentWorkspace, OgAgentDeployError } from "@/lib/agent/single-agent-server";
 import { readMainnetOwnerAddress } from "@/lib/agent/mainnet-vault-resolver";
 import { consumeActionNonce } from "@/lib/copilot/action-nonce-store";
 import { normalizeLpDeployConsentSteps, type LpDeployConsentStep } from "@/lib/copilot/wallet-access";
 import { validateLpDeployActionConsent } from "@/lib/copilot/wallet-gate";
+import { resolveOgComputeRouterConfig } from "@/lib/copilot/router";
 import { getOgNetwork } from "@/lib/og/networks";
-import { CannotLoosenPolicyError } from "@/lib/agent/lp/lp-fence";
 
 export const runtime = "nodejs";
 
@@ -18,6 +18,7 @@ const stepSchema = z.enum([
   "enable-agent-key",
   "tighten-policy",
   "deposit-native",
+  "fund-lp-entry-from-v4-swap",
   "first-mint",
 ] as const);
 
@@ -30,6 +31,7 @@ const requestSchema = z.object({
     maxAprPct: z.number().min(0).max(1000).nullable().default(null),
   }),
   depositNative0G: z.string().trim().min(1).max(48),
+  fundLpEntryFromSwap0G: z.string().trim().min(1).max(48).optional().default("0"),
   llmModel: z.string().trim().max(80).optional(),
   confirmedSteps: z.array(stepSchema).min(1),
   triggerFirstMint: z.boolean().default(false),
@@ -53,10 +55,15 @@ export async function POST(request: Request) {
   if (depositNative0G === null) {
     return deployError("invalid_request", "depositNative0G must be a decimal string with <= 18 fractional digits.", 400);
   }
+  const fundLpEntryFromSwap0G = normalizeDepositNative0G(parsed.data.fundLpEntryFromSwap0G);
+  if (fundLpEntryFromSwap0G === null) {
+    return deployError("invalid_request", "fundLpEntryFromSwap0G must be a decimal string with <= 18 fractional digits.", 400);
+  }
   const confirmedSteps = normalizeLpDeployConsentSteps(parsed.data.confirmedSteps as LpDeployConsentStep[]) as LpDeployStep[];
   const stepError = validateConfirmedSteps({
     confirmedSteps,
     depositNative0G,
+    fundLpEntryFromSwap0G,
     triggerFirstMint: parsed.data.triggerFirstMint,
   });
   if (stepError) {
@@ -78,7 +85,17 @@ export async function POST(request: Request) {
     return deployError("owner_required", "Connect the Policy Vault owner wallet before deploying an LP agent.", 403);
   }
   if (!currentWorkspace.vault.vault) {
-    return deployError("vault_unavailable", "Policy Vault V3 address must be resolved before deploying an LP agent.", 409);
+    return deployError("vault_unavailable", "Policy Vault address must be resolved before deploying an LP agent.", 409);
+  }
+
+  // Product limit: at most one LP agent per wallet. Checked before consuming the consent nonce.
+  try {
+    await assertAgentTypeQuota(ownerAddress, "lp");
+  } catch (error) {
+    if (error instanceof OgAgentDeployError) {
+      return deployError(error.code, error.message, error.status);
+    }
+    throw error;
   }
 
   const consentError = await validateLpDeployActionConsent(parsed.data.wallet, "mainnet", network.chainId, {
@@ -89,6 +106,7 @@ export async function POST(request: Request) {
     minAprPct: parsed.data.lpFence.minAprPct,
     maxAprPct: parsed.data.lpFence.maxAprPct,
     depositNative0G,
+    fundLpEntryFromSwap0G,
     confirmedSteps,
     triggerFirstMint: parsed.data.triggerFirstMint,
     nonce: parsed.data.nonce,
@@ -113,10 +131,12 @@ export async function POST(request: Request) {
       ownerAddress,
       lpFence: parsed.data.lpFence,
       depositNative0G,
+      fundLpEntryFromSwap0G,
       llmModel: parsed.data.llmModel,
       confirmedSteps,
       triggerFirstMint: parsed.data.triggerFirstMint,
     });
+    invalidateOgAgentWorkspaceCache();
     const workspace = await loadOgAgentWorkspace({ agentId: result.deployment.id, live: true, ownerAddress });
     return NextResponse.json(
       {
@@ -124,8 +144,11 @@ export async function POST(request: Request) {
           deployment: result.deployment,
           tightenTxHash: result.tightenTxHash,
           depositTxHash: result.depositTxHash,
+          lpEntryFundFromSwap: result.lpEntryFundFromSwap,
           firstMint: result.firstMint,
           firstMintError: result.firstMintError,
+          firstMintRun: result.firstMintRun,
+          firstMintSummary: result.firstMintSummary,
           stepsExecuted: result.stepsExecuted,
           workspace,
         },
@@ -136,9 +159,6 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof OgAgentDeployError) {
       return deployError(error.code, error.message, error.status);
-    }
-    if (error instanceof CannotLoosenPolicyError) {
-      return deployError("cannot_loosen_policy", error.message, 400);
     }
     return deployError("deploy_failed", error instanceof Error ? error.message : "Unable to deploy LP agent.", 500);
   }
@@ -170,13 +190,22 @@ function isZeroDecimal(value: string): boolean {
 function validateConfirmedSteps({
   confirmedSteps,
   depositNative0G,
+  fundLpEntryFromSwap0G,
   triggerFirstMint,
 }: {
   confirmedSteps: readonly LpDeployStep[];
   depositNative0G: string;
+  fundLpEntryFromSwap0G: string;
   triggerFirstMint: boolean;
 }): { code: string; message: string; status: number } | undefined {
   const confirmed = new Set(confirmedSteps);
+  if (confirmed.has("tighten-policy")) {
+    return {
+      code: "deprecated_step",
+      message: "tighten-policy is deprecated for LP agents. maxPositions and maxPerPosition0G are stored in agent runtime; remove tighten-policy and resubmit.",
+      status: 400,
+    };
+  }
   if (!confirmed.has("mint-agentic-id") || !confirmed.has("enable-agent-key")) {
     return {
       code: "missing_confirmation",
@@ -199,15 +228,38 @@ function validateConfirmedSteps({
       status: 400,
     };
   }
+  const fundFromSwapRequested = !isZeroDecimal(fundLpEntryFromSwap0G);
+  if (fundFromSwapRequested && !confirmed.has("fund-lp-entry-from-v4-swap")) {
+    return {
+      code: "missing_confirmation",
+      message: "fund-lp-entry-from-v4-swap must be confirmed when fundLpEntryFromSwap0G is greater than zero.",
+      status: 400,
+    };
+  }
+  if (!fundFromSwapRequested && confirmed.has("fund-lp-entry-from-v4-swap")) {
+    return {
+      code: "invalid_request",
+      message: "fund-lp-entry-from-v4-swap requires fundLpEntryFromSwap0G greater than zero.",
+      status: 400,
+    };
+  }
   if (confirmed.has("first-mint")) {
     if (!triggerFirstMint) {
       return { code: "invalid_request", message: "first-mint requires triggerFirstMint=true.", status: 400 };
     }
-    if (process.env.AGENT_TRADE_LIVE_ENABLED !== "true" || !process.env.OG_COMPUTE_API_KEY?.trim()) {
+    if (process.env.AGENT_TRADE_LIVE_ENABLED !== "true") {
       return {
         code: "first_mint_not_ready",
-        message: "first-mint requires AGENT_TRADE_LIVE_ENABLED=true and OG_COMPUTE_API_KEY to be configured.",
+        message: "first-mint requires AGENT_TRADE_LIVE_ENABLED=true.",
         status: 409,
+      };
+    }
+    const routerConfig = resolveOgComputeRouterConfig("mainnet");
+    if ("error" in routerConfig) {
+      return {
+        code: "first_mint_not_ready",
+        message: routerConfig.error.message,
+        status: routerConfig.error.status,
       };
     }
   }

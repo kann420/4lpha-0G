@@ -3,12 +3,12 @@ import "server-only";
 import { loadOgAgentWorkspace } from "@/lib/agent/single-agent-server";
 import type { OgAgentDeploymentRecord, OgAgentVaultSnapshot } from "@/lib/agent/single-agent";
 
-// Retry the LP workspace load until the V3 vault snapshot is usable.
+// Retry the LP workspace load until the LP vault snapshot is usable.
 //
 // readVaultSnapshot (inside loadOgAgentWorkspace) is wrapped in withTimeout —
 // on a flaky mainnet RPC (quiknode) a vault read can time out and the snapshot
 // comes back ready:false (the withTimeout catch returns `{ owner, ready:false,
-// warnings: ["Policy Vault state timed out after Nms."] }` with NO vault
+  // warnings: ["Policy Vault state timed out after Nms."] }` with NO vault
 // address), which would abort LP mint/exit even though the vault is fine
 // on-chain (a fresh load usually succeeds). Retry a few times so a transient
 // timeout self-heals rather than surfacing as a hard failure.
@@ -16,7 +16,7 @@ import type { OgAgentDeploymentRecord, OgAgentVaultSnapshot } from "@/lib/agent/
 // Non-transient not-ready states are NOT retried — they are deterministic and
 // retrying only wastes RPC calls + latency. The helper throws immediately with
 // the real `vault.warnings` surfaced (e.g. "Policy Vault is paused.", "RPC
-// chain mismatch: ...", "V3 vault snapshot is missing lpAdapter/lpPolicy (V2
+  // chain mismatch: ...", "LP vault snapshot is missing lpAdapter/lpPolicy (V2
 // or swap-only vault).") so callers/users see the actual reason instead of a
 // generic "requires a ready V3 vault" message.
 //
@@ -29,7 +29,7 @@ import type { OgAgentDeploymentRecord, OgAgentVaultSnapshot } from "@/lib/agent/
 // backstop.
 export async function loadReadyLpWorkspace(
   deployment: Pick<OgAgentDeploymentRecord, "id" | "owner">,
-  options: { attempts?: number; delayMs?: number } = {},
+  options: { allowZeroBalance?: boolean; attempts?: number; delayMs?: number } = {},
 ): ReturnType<typeof loadOgAgentWorkspace> {
   const attempts = options.attempts ?? 4;
   const delayMs = options.delayMs ?? 1_500;
@@ -40,7 +40,7 @@ export async function loadReadyLpWorkspace(
       ownerAddress: deployment.owner,
     });
     const v = ws.vault;
-    if (v.ready && v.vault && v.lpAdapter && v.lpPolicy) {
+    if (isReadyLpSnapshot(v, options.allowZeroBalance === true)) {
       return ws;
     }
     const reason = notReadyReason(v);
@@ -50,7 +50,14 @@ export async function loadReadyLpWorkspace(
     await new Promise((r) => setTimeout(r, delayMs));
   }
   // Unreachable — the loop either returns or throws on every path.
-  throw new Error("LP action could not load a ready V3 vault snapshot after retries.");
+  throw new Error("LP action could not load a ready LP vault snapshot after retries.");
+}
+
+function isReadyLpSnapshot(v: OgAgentVaultSnapshot, allowZeroBalance: boolean): boolean {
+  if (!v.vault || !v.lpAdapter || !v.lpPolicy) return false;
+  if (v.paused || v.executorRevoked) return false;
+  if (v.ready) return true;
+  return allowZeroBalance && onlyZeroBalanceWarnings(v.warnings ?? []);
 }
 
 function isTransient(v: OgAgentVaultSnapshot): boolean {
@@ -67,7 +74,14 @@ function notReadyReason(v: OgAgentVaultSnapshot): string {
   const warnings = v.warnings ?? [];
   if (warnings.length > 0) return warnings.join(" ");
   // ready may be true with no warnings but lpAdapter/lpPolicy undefined — a V2
-  // vault or a swap-only V3 vault. Call this out explicitly so the operator
-  // sees "migrate to V3" rather than a generic ready-check message.
-  return "V3 vault snapshot is missing lpAdapter/lpPolicy (V2 or swap-only vault).";
+  // vault or a swap-only vault. Call this out explicitly so the operator sees a
+  // migration/config message rather than a generic ready-check message.
+  return "LP vault snapshot is missing lpAdapter/lpPolicy (V2 or swap-only vault).";
+}
+
+function onlyZeroBalanceWarnings(warnings: string[]): boolean {
+  return warnings.length > 0 && warnings.every((warning) =>
+    warning === "Policy Vault has no 0G balance."
+      || warning.startsWith("LP Entry has no 0G balance;")
+  );
 }

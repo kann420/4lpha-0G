@@ -24,3 +24,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 *.tsbuildinfo
+# Local dev logs, backups, and scratch working files — never commit
+.dev-log*
+*.bak
+.env*.bak
+.r3-*

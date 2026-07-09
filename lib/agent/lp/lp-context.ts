@@ -10,6 +10,7 @@ import type { LpBrainFence, LpPoolCandidate } from "@/lib/agent/runtime/types";
 import type { OgAgentVaultSnapshot } from "@/lib/agent/single-agent";
 import { uniswapV3PoolAbi, verifyZappablePool, zappableZiaLpVaults, ZIA_LP_MAINNET } from "@/lib/contracts/zia-lp";
 import { LP_MAINNET_CHAIN_ID } from "@/lib/agent/lp/lp-env-gate";
+import { makeMainnetTransport } from "@/lib/og/mainnet-rpc";
 
 const ziaQuoterV2Abi = [
   {
@@ -28,6 +29,14 @@ const ziaQuoterV2Abi = [
     type: "function",
   },
 ] as const;
+
+type ZiaPoolAprSnapshot = {
+  apr: { staking?: number | null; total?: number | null };
+  feeTier?: number | null;
+  metrics: { tvlUSD?: number | null; volume24h?: number | null };
+  name?: string | null;
+  poolAddress: Address;
+};
 
 export function buildFence(vault: OgAgentVaultSnapshot): LpBrainFence {
   const lp = vault.lpPolicy;
@@ -56,12 +65,41 @@ export async function buildPoolCandidates(
   publicClient: PublicClient,
   constrainPoolAddress?: Address,
 ): Promise<LpPoolCandidate[]> {
+  const discovery = await buildPoolCandidateDiscovery(publicClient, constrainPoolAddress);
+  return discovery.candidates;
+}
+
+export interface LpPoolCandidateDiscovery {
+  candidates: LpPoolCandidate[];
+  source: "allowlist-fallback" | "zia-tradegpt-partner";
+  warning?: string;
+}
+
+export async function buildPoolCandidateDiscovery(
+  publicClient: PublicClient,
+  constrainPoolAddress?: Address,
+): Promise<LpPoolCandidateDiscovery> {
   const zappable = zappableZiaLpVaults();
-  const target = constrainPoolAddress
+  let target = constrainPoolAddress
     ? zappable.filter((v) => v.poolAddress.toLowerCase() === constrainPoolAddress.toLowerCase())
     : zappable;
+  let source: LpPoolCandidateDiscovery["source"] = "allowlist-fallback";
+  let warning: string | undefined;
+  let apiByPoolAddress = new Map<string, ZiaPoolAprSnapshot>();
+
+  try {
+    const { listZiaPools } = await import("@/lib/integrations/zia-tradegpt");
+    const apiPools = await listZiaPools() as ZiaPoolAprSnapshot[];
+    apiByPoolAddress = new Map(apiPools.map((pool) => [pool.poolAddress.toLowerCase(), pool]));
+    target = target.filter((v) => apiByPoolAddress.has(v.poolAddress.toLowerCase()));
+    source = "zia-tradegpt-partner";
+  } catch (error) {
+    warning = error instanceof Error ? error.message : "Zia pool discovery unavailable; using allowlist fallback APR=0.";
+  }
+
   const candidates: LpPoolCandidate[] = [];
   for (const v of target) {
+    const apiPool = apiByPoolAddress.get(v.poolAddress.toLowerCase());
     const verification = await verifyZappablePool(v.poolAddress, publicClient).catch(() => null);
     if (!verification) continue;
     const [slot0Res, tickSpacingRes] = await Promise.all([
@@ -83,24 +121,24 @@ export async function buildPoolCandidates(
     const tickSpacing = tickSpacingRes as number;
     candidates.push({
       poolAddress: v.poolAddress,
-      label: v.label,
-      feeTier: v.feeTier,
+      label: apiPool?.name ?? v.label,
+      feeTier: apiPool?.feeTier ?? v.feeTier,
       tickSpacing,
       currentTick: Number(slot0[1]),
       w0gIsToken0: verification.w0gIsToken0,
-      stakingAprPct: 0, // surfaced by the pools route; the brain weights TVL/APR from the message
-      tvlUSD: null,
-      volume24hUSD: null,
+      stakingAprPct: apiPool?.apr.staking ?? apiPool?.apr.total ?? 0,
+      tvlUSD: apiPool?.metrics.tvlUSD ?? null,
+      volume24hUSD: apiPool?.metrics.volume24h ?? null,
     });
   }
-  return candidates;
+  return { candidates, source, warning };
 }
 
 // 0G mainnet public client used by the mint path + the autonomous LP worker.
 // Throws when OG_RPC_URL is unset so the caller fails fast rather than
 // silently using a placeholder RPC.
 export function makeMainnetPublicClient(): PublicClient {
-  const rpcUrl = process.env.OG_RPC_URL?.trim();
+  const rpcUrl = process.env.OG_RPC_URL?.trim() ?? process.env.OG_MAINNET_RPC_URL?.trim();
   if (!rpcUrl) throw new Error("OG_RPC_URL is required.");
   const chain: Chain = {
     id: LP_MAINNET_CHAIN_ID,
@@ -108,20 +146,12 @@ export function makeMainnetPublicClient(): PublicClient {
     nativeCurrency: { decimals: 18, name: "0G", symbol: "0G" },
     rpcUrls: { default: { http: [rpcUrl] } },
   };
-  // viem retries only non-deterministic errors (HTTP 429, 5xx, network) — never
-  // contract reverts — so raising retryCount/retryDelay is safe: it only buys
-  // backoff time for transient RPC rate-limits (quiknode 429s under bursty LP
-  // reads). Defaults preserve viem's behavior (3 retries, 150ms base). A caller
-  // (e.g. the one-off recovery script) can override via env to ride out
-  // quiknode's per-minute rate window.
-  const retryCount = Number(process.env.OG_RPC_RETRY_COUNT ?? 3);
-  const retryDelay = Number(process.env.OG_RPC_RETRY_DELAY_MS ?? 150);
+  // Prefer quiknode with public fallback and batch read bursts to stay under
+  // quiknode's ~15 req/s ceiling (see makeMainnetTransport). viem retries only
+  // non-deterministic errors (429/5xx/network) — never contract reverts.
   return createPublicClient({
     chain,
-    transport: http(rpcUrl, {
-      retryCount: Number.isFinite(retryCount) && retryCount >= 0 ? retryCount : 3,
-      retryDelay: Number.isFinite(retryDelay) && retryDelay >= 0 ? retryDelay : 150,
-    }),
+    transport: makeMainnetTransport(),
   });
 }
 

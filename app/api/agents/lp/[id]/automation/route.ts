@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import {
+  invalidateOgAgentWorkspaceCache,
   loadOgAgentWorkspace,
   OgAgentDeployError,
   setAgentAutomation,
@@ -98,6 +99,7 @@ export async function POST(
 
   try {
     const updated = await setAgentAutomation(agentId, ownerAddress, parsed.data.autoMint);
+    invalidateOgAgentWorkspaceCache();
     return NextResponse.json(
       {
         data: {

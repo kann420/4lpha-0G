@@ -1,9 +1,13 @@
 import "server-only";
 
+import { mkdir, open, readFile, unlink } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { parseEther, type Address } from "viem";
+import { dirname, join } from "node:path";
+import { type Address } from "viem";
 
 import {
+  listAllAgentDeployments,
   loadOgAgentWorkspace,
 } from "@/lib/agent/single-agent-server";
 import type {
@@ -17,7 +21,13 @@ import { runLpExitForAgent } from "@/lib/agent/lp/lp-exec";
 import { findZiaLpVaultByPool } from "@/lib/contracts/zia-lp";
 import { appendOgAgentLpRun, readOgAgentLpRuns } from "@/lib/agent/runtime/lp-store";
 import type { OgAgentLpWorkerConfig } from "@/lib/agent/runtime/lp-config";
-import type { OgAgentLpRunRecord } from "@/lib/agent/runtime/types";
+import type { OgAgentLpAttemptRecord, OgAgentLpRunRecord } from "@/lib/agent/runtime/types";
+import { applyRuntimeLpFence, computeLpMintBudget, parseLpDecimal0G } from "@/lib/agent/lp/lp-runtime-policy";
+import { buildDeterministicFallbackMintAttempts, isRetryableLpMintError, type LpMintAttempt } from "@/lib/agent/lp/lp-fallback";
+
+const MAX_MINT_ATTEMPTS_PER_CYCLE = 4;
+const AGENT_CYCLE_LOCK_DIR = join(".data", "runtime", "lp-agent-cycle-locks");
+const AGENT_CYCLE_LOCK_STALE_MS = 15 * 60_000;
 
 export interface OgAgentLpWorkerRunSummary {
   agentsErrored: number;
@@ -28,6 +38,7 @@ export interface OgAgentLpWorkerRunSummary {
   finishedAt: string;
   held: number;
   mintsExecuted: number;
+  runs: OgAgentLpRunRecord[];
   selectedAgentIds: string[];
   startedAt: string;
 }
@@ -59,12 +70,14 @@ export async function runLpAgentWorkerOnce(
     finishedAt: startedAt,
     held: 0,
     mintsExecuted: 0,
+    runs: [],
     selectedAgentIds: selected.map((deployment) => deployment.id),
     startedAt,
   };
 
   for (const deployment of selected) {
-    const result = await processLpDeployment(config, deployment);
+    const result = await processLpDeploymentWithLock(config, deployment);
+    summary.runs.push(result);
     summary.agentsProcessed += 1;
     if (result.status === "errored") summary.agentsErrored += 1;
     if (result.status === "blocked") summary.blocked += 1;
@@ -88,6 +101,14 @@ async function selectLpDeploymentsForCycle(
 
   if (config.agentId) {
     const deployment = workspace.agent.deployment;
+    debugLpWorkerSelection({
+      agentId: config.agentId,
+      autoMint: deployment?.runtime?.automation?.autoMint,
+      deploymentPaused: deployment?.paused,
+      filters: deployment?.filters,
+      hasDeployment: Boolean(deployment),
+      status: workspace.agent.status,
+    });
     if (!deployment || !isLpZiaAgent(deployment) || !isAutomationOptedIn(deployment)) {
       return [];
     }
@@ -97,9 +118,15 @@ async function selectLpDeploymentsForCycle(
     return [deployment];
   }
 
-  const armed = workspace.agents.filter((deployment) => !deployment.paused);
-  if (!config.processAllAgents) {
-    // Without --all-agents, pick the most recent LP-zia agent that has opted in.
+  // Community default: with no specific owner configured, enumerate agents across ALL owners so every
+  // user's agents run (not just the env-configured owner's), and process all of them each cycle. When
+  // an owner IS configured, keep the single-owner roster + honor --all-agents for operator targeting.
+  const communityMode = !config.ownerAddress;
+  const rosterSource = communityMode ? await listAllAgentDeployments() : workspace.agents;
+  const armed = rosterSource.filter((deployment) => !deployment.paused);
+  const processAll = config.processAllAgents || communityMode;
+  if (!processAll) {
+    // Without --all-agents (single configured owner), pick the most recent LP-zia agent that opted in.
     let target: OgAgentDeploymentRecord | undefined;
     for (let i = armed.length - 1; i >= 0; i -= 1) {
       const deployment = armed[i];
@@ -125,6 +152,11 @@ async function selectLpDeploymentsForCycle(
     ready.push(agentWorkspace.agent.deployment);
   }
   return ready;
+}
+
+function debugLpWorkerSelection(payload: unknown): void {
+  if (process.env.OG_AGENT_LP_WORKER_DEBUG !== "true") return;
+  console.info(JSON.stringify({ payload, timestamp: new Date().toISOString(), type: "lp-worker-selection" }));
 }
 
 function isLpZiaAgent(deployment: OgAgentDeploymentRecord): boolean {
@@ -157,6 +189,7 @@ async function processLpDeployment(
   let amount0G: string | undefined;
   let lpTxHash: OgAgentLpRunRecord["lpTxHash"];
   let proofTxHash: OgAgentLpRunRecord["proofTxHash"];
+  let storageWarning: string | undefined;
 
   try {
     const workspace = await loadOgAgentWorkspace({
@@ -188,14 +221,9 @@ async function processLpDeployment(
         cycleId, startedAt, decision, brainSummary: lpVaultBlockedReason(workspace), status: "blocked",
       }));
     }
-    if (!workspace.storage.uploadReady) {
-      return appendAndReturn(buildRecord({
-        agentId: deployment.id, agentName: deployment.name, agentRef: deployment.agentRef,
-        cycleId, startedAt, decision,
-        brainSummary: workspace.storage.warnings.join(" ") || "0G Storage upload is not ready for audit bundles.",
-        status: "blocked",
-      }));
-    }
+    storageWarning = workspace.storage.uploadReady
+      ? undefined
+      : workspace.storage.warnings.join(" ") || "0G Storage upload is unavailable; execution will use fallback audit anchoring.";
 
     const vault = workspace.vault;
     const lpPolicy = vault.lpPolicy;
@@ -206,20 +234,22 @@ async function processLpDeployment(
       }));
     }
 
-    // Idle-balance + exposure gate. The vault enforces on-chain; this avoids
-    // spending a Router call + quote when there is clearly nothing to deploy.
-    const balance0G = parseEther(vault.balance0G ?? "0");
-    const perLpActionCap = parseEther(lpPolicy.perLpActionCap0G);
-    const remainingLpExposure = parseEther(
-      (parseEther(lpPolicy.maxLpExposure0G) - parseEther(vault.openLpExposure0G ?? "0") > 0n)
-        ? (parseEther(lpPolicy.maxLpExposure0G) - parseEther(vault.openLpExposure0G ?? "0")).toString()
-        : "0",
-    );
-    if (balance0G < perLpActionCap || remainingLpExposure <= 0n) {
+    // Idle-balance + exposure gate. maxPerPosition0G is the agent's real
+    // runtime cap; perLpActionCap0G is only the vault ceiling/backstop. This
+    // avoids the old bottleneck where a generous vault cap (e.g. 1,000,000 0G)
+    // incorrectly required the vault balance to be at least that high.
+    const mintBudget = computeLpMintBudget({
+      balance0G: vault.balance0G ?? "0",
+      maxLpExposure0G: lpPolicy.maxLpExposure0G,
+      maxPerPosition0G: deployment.runtime?.maxPerPosition0G,
+      openLpExposure0G: vault.openLpExposure0G ?? "0",
+      perLpActionCap0G: lpPolicy.perLpActionCap0G,
+    });
+    if (mintBudget.maxAmountWei <= 0n) {
       return appendAndReturn(buildRecord({
         agentId: deployment.id, agentName: deployment.name, agentRef: deployment.agentRef,
         cycleId, startedAt, decision,
-        brainSummary: `Idle balance ${vault.balance0G ?? "0"} 0G below per-action cap ${lpPolicy.perLpActionCap0G} 0G or no exposure headroom.`,
+        brainSummary: `No LP mint budget: limiting factor ${mintBudget.limitingFactor}; balance ${vault.balance0G ?? "0"} 0G, remaining exposure ${mintBudget.remainingLpExposure0G} 0G, agent max ${deployment.runtime?.maxPerPosition0G ?? "unset"} 0G, vault ceiling ${lpPolicy.perLpActionCap0G} 0G.`,
         status: "held",
       }));
     }
@@ -244,6 +274,46 @@ async function processLpDeployment(
 
     // Build candidates + fence, then ask the brain.
     const publicClient = makeMainnetPublicClient();
+
+    // Dedup source (Bug 3): pools the agent already holds an open position in.
+    // Derived from the VALIDATED sellableLpPositions list (registry-driven post
+    // A1.4 + re-validated per tokenId via readLpPositionByTokenId), NOT the raw
+    // registry file — so a stale cached pool from a failed registry prune cannot
+    // block a pool forever (the listing filters burned/drifted entries out).
+    const openPoolAddresses: Address[] = (vault.sellableLpPositions ?? [])
+      .map((p) => p.poolAddress.toLowerCase() as Address);
+    const openLpExposure = parseLpDecimal0G(vault.openLpExposure0G ?? "0", "openLpExposure0G");
+
+    // Blind-hold (codex #4): the vault enforces total 0G exposure + per-action
+    // cap but NOT one-NFT-per-pool, so minting when we can't see the existing
+    // positions could create a duplicate pair. If the listing is empty but the
+    // vault reports open exposure, hold and ask for a backfill rather than mint
+    // blind. (sellableLpPositions empty + openLpExposure 0 is the genuine empty
+    // case — falls through to normal mint.)
+    if (openPoolAddresses.length === 0 && openLpExposure > 0n) {
+      return appendAndReturn(buildRecord({
+        agentId: deployment.id, agentName: deployment.name, agentRef: deployment.agentRef,
+        cycleId, startedAt, decision,
+        brainSummary: "Open positions exist but listing is blind; holding to avoid duplicate mint. Re-run scripts/lp-backfill-positions.ts --force.",
+        status: "held",
+      }));
+    }
+
+    // Agent-enforced maxPositions gate (Bug 2): the create-form filter is
+    // persisted in deployment.runtime and enforced HERE, not via vault tighten.
+    // The vault's on-chain maxLpExposure0G stays as the hard backstop; this is
+    // the operational cap the operator set per agent. Hold when the agent
+    // already has maxPositions concurrent open positions.
+    const maxPositions = deployment.runtime?.maxPositions ?? 2;
+    if (openPoolAddresses.length >= maxPositions) {
+      return appendAndReturn(buildRecord({
+        agentId: deployment.id, agentName: deployment.name, agentRef: deployment.agentRef,
+        cycleId, startedAt, decision,
+        brainSummary: `Max positions reached: ${openPoolAddresses.length}/${maxPositions} open. Holding.`,
+        status: "held",
+      }));
+    }
+
     const pools = await buildPoolCandidates(publicClient);
     if (pools.length === 0) {
       return appendAndReturn(buildRecord({
@@ -251,16 +321,32 @@ async function processLpDeployment(
         cycleId, startedAt, decision, brainSummary: "No zappable Zia LP pools available.", status: "held",
       }));
     }
-    const fence = buildFence(vault);
+    // Early-skip: every allowlisted pool already has an open position — no
+    // diversification possible, so hold without spending a Router call.
+    const openPoolSet = new Set(openPoolAddresses.map((a) => a.toLowerCase()));
+    if (pools.every((p) => openPoolSet.has(p.poolAddress.toLowerCase()))) {
+      return appendAndReturn(buildRecord({
+        agentId: deployment.id, agentName: deployment.name, agentRef: deployment.agentRef,
+        cycleId, startedAt, decision,
+        brainSummary: "All allowlisted LP pools already have open positions.",
+        status: "held",
+      }));
+    }
+    const fence = applyRuntimeLpFence(buildFence(vault), deployment.runtime);
     const brainDecision = await decideLpAction({
       pools,
       fence,
+      openPoolAddresses,
       vaultBalance0G: vault.balance0G ?? "0",
       readiness: {
         vaultReady: vault.ready,
         storageUploadReady: workspace.storage.uploadReady,
-        vaultWarnings: vault.warnings,
+        vaultWarnings: storageWarning ? [...vault.warnings, storageWarning] : vault.warnings,
       },
+      // Agent-enforced per-position cap (Bug 2): clamp the mint amount to the
+      // operator's create-form "Max 0G/position". The vault's perLpActionCap0G
+      // stays as the hard backstop; this is the tighter operational cap.
+      maxPerPosition0G: deployment.runtime?.maxPerPosition0G,
       selectedModel: config.selectedModel,
     });
     brainSummary = brainDecision.summary;
@@ -280,28 +366,57 @@ async function processLpDeployment(
     tickLower = brainDecision.tickLower;
     tickUpper = brainDecision.tickUpper;
     amount0G = brainDecision.amount0G;
+    const llmAttempt: LpMintAttempt = {
+      amount0G,
+      poolAddress,
+      source: "llm",
+      tickLower,
+      tickUpper,
+    };
+    const fallbackAttempts = buildDeterministicFallbackMintAttempts({
+      amount0G: mintBudget.maxAmount0G,
+      failedPoolAddresses: [llmAttempt.poolAddress],
+      fence,
+      maxAttempts: MAX_MINT_ATTEMPTS_PER_CYCLE - 1,
+      openPoolAddresses,
+      pools,
+    });
+    const mintAttempts = [llmAttempt, ...fallbackAttempts].slice(0, MAX_MINT_ATTEMPTS_PER_CYCLE);
 
     if (config.dryRun) {
       return appendAndReturn(buildRecord({
         agentId: deployment.id, agentName: deployment.name, agentRef: deployment.agentRef,
         cycleId, startedAt, decision, brainSummary, model, poolAddress, tickLower, tickUpper, amount0G,
+        storageWarning,
+        attempts: [attemptRecord(llmAttempt, "dry_run")],
         status: "dry_run",
       }));
     }
 
-    // Execute: pass the brain's pool/ticks/amount as overrides so
+    // Execute: pass each candidate pool/ticks/amount as overrides so
     // runLpMintForAgent does NOT re-call the Router. It re-loads the workspace
     // (freshest snapshot) + quotes + executes + anchors the proof.
-    const result = await runLpMintForAgent({
-      deployment: workspace.agent.deployment,
-      llmModel: config.selectedModel,
-      constrainPoolAddress: brainDecision.poolAddress,
-      overrideTickLower: brainDecision.tickLower,
-      overrideTickUpper: brainDecision.tickUpper,
-      overrideAmount0G: brainDecision.amount0G,
-    });
-    lpTxHash = result.lpTxHash;
-    proofTxHash = result.proofTxHash;
+    const attemptRecords: OgAgentLpAttemptRecord[] = [];
+    let lastError: string | undefined;
+    for (let attemptIndex = 0; attemptIndex < mintAttempts.length; attemptIndex += 1) {
+      const attempt = mintAttempts[attemptIndex]!;
+      poolAddress = attempt.poolAddress;
+      tickLower = attempt.tickLower;
+      tickUpper = attempt.tickUpper;
+      amount0G = attempt.amount0G;
+      try {
+        const result = await runLpMintForAgent({
+          deployment: workspace.agent.deployment,
+          llmModel: config.selectedModel,
+          constrainPoolAddress: attempt.poolAddress,
+          overrideTickLower: attempt.tickLower,
+          overrideTickUpper: attempt.tickUpper,
+          overrideAmount0G: attempt.amount0G,
+        });
+        lpTxHash = result.lpTxHash;
+        proofTxHash = result.proofTxHash;
+        storageWarning = result.storageWarning ?? storageWarning;
+        attemptRecords.push(attemptRecord(attempt, "executed"));
 
     // Chain auto-stake when the vault policy allows staking AND a Zia stake vault
     // is mapped for this pool AND there is no LP cooldown. Best-effort: a stake
@@ -313,6 +428,12 @@ async function processLpDeployment(
     // position unstaked for a manual Stake after the cooldown.
     let mintBrainSummary = brainSummary;
     let mintTokenId: string | undefined = result.tokenId ? String(result.tokenId) : undefined;
+        if (attempt.source === "fallback") {
+          mintBrainSummary = `Fallback attempt ${attemptIndex + 1}/${mintAttempts.length} succeeded after retryable guard failure.`;
+        }
+        if (result.storageWarning) {
+          mintBrainSummary = `${mintBrainSummary ?? ""} Storage warning: ${result.storageWarning}`.trim();
+        }
     if (result.tokenId && lpPolicy.allowStaking && findZiaLpVaultByPool(result.poolAddress) && cooldownSeconds === 0) {
       try {
         const stakeResult = await runLpExitForAgent({
@@ -320,8 +441,12 @@ async function processLpDeployment(
           kind: "stake",
           poolAddress: result.poolAddress,
           tokenId: String(result.tokenId),
-        });
-        mintBrainSummary = `${brainSummary ?? ""} minted + staked`.trim();
+          });
+          storageWarning = stakeResult.storageWarning ?? storageWarning;
+          if (stakeResult.storageWarning) {
+            mintBrainSummary = `${mintBrainSummary ?? ""} Stake storage warning: ${stakeResult.storageWarning}`.trim();
+          }
+          mintBrainSummary = `${mintBrainSummary ?? ""} minted + staked`.trim();
         await appendOgAgentLpRun({
           agentId: deployment.id,
           agentName: deployment.name,
@@ -367,15 +492,64 @@ async function processLpDeployment(
     return appendAndReturn(buildRecord({
       agentId: deployment.id, agentName: deployment.name, agentRef: deployment.agentRef,
       cycleId, startedAt, decision, brainSummary: mintBrainSummary, model, poolAddress, tickLower, tickUpper, amount0G,
+      storageWarning,
+      attempts: attemptRecords,
       tokenId: mintTokenId, lpTxHash, proofTxHash, status: "executed",
+    }));
+      } catch (attemptError) {
+        const message = sanitizeError(attemptError);
+        const retryable = isRetryableLpMintError(message);
+        lastError = message;
+        attemptRecords.push(attemptRecord(attempt, "errored", message, retryable));
+        if (!retryable) {
+          break;
+        }
+      }
+    }
+
+    const allFailedSummary = mintAttempts.length > 1
+      ? `All ${attemptRecords.length}/${mintAttempts.length} LP mint attempts failed. Last error: ${lastError ?? "unknown error"}`
+      : `LP mint attempt failed. ${lastError ?? "Unknown error"}`;
+    return appendAndReturn(buildRecord({
+      agentId: deployment.id, agentName: deployment.name, agentRef: deployment.agentRef,
+      cycleId, startedAt, decision, brainSummary: allFailedSummary, model, poolAddress, tickLower, tickUpper, amount0G,
+      storageWarning,
+      attempts: attemptRecords,
+      lpTxHash, proofTxHash, error: lastError, status: "errored",
     }));
   } catch (error) {
     const message = sanitizeError(error);
     return appendAndReturn(buildRecord({
       agentId: deployment.id, agentName: deployment.name, agentRef: deployment.agentRef,
       cycleId, startedAt, decision, brainSummary, model, poolAddress, tickLower, tickUpper, amount0G,
-      lpTxHash, proofTxHash, error: message, status: "errored",
+      storageWarning, lpTxHash, proofTxHash, error: message, status: "errored",
     }));
+  }
+}
+
+async function processLpDeploymentWithLock(
+  config: OgAgentLpWorkerConfig,
+  deployment: OgAgentDeploymentRecord,
+): Promise<OgAgentLpRunRecord> {
+  const lock = await acquireLpAgentCycleLock(deployment.id);
+  if (!lock) {
+    const startedAt = new Date().toISOString();
+    return appendAndReturn(buildRecord({
+      agentId: deployment.id,
+      agentName: deployment.name,
+      agentRef: deployment.agentRef,
+      cycleId: randomUUID(),
+      startedAt,
+      decision: "hold",
+      brainSummary: "Another LP cycle is already running for this agent; skipping this cycle.",
+      status: "held",
+    }));
+  }
+
+  try {
+    return await processLpDeployment(config, deployment);
+  } finally {
+    await releaseLpAgentCycleLock(lock);
   }
 }
 
@@ -400,6 +574,8 @@ function buildRecord(input: {
   agentId: string; agentName: string; agentRef?: string; cycleId: string; startedAt: string;
   decision: "mint" | "hold"; brainSummary?: string; model?: string;
   poolAddress?: Address; tickLower?: number; tickUpper?: number; amount0G?: string;
+  storageWarning?: string;
+  attempts?: OgAgentLpAttemptRecord[];
   tokenId?: string;
   lpTxHash?: OgAgentLpRunRecord["lpTxHash"]; proofTxHash?: OgAgentLpRunRecord["proofTxHash"];
   error?: string; status: OgAgentLpRunRecord["status"];
@@ -418,6 +594,8 @@ function buildRecord(input: {
     tickLower: input.tickLower,
     tickUpper: input.tickUpper,
     amount0G: input.amount0G,
+    storageWarning: input.storageWarning,
+    attempts: input.attempts,
     tokenId: input.tokenId,
     lpTxHash: input.lpTxHash,
     proofTxHash: input.proofTxHash,
@@ -426,9 +604,84 @@ function buildRecord(input: {
   };
 }
 
+function attemptRecord(
+  attempt: LpMintAttempt,
+  status: OgAgentLpAttemptRecord["status"],
+  error?: string,
+  retryable?: boolean,
+): OgAgentLpAttemptRecord {
+  return {
+    amount0G: attempt.amount0G,
+    error,
+    poolAddress: attempt.poolAddress,
+    retryable,
+    source: attempt.source,
+    status,
+    tickLower: attempt.tickLower,
+    tickUpper: attempt.tickUpper,
+  };
+}
+
 async function appendAndReturn(record: OgAgentLpRunRecord): Promise<OgAgentLpRunRecord> {
   await appendOgAgentLpRun(record).catch(() => undefined);
   return record;
+}
+
+async function acquireLpAgentCycleLock(agentId: string): Promise<{ handle: FileHandle; path: string } | null> {
+  await mkdir(AGENT_CYCLE_LOCK_DIR, { recursive: true });
+  const path = join(AGENT_CYCLE_LOCK_DIR, `${safeArtifactName(agentId)}.lock`);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const handle = await open(path, "wx");
+      await handle.writeFile(JSON.stringify({ agentId, lockedAt: Date.now(), pid: process.pid }), "utf8");
+      return { handle, path };
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+      if (code !== "EEXIST") {
+        throw error;
+      }
+      if (attempt === 0 && await isLpAgentCycleLockStale(path)) {
+        await unlink(path).catch(() => undefined);
+        continue;
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+async function releaseLpAgentCycleLock(lock: { handle: FileHandle; path: string }): Promise<void> {
+  await lock.handle.close().catch(() => undefined);
+  await unlink(lock.path).catch(() => undefined);
+}
+
+async function isLpAgentCycleLockStale(path: string): Promise<boolean> {
+  try {
+    const raw = await readFile(path, "utf8");
+    const payload = JSON.parse(raw || "{}") as { lockedAt?: number; pid?: number };
+    if (typeof payload.pid === "number" && !isPidAlive(payload.pid)) {
+      return true;
+    }
+    if (typeof payload.lockedAt === "number") {
+      return Date.now() - payload.lockedAt > AGENT_CYCLE_LOCK_STALE_MS;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function safeArtifactName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_.-]/gu, "_").slice(0, 96);
 }
 
 function sanitizeError(error: unknown): string {

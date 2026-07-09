@@ -32,6 +32,7 @@ import { WalletConnectButton } from "@/components/wallet";
 import { useWalletConnection } from "@/components/wallet/useWalletConnection";
 import {
   buildSigmaPetState,
+  dispatchSigmaPetReaction,
   SIGMA_PET_STATE_EVENT,
   type SigmaPetStateDetail,
 } from "@/lib/copilot/sigma-pet";
@@ -572,6 +573,7 @@ export function EmbeddedCopilotRail({
   }
 
   function markSessionSaved(id: string) {
+    dispatchSigmaPetReaction("chat.session-saved");
     setSavedSessionIdsByNetwork((current) => ({
       ...current,
       [networkId]: { ...(current[networkId] ?? {}), [id]: true as const },
@@ -762,6 +764,7 @@ export function EmbeddedCopilotRail({
     if (chatLocked || isLoadingSession || !wallet.address) {
       return;
     }
+    dispatchSigmaPetReaction("chat.session-load", { force: true });
     setIsLoadingSessionByNetwork((current) => ({ ...current, [networkId]: true }));
     setIsPastSessionsOpen(false);
     try {
@@ -806,6 +809,7 @@ export function EmbeddedCopilotRail({
   }
 
   function startNewSession() {
+    dispatchSigmaPetReaction("chat.new-session", { force: true });
     // Auto-save the current session before discarding it. The auto-save is
     // fire-and-forget; the cleared transcript starts a fresh session immediately.
     if (sessionMode === "saved" && !currentSessionSaved) {
@@ -884,6 +888,7 @@ export function EmbeddedCopilotRail({
     if (!content || isSending) {
       return;
     }
+    dispatchSigmaPetReaction("chat.submit", { force: true });
 
     if (chatLocked) {
       setMessagesByNetwork((current) => ({
@@ -918,6 +923,7 @@ export function EmbeddedCopilotRail({
 
     const quickPromptResponse = resolveQuickPromptResponse(content);
     if (quickPromptResponse) {
+      dispatchSigmaPetReaction("chat.answer");
       const operatorMessage: EmbeddedCopilotMessage = { content, role: "operator" };
       setMessagesByNetwork((current) => ({
         ...current,
@@ -942,6 +948,12 @@ export function EmbeddedCopilotRail({
     try {
       const operatorMessage: EmbeddedCopilotMessage = { content, role: "operator" };
       const tradeCommand = resolveCopilotTradeCommand(content, networkId, networkRoutes);
+      if (tradeCommand) {
+        dispatchSigmaPetReaction(
+          tradeCommand.kind === "clarify" ? "chat.clarify" : "chat.trade-detected",
+          { force: true },
+        );
+      }
 
       if (tradeCommand?.kind === "clarify") {
         setMessagesByNetwork((current) => ({
@@ -1000,6 +1012,7 @@ export function EmbeddedCopilotRail({
         };
 
         if (permissionMode === "default" || previewData.preview.proofBundle.policyDecision !== "allow") {
+          dispatchSigmaPetReaction("chat.trade-review", { force: true });
           setMessagesByNetwork((current) => ({
             ...current,
             [networkId]: [
@@ -1019,6 +1032,10 @@ export function EmbeddedCopilotRail({
 
         const executeData = await requestCopilotTrade("execute", resolvedRequest, walletProof);
         const execution = executeData.execution;
+        dispatchSigmaPetReaction(
+          isSuccessfulTradeExecution(execution) ? "chat.trade-submitted" : "chat.trade-blocked",
+          { force: true },
+        );
         const resultCard: CopilotTradeResultCard = {
           execution,
           kind: "trade_result",
@@ -1102,6 +1119,7 @@ export function EmbeddedCopilotRail({
           }));
         },
         onDone: ({ content, auditBundle }) => {
+          dispatchSigmaPetReaction("chat.answer");
           updatePending((prev) => ({
             ...(streamIdLocal ? { streamId: streamIdLocal } : {}),
             content,
@@ -1121,6 +1139,7 @@ export function EmbeddedCopilotRail({
         },
       });
     } catch (error) {
+      dispatchSigmaPetReaction("chat.trade-failed", { force: true });
       setMessagesByNetwork((current) => ({
         ...current,
         [networkId]: [
@@ -1156,6 +1175,7 @@ export function EmbeddedCopilotRail({
 
     setActiveTradeDraftIdByNetwork((current) => ({ ...current, [networkId]: draftId }));
     setIsTradeSubmittingByNetwork((current) => ({ ...current, [networkId]: true }));
+    dispatchSigmaPetReaction("chat.confirm-trade", { force: true });
 
     try {
       const walletProof = await ensureCopilotWalletProof(connectedAddress);
@@ -1169,6 +1189,10 @@ export function EmbeddedCopilotRail({
         status: isSuccessfulTradeExecution(execution) ? "success" : "failed",
         ...(execution?.reason && !isSuccessfulTradeExecution(execution) ? { error: execution.reason } : {}),
       };
+      dispatchSigmaPetReaction(
+        isSuccessfulTradeExecution(execution) ? "chat.trade-submitted" : "chat.trade-blocked",
+        { force: true },
+      );
 
       replaceTradeReviewCard(draftId, {
         card: resultCard,
@@ -1179,6 +1203,7 @@ export function EmbeddedCopilotRail({
         ...(isSuccessfulTradeExecution(execution) ? {} : { status: "error" as const }),
       });
     } catch (error) {
+      dispatchSigmaPetReaction("chat.trade-failed", { force: true });
       const resultCard: CopilotTradeResultCard = {
         error: error instanceof Error ? error.message : "Copilot trade execution failed.",
         kind: "trade_result",
@@ -1209,6 +1234,7 @@ export function EmbeddedCopilotRail({
       return;
     }
 
+    dispatchSigmaPetReaction("chat.cancel-trade", { force: true });
     replaceTradeReviewCard(draftId, {
       card: {
         kind: "trade_result",
@@ -1264,6 +1290,7 @@ export function EmbeddedCopilotRail({
                 mode={sessionMode}
                 disabled={!savedModeAvailable}
                 onChange={(mode) => {
+                  dispatchSigmaPetReaction(mode === "privacy" ? "chat.privacy" : "chat.saved", { force: true });
                   setSessionModeByNetwork((current) => ({ ...current, [networkId]: mode }));
                   if (savedModeAvailable) {
                     try {
@@ -1284,7 +1311,10 @@ export function EmbeddedCopilotRail({
               />
               <button
                 type="button"
-                onClick={() => setIsPastSessionsOpen((value) => !value)}
+                onClick={() => {
+                  dispatchSigmaPetReaction("chat.past-sessions", { force: true });
+                  setIsPastSessionsOpen((value) => !value);
+                }}
                 disabled={chatLocked || !savedModeAvailable || savedSessions.length === 0}
                 title={
                   !savedModeAvailable
@@ -1316,9 +1346,10 @@ export function EmbeddedCopilotRail({
               <OgModelSelector
                 catalog={modelCatalog}
                 selectedModel={selectedModel}
-                onChange={(model) =>
-                  setSelectedModelByNetwork((current) => ({ ...current, [networkId]: model }))
-                }
+                onChange={(model) => {
+                  dispatchSigmaPetReaction("chat.model", { force: true });
+                  setSelectedModelByNetwork((current) => ({ ...current, [networkId]: model }));
+                }}
               />
             </div>
             {isPastSessionsOpen && savedModeAvailable ? (

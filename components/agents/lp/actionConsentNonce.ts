@@ -6,7 +6,10 @@ export type LpActionConsentScope =
   | "lp-unstake"
   | "lp-zap-out"
   | "lp-automation"
-  | "vault-withdraw-native";
+  | "lp-policy"
+  | "vault-withdraw-native"
+  | "vault-migrate"
+  | "vault-migrate-v4";
 
 export interface ActionConsentNonce {
   expiresAt: number;

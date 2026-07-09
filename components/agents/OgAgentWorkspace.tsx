@@ -6,14 +6,15 @@ import {
   ArrowRight,
   Bot,
   Database,
+  Droplets,
   FileCheck2,
   LayoutGrid,
   LayoutList,
-  Loader2,
   MessageSquare,
   Plus,
   RefreshCcw,
   Shield,
+  TrendingUp,
 } from "lucide-react";
 import { AppShell } from "@/components/app/AppShell";
 import {
@@ -23,6 +24,7 @@ import {
 } from "@/components/app/EmbeddedCopilotRail";
 import { useOgNetwork } from "@/components/app/useOgNetwork";
 import { useWalletConnection } from "@/components/wallet/useWalletConnection";
+import { Skeleton } from "@/components/ui/Skeleton";
 import type { OgAgentDeploymentRecord, OgAgentWorkspace, OgRemovedAgentRecord } from "@/lib/agent/single-agent";
 import type { CopilotContextItem } from "@/lib/types";
 
@@ -66,7 +68,6 @@ export function OgAgentWorkspace() {
       setIsLoading(false);
       return;
     }
-
     setIsLoading(true);
     setError(undefined);
     try {
@@ -234,9 +235,10 @@ export function OgAgentWorkspace() {
             </div>
 
             {isLoading && isMainnetAgentScope ? (
-              <div className="rounded-[28px] border border-line bg-panel-solid-strong p-6 text-sm text-muted">
-                <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-                Loading agents...
+              <div className="grid gap-4 xl:grid-cols-2">
+                {Array.from({ length: 4 }, (_, index) => (
+                  <AgentCardSkeleton key={index} index={index} />
+                ))}
               </div>
             ) : scopedWorkspace && visibleDeployments.length ? (
               rosterView === "grid" ? (
@@ -258,7 +260,12 @@ export function OgAgentWorkspace() {
                 <AgentTable deployments={visibleDeployments} workspace={scopedWorkspace} />
               )
             ) : (
-              <NetworkEmptyState activeFilter={activeFilter} isMainnet={isMainnetAgentScope} networkLabel={network.label} />
+              <NetworkEmptyState
+                activeFilter={activeFilter}
+                isMainnet={isMainnetAgentScope}
+                isWalletConnected={Boolean(wallet.address)}
+                networkLabel={network.label}
+              />
             )}
               </section>
             </div>
@@ -314,8 +321,10 @@ export function OgAgentWorkspace() {
 function buildHealth(workspace: OgAgentWorkspace | null) {
   const deployedCount = workspace?.agents.length ?? 0;
   const deployed = deployedCount > 0;
-  const vaultReady = workspace?.vault.ready === true;
-  const warnings = (workspace?.vault.warnings.length ?? 0) + (workspace?.storage.warnings.length ?? 0);
+  const lpFundingOnly = workspace ? isManagedLpFundingOnlyWorkspace(workspace) : false;
+  const vaultReady = workspace?.vault.ready === true || workspace?.agent.status === "armed" || lpFundingOnly;
+  const vaultWarnings = lpFundingOnly ? 0 : workspace?.vault.warnings.length ?? 0;
+  const warnings = vaultWarnings + (workspace?.storage.warnings.length ?? 0);
   const openPositions = (workspace?.vault.sellablePositions?.length ?? 0) + (workspace?.vault.sellableLpPositions?.length ?? 0);
   return [
     {
@@ -469,12 +478,26 @@ function buildWorkspaceCopilotContext(
 function NetworkEmptyState({
   activeFilter,
   isMainnet,
+  isWalletConnected,
   networkLabel,
 }: {
   activeFilter: RosterFilter;
   isMainnet: boolean;
+  isWalletConnected: boolean;
   networkLabel: string;
 }) {
+  if (isMainnet && !isWalletConnected) {
+    return (
+      <div className="rounded-[28px] border border-line bg-panel-solid-strong p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+        <Bot className="mb-3 h-7 w-7 text-muted" />
+        <p className="text-sm font-semibold text-foreground">Connect your wallet to view your agents.</p>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-muted">
+          Agents are scoped to the connected Policy Vault owner wallet. Connect a wallet to load your roster.
+        </p>
+      </div>
+    );
+  }
+
   const title = isMainnet
     ? activeFilter === "removed"
       ? "No removed 0G agents."
@@ -539,8 +562,30 @@ function getDeploymentRosterStatus(
 ): OgAgentWorkspace["agent"]["status"] {
   if ("removedAt" in deployment) return "removed";
   if (deployment.paused) return "paused";
+  if (workspace.agent.deployment?.id === deployment.id) return workspace.agent.status;
   if (!workspace.vault.ready || workspace.vault.paused || workspace.vault.executorRevoked) return "blocked";
   return "armed";
+}
+
+function isManagedLpFundingOnlyWorkspace(workspace: OgAgentWorkspace): boolean {
+  return hasManagedLpPosition(workspace.vault) && hasOnlyLpFundingWarnings(workspace.vault);
+}
+
+function hasManagedLpPosition(vault: OgAgentWorkspace["vault"]): boolean {
+  return (vault.sellableLpPositions?.length ?? 0) > 0;
+}
+
+function hasOnlyLpFundingWarnings(vault: OgAgentWorkspace["vault"]): boolean {
+  return Boolean(
+    vault.paused !== true &&
+      vault.executorRevoked !== true &&
+      vault.warnings.length > 0 &&
+      vault.warnings.every(isLpFundingWarning),
+  );
+}
+
+function isLpFundingWarning(warning: string): boolean {
+  return warning === "Policy Vault has no 0G balance." || warning.startsWith("LP Entry has no 0G balance;");
 }
 
 function AgentCard({
@@ -578,7 +623,8 @@ function AgentCard({
   const maxPositions = deployment.runtime?.maxPositions ?? 0;
   const sourceCount = deployment.filters.length;
   const isRemoved = "removedAt" in deployment;
-  const needsAttention = status === "blocked" || vault.paused === true || vault.executorRevoked === true || vault.warnings.length > 0;
+  const lpFundingOnly = isLpAgent && status === "armed" && hasManagedLpPosition(vault) && hasOnlyLpFundingWarnings(vault);
+  const needsAttention = status === "blocked" || vault.paused === true || vault.executorRevoked === true || (!lpFundingOnly && vault.warnings.length > 0);
   const statusNote = needsAttention
     ? vault.warnings[0] ?? (vault.paused ? "Paused by operator" : vault.executorRevoked ? "Executor revoked by owner" : "Review vault readiness")
     : isRemoved
@@ -598,6 +644,7 @@ function AgentCard({
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="truncate text-base font-semibold text-foreground">{deployment.name}</h3>
+              <AgentTypeBadge isLpAgent={isLpAgent} />
               <span className={`rounded-full border px-2.5 py-1 text-[11px] font-medium capitalize ${statusClass}`}>
                 {status}
               </span>
@@ -669,6 +716,59 @@ function AgentCard({
   );
 }
 
+function AgentTypeBadge({ isLpAgent }: { isLpAgent: boolean }) {
+  return isLpAgent ? (
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-blue/20 bg-blue/10 px-2.5 py-1 text-[11px] font-medium text-blue">
+      <Droplets className="h-3 w-3" />
+      LP Agent
+    </span>
+  ) : (
+    <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px] font-medium text-primary">
+      <TrendingUp className="h-3 w-3" />
+      Trading Agent
+    </span>
+  );
+}
+
+function AgentCardSkeleton({ index }: { index: number }) {
+  return (
+    <div
+      className="animate-feed-reveal rounded-[24px] border border-line bg-panel-solid-strong p-4 shadow-[0_22px_64px_rgba(0,0,0,0.22)] lg:rounded-[28px] lg:p-5"
+      style={{ animationDelay: `${index * 60}ms` }}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <Skeleton className="h-11 w-11 shrink-0 rounded-2xl" />
+          <div className="min-w-0 flex-1 space-y-2">
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-5 w-16 rounded-full" />
+            </div>
+            <Skeleton className="h-3.5 w-full max-w-[22rem]" />
+          </div>
+        </div>
+        <Skeleton className="hidden h-7 w-16 rounded-full sm:block" />
+      </div>
+
+      <div className="mt-5 grid gap-4 border-y border-line py-4 sm:grid-cols-4">
+        {Array.from({ length: 4 }, (_, i) => (
+          <div key={i} className="space-y-1.5">
+            <Skeleton className="h-2.5 w-14" />
+            <Skeleton className="h-4 w-10" />
+          </div>
+        ))}
+      </div>
+
+      <Skeleton className="mt-4 h-16 w-full rounded-2xl" />
+
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <Skeleton className="h-3 w-40" />
+        <Skeleton className="h-9 w-20 rounded-full" />
+      </div>
+    </div>
+  );
+}
+
 function AgentTable({
   deployments,
   workspace,
@@ -678,20 +778,22 @@ function AgentTable({
 }) {
   return (
     <div className="overflow-hidden rounded-[24px] border border-line bg-panel-solid-strong">
-      <div className="grid grid-cols-[1.1fr_0.7fr_0.8fr_auto] gap-3 border-b border-line px-4 py-3 text-[10px] uppercase tracking-[0.2em] text-muted">
+      <div className="grid grid-cols-[1fr_0.7fr_0.6fr_0.8fr_auto] gap-3 border-b border-line px-4 py-3 text-[10px] uppercase tracking-[0.2em] text-muted">
         <span>Agent</span>
+        <span>Type</span>
         <span>Status</span>
         <span>Vault</span>
         <span>Action</span>
       </div>
       {deployments.map((deployment) => (
-        <div key={deployment.id} className="grid grid-cols-[1.1fr_0.7fr_0.8fr_auto] items-center gap-3 border-b border-line px-4 py-4 last:border-b-0">
+        <div key={deployment.id} className="grid grid-cols-[1fr_0.7fr_0.6fr_0.8fr_auto] items-center gap-3 border-b border-line px-4 py-4 last:border-b-0">
           <div className="min-w-0">
             <p className="truncate text-sm font-semibold text-foreground">{deployment.name}</p>
             <p className="truncate text-xs text-muted">{deployment.agentRef}</p>
           </div>
+          <AgentTypeBadge isLpAgent={isLpAgentDeployment(deployment)} />
           <span className="text-sm capitalize text-muted">{getDeploymentRosterStatus(deployment, workspace)}</span>
-          <span className="truncate font-mono text-xs text-muted">{workspace.vault.vault ? shortHash(workspace.vault.vault) : "--"}</span>
+          <span className="truncate font-mono text-xs text-muted">{deployment.vault ? shortHash(deployment.vault) : "--"}</span>
           <Link href={getAgentDetailHref(deployment)} className="inline-flex h-9 items-center rounded-full border border-line px-3 text-sm text-foreground hover:bg-panel">
             Open
           </Link>

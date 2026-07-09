@@ -37,6 +37,7 @@ import { useOgNetwork } from "@/components/app/useOgNetwork";
 import { shortHash } from "@/components/agents/OgAgentWorkspace";
 import { WalletConnectButton } from "@/components/wallet";
 import { useWalletConnection } from "@/components/wallet/useWalletConnection";
+import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import { buildCopilotWalletAccessMessage } from "@/lib/copilot/wallet-access";
 import { policyVaultAgentKeyAbi } from "@/lib/contracts/policy-vault";
 import { getOgNetwork } from "@/lib/og/networks";
@@ -257,6 +258,7 @@ export function OgAgentCreateWorkspace() {
   }
 
   function addTakeProfit() {
+    dispatchSigmaPetReaction("agent.create.form");
     setTakeProfits((current) =>
       current.length >= 4
         ? current
@@ -272,6 +274,7 @@ export function OgAgentCreateWorkspace() {
   }
 
   function removeTakeProfit(id: string) {
+    dispatchSigmaPetReaction("agent.create.form");
     setTakeProfits((current) => (current.length <= 1 ? current : current.filter((target) => target.id !== id)));
   }
 
@@ -284,7 +287,9 @@ export function OgAgentCreateWorkspace() {
     }
     if (wallet.isWrongChain) {
       setStatusText(`Switching wallet to ${network.networkName}.`);
+      dispatchSigmaPetReaction("wallet.switch.start", { force: true });
       await wallet.switchToOg();
+      dispatchSigmaPetReaction("wallet.switch.success", { force: true });
     }
     const message = buildCopilotWalletAccessMessage({
       address: wallet.address,
@@ -292,6 +297,7 @@ export function OgAgentCreateWorkspace() {
       networkId,
     });
     const cached = walletAccessKey ? walletAccessByKey[walletAccessKey] : undefined;
+    if (!cached) dispatchSigmaPetReaction("wallet.signature.pending", { force: true });
     const signature = cached ?? await signMessage.signMessageAsync({ message });
     if (walletAccessKey && !cached) {
       setWalletAccessByKey((current) => ({ ...current, [walletAccessKey]: signature }));
@@ -310,6 +316,7 @@ export function OgAgentCreateWorkspace() {
     }
     setIsDeploying(true);
     setStatusText("Uploading redacted metadata to 0G Storage and minting Agentic ID.");
+    dispatchSigmaPetReaction("agent.deploy.start", { force: true });
     try {
       const walletProof = await ensureOwnerWalletProof();
       const response = await fetch("/api/agents/deploy", {
@@ -319,7 +326,8 @@ export function OgAgentCreateWorkspace() {
           runtime: {
             maxCapitalPerTrade0G: maxCapitalPerTradeUnit === "0G" ? maxCapitalPerTrade : undefined,
             maxHoldingMinutes: Number.parseInt(maxHoldingTime, 10),
-            maxPositions: Number.parseInt(maxPositions, 10),
+            // Trading agents are capped at 5 concurrent positions (product limit).
+            maxPositions: Math.min(5, Math.max(1, Number.parseInt(maxPositions, 10) || 1)),
             signalConfidence: Number.parseInt(signalConfidence, 10),
             slippageBps: Math.round(Number.parseFloat(slippageTolerance) * 100),
           },
@@ -337,8 +345,10 @@ export function OgAgentCreateWorkspace() {
       await enableAgentKeyOnActiveVault(payload.data.workspace);
       setWorkspace(payload.data.workspace);
       setStatusText("Agentic ID minted and bound to the Policy Vault.");
+      dispatchSigmaPetReaction("agent.deploy.success", { force: true });
       router.push(`/agents/${payload.data.workspace.agent.id}`);
     } catch (error) {
+      dispatchSigmaPetReaction("agent.deploy.fail", { force: true });
       setStatusText(error instanceof Error ? error.message : "Unable to deploy agent.");
     } finally {
       setIsDeploying(false);
@@ -365,15 +375,30 @@ export function OgAgentCreateWorkspace() {
     if (!account || !ownerAddress || account.toLowerCase() !== ownerAddress.toLowerCase()) {
       throw new Error("Connected wallet is not the Policy Vault owner.");
     }
-    const txHash = await walletClient.writeContract({
-      account,
-      address: vault,
-      abi: policyVaultAgentKeyAbi,
-      functionName: "setAgentKeyEnabled",
-      args: [deployment.agentKey as Hex, true],
-    });
-    setStatusText("Agent key enable submitted. Waiting for confirmation.");
-    await waitForReceipt(publicClient, txHash);
+    // Enable the key on ALL THREE V4 thirds. A trading agent runs on the Swap third, so enabling only
+    // the canonical LpEntry vault (nextWorkspace.vault.vault) would leave the agent unable to trade.
+    // Mirrors the trio-aware pattern in OgAgentDetailPage (H8).
+    const version = nextWorkspace.vault.vaultVersion ?? 1;
+    const swapVault = nextWorkspace.vault.v4SwapVault;
+    const entryVault = nextWorkspace.vault.v4LpEntryVault;
+    const exitVault = nextWorkspace.vault.v4LpExitVault;
+    const targets =
+      version >= 4 && swapVault && entryVault && exitVault ? [swapVault, entryVault, exitVault] : [vault];
+    for (const target of targets) {
+      const txHash = await walletClient.writeContract({
+        account,
+        address: target,
+        abi: policyVaultAgentKeyAbi,
+        functionName: "setAgentKeyEnabled",
+        args: [deployment.agentKey as Hex, true],
+        gas: 200_000n, // explicit gas → wallet skips (failing) estimation on 0G
+      });
+      setStatusText("Agent key enable submitted. Waiting for confirmation.");
+      const receipt = await waitForReceipt(publicClient, txHash);
+      if (receipt && receipt.status !== "success") {
+        throw new Error(`Agent key transaction ${txHash} reverted on-chain.`);
+      }
+    }
   }
 
   // v2 -> v3 migration: the V3 singleton is deployed offline via `npm run vault:mainnet:create:v3`
@@ -395,6 +420,7 @@ export function OgAgentCreateWorkspace() {
     }
     setIsMigrating(true);
     setStatusText("Waiting for wallet signature to authorize V3 vault migration.");
+    dispatchSigmaPetReaction("vault.migrate.start", { force: true });
     try {
       const walletProof = await ensureOwnerWalletProof();
       const response = await fetch("/api/agents/migrate-vault", {
@@ -408,6 +434,7 @@ export function OgAgentCreateWorkspace() {
       }
       setWorkspace(payload.data.workspace);
       setStatusText("Agent records migrated to the V3 Policy Vault; agent keys re-enabled on V3.");
+      dispatchSigmaPetReaction("vault.migrate.success", { force: true });
     } catch (error) {
       setStatusText(error instanceof Error ? error.message : "V3 vault migration failed.");
     } finally {
@@ -569,6 +596,7 @@ export function OgAgentCreateWorkspace() {
                     className={inputClassName}
                     inputMode="numeric"
                   />
+                  <p className="mt-1 text-xs text-muted">Trading agents can hold up to 5 concurrent positions.</p>
                 </Field>
               </div>
 

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { isHex, type Hex } from "viem";
 import { z } from "zod";
-import { loadOgAgentWorkspace, readAgentKeyEnabled, removeSingleOgAgentRecord } from "@/lib/agent/single-agent-server";
+import { invalidateOgAgentWorkspaceCache, loadOgAgentWorkspace, readAgentKeyEnabled, removeSingleOgAgentRecord } from "@/lib/agent/single-agent-server";
 import { readMainnetOwnerAddress } from "@/lib/agent/mainnet-vault-resolver";
 import { validateCopilotWalletGate } from "@/lib/copilot/wallet-gate";
 import { getOgNetwork } from "@/lib/og/networks";
@@ -76,6 +76,9 @@ export async function POST(request: Request) {
     ownerAddress,
     agentKeyDisableTxHash,
   );
+  // Must invalidate before this reload — otherwise it can return the cached
+  // pre-mutation workspace from the loadOgAgentWorkspace call above.
+  invalidateOgAgentWorkspaceCache();
   const nextWorkspace = await loadOgAgentWorkspace({ live: true, ownerAddress });
   return NextResponse.json({ data: { removed, workspace: nextWorkspace } });
 }

@@ -43,6 +43,10 @@ export default defineConfig({
     profiles: {
       default: {
         version: "0.8.24",
+        // Prefer the in-process WASM solc on this Windows host: spawning the copied native
+        // solc.exe from the workspace-local cache fails with EPERM. WASM solc runs in-process
+        // (no child spawn), which is portable and avoids the EPERM. Same for the production profile.
+        preferWasm: true,
         settings: {
           evmVersion: "cancun",
           viaIR: true,
@@ -58,6 +62,7 @@ export default defineConfig({
       },
       production: {
         version: "0.8.24",
+        preferWasm: true,
         settings: {
           evmVersion: "cancun",
           viaIR: true,

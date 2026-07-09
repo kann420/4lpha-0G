@@ -61,8 +61,9 @@ export class CannotLoosenPolicyError extends Error {
 /// `buildTightenPolicyCall`'s job. This function only computes the requested
 /// shape.
 export function translateLpFence(input: LpFenceInput, current: PolicyVaultV3LpPolicy): LpFenceLpPolicy {
-  if (!Number.isInteger(input.maxPositions) || input.maxPositions < 1 || input.maxPositions > 10) {
-    throw new Error(`translateLpFence: maxPositions must be an integer 1..10, got ${input.maxPositions}`);
+  // LP agents are capped at 3 concurrent positions (product limit).
+  if (!Number.isInteger(input.maxPositions) || input.maxPositions < 1 || input.maxPositions > 3) {
+    throw new Error(`translateLpFence: maxPositions must be an integer 1..3, got ${input.maxPositions}`);
   }
   if (!/^\d+(\.\d{1,18})?$/u.test(input.maxPerPosition0G.trim())) {
     throw new Error(`translateLpFence: maxPerPosition0G must be a positive decimal with <= 18 fractional digits`);
@@ -79,11 +80,18 @@ export function translateLpFence(input: LpFenceInput, current: PolicyVaultV3LpPo
     throw new Error("translateLpFence: maxLpExposure0G overflow");
   }
 
-  // A full rebalance day cannot exceed total exposure — clamp the daily cap down
-  // to the new total exposure if the existing daily cap is now too generous.
-  // The vault enforces daily + total independently; tightening here keeps the UI
-  // promise that "max N positions × P 0G" bounds the day as well.
-  const lpDailyCap0G = current.lpDailyCap0G > maxLpExposure0G ? maxLpExposure0G : current.lpDailyCap0G;
+  // Carry `lpDailyCap0G` forward UNCHANGED — do NOT clamp it down to
+  // `maxLpExposure0G`. The daily cap is an owner-controlled knob SEPARATE from
+  // the "max N positions × P 0G" UI promise (which `perLpActionCap0G` +
+  // `maxLpExposure0G` already enforce on-chain: `maxLpExposure0G` bounds total
+  // open exposure regardless of the daily cap). Clamping daily → exposure
+  // over-constrains AND, on the shared singleton vault, can lock ALL agents out
+  // of minting when a prior agent already spent more than the new
+  // `maxLpExposure0G` within the rolling 24h window — `tightenPolicy` is
+  // can-only-tighten with no reset, so the lockout has no on-chain recourse
+  // until the window rolls. Leaving the daily cap as-is preserves the owner's
+  // intent (e.g. unlimited daily for active rebalancing) and avoids that trap.
+  const lpDailyCap0G = current.lpDailyCap0G;
 
   return {
     perLpActionCap0G,

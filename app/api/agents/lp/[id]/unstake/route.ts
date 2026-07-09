@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { isAddress } from "viem";
 
-import { loadOgAgentWorkspace, OgAgentDeployError } from "@/lib/agent/single-agent-server";
+import { invalidateOgAgentWorkspaceCache, loadOgAgentWorkspace, OgAgentDeployError } from "@/lib/agent/single-agent-server";
 import { readMainnetOwnerAddress } from "@/lib/agent/mainnet-vault-resolver";
 import { consumeActionNonce } from "@/lib/copilot/action-nonce-store";
 import { validateCopilotActionConsent } from "@/lib/copilot/wallet-gate";
@@ -118,6 +118,7 @@ export async function POST(
       tokenId: result.tokenId,
       vault: vaultAddress,
     }).catch(() => undefined);
+    invalidateOgAgentWorkspaceCache();
     return NextResponse.json(
       {
         data: {

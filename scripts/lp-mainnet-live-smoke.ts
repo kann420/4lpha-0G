@@ -9,6 +9,7 @@ import { POST as stakePost } from "../app/api/agents/lp/[id]/stake/route";
 import { POST as unstakePost } from "../app/api/agents/lp/[id]/unstake/route";
 import { POST as zapOutPost } from "../app/api/agents/lp/[id]/zap-out/route";
 import { buildFence, buildPoolCandidates, makeMainnetPublicClient } from "../lib/agent/lp/lp-context";
+import { applyRuntimeLpFence } from "../lib/agent/lp/lp-runtime-policy";
 import { decideLpAction } from "../lib/agent/runtime/lp-brain";
 import type { OgAgentDeploymentRecord } from "../lib/agent/single-agent";
 import { loadOgAgentWorkspace } from "../lib/agent/single-agent-server";
@@ -214,6 +215,7 @@ async function deployLpAgentViaRoute({
   const body = {
     confirmedSteps: normalizedSteps,
     depositNative0G: deposit0G,
+    fundLpEntryFromSwap0G: "0",
     lpFence: {
       maxAprPct: null,
       maxPerPosition0G: DEFAULT_AMOUNT_0G,
@@ -234,6 +236,7 @@ async function deployLpAgentViaRoute({
     minAprPct: body.lpFence.minAprPct,
     maxAprPct: body.lpFence.maxAprPct,
     depositNative0G: body.depositNative0G,
+    fundLpEntryFromSwap0G: body.fundLpEntryFromSwap0G,
     confirmedSteps: body.confirmedSteps,
     triggerFirstMint: body.triggerFirstMint,
     nonce: nonce.nonce,
@@ -263,9 +266,12 @@ async function runReasoningCheck(agentId: string, owner: Address) {
   if (!workspace.agent.deployment) throw new Error("Cannot run reasoning without a deployed agent.");
   const publicClient = makeMainnetPublicClient();
   const pools = await buildPoolCandidates(publicClient);
+  const deployment = workspace.agent.deployment;
   const decision = await decideLpAction({
     pools,
-    fence: buildFence(workspace.vault),
+    fence: applyRuntimeLpFence(buildFence(workspace.vault), deployment.runtime),
+    maxPerPosition0G: deployment.runtime?.maxPerPosition0G,
+    openPoolAddresses: (workspace.vault.sellableLpPositions ?? []).map((position) => position.poolAddress.toLowerCase() as Address),
     vaultBalance0G: workspace.vault.balance0G ?? "0",
     readiness: {
       vaultReady: workspace.vault.ready,

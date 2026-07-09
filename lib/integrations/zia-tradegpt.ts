@@ -310,6 +310,36 @@ export async function getZiaToken(query: { symbol?: string; address?: Address })
   return parsed.data;
 }
 
+// Token logos are static enough to cache far longer than pool metadata (price,
+// APR). Cached per address so N positions sharing a pool/token only pay for one
+// /token fetch per cache window.
+const TOKEN_LOGO_CACHE_TTL_MS = 15 * 60 * 1000;
+const tokenLogoCache = new Map<string, { url: string | null; expiresAt: number }>();
+
+/// Best-effort logo lookup for LP position pair icons. Returns null (never
+/// throws) when the Zia /token fetch fails OR logoUrl is missing/relative — some
+/// native/wrapped tokens (e.g. W0G) return a bare relative path like
+/// "tokens/0g.png" with no documented host. Passing a relative path through, or
+/// naively resolving it against ZIA_TRADEGPT_API_BASE_URL, would leak the
+/// partner API's secret host to the browser; callers must fall back to a local
+/// icon instead. Only absolute http(s) URLs (the common case — trustwallet,
+/// coinstats, oklink CDNs observed in practice) are returned.
+export async function getZiaTokenLogoUrl(address: Address): Promise<string | null> {
+  const key = address.toLowerCase();
+  const now = Date.now();
+  const cached = tokenLogoCache.get(key);
+  if (cached && cached.expiresAt > now) return cached.url;
+  let url: string | null = null;
+  try {
+    const token = await getZiaToken({ address });
+    url = token.logoUrl && /^https:\/\//i.test(token.logoUrl) ? token.logoUrl : null;
+  } catch {
+    url = null;
+  }
+  tokenLogoCache.set(key, { url, expiresAt: now + TOKEN_LOGO_CACHE_TTL_MS });
+  return url;
+}
+
 export async function planZiaRoute(input: {
   inToken: Address;
   outToken: Address;

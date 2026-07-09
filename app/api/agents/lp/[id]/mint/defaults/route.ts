@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { formatEther, isAddress, parseEther, type Address } from "viem";
 
 import { buildPoolCandidates, makeMainnetPublicClient } from "@/lib/agent/lp/lp-context";
+import { computeLpMintBudget } from "@/lib/agent/lp/lp-runtime-policy";
 import { MAX_TICK, MIN_TICK, nearestUsableTick } from "@/lib/agent/lp/tick-math";
 import { readMainnetOwnerAddress } from "@/lib/agent/mainnet-vault-resolver";
 import { isOgMainnetAgentId } from "@/lib/agent/single-agent";
@@ -62,6 +63,7 @@ export async function GET(
   const amount = defaultMintAmount0G({
     balance0G: workspace.vault.balance0G,
     maxLpExposure0G: workspace.vault.lpPolicy.maxLpExposure0G,
+    maxPerPosition0G: workspace.agent.deployment.runtime?.maxPerPosition0G,
     openLpExposure0G: workspace.vault.openLpExposure0G,
     perLpActionCap0G: workspace.vault.lpPolicy.perLpActionCap0G,
   });
@@ -90,15 +92,12 @@ export async function GET(
 function defaultMintAmount0G(input: {
   balance0G?: string;
   maxLpExposure0G: string;
+  maxPerPosition0G?: string;
   openLpExposure0G?: string;
   perLpActionCap0G: string;
 }): { defaultAmount0G: string; maxAmount0G: string } | null {
-  const balance = safeParse0G(input.balance0G ?? "0");
-  const perCap = safeParse0G(input.perLpActionCap0G);
-  const maxExposure = safeParse0G(input.maxLpExposure0G);
-  const openExposure = safeParse0G(input.openLpExposure0G ?? "0");
-  const remainingExposure = maxExposure > openExposure ? maxExposure - openExposure : 0n;
-  const maxAmount = minWei(balance, perCap, remainingExposure);
+  const budget = computeLpMintBudget(input);
+  const maxAmount = budget.maxAmountWei;
   if (maxAmount <= 0n) return null;
   const suggested = minWei(maxAmount, parseEther("0.01"));
   if (suggested <= 0n) return null;
@@ -155,12 +154,6 @@ async function isPoolAllowedForManualMint(
 
 function minWei(first: bigint, ...rest: bigint[]): bigint {
   return rest.reduce((min, value) => (value < min ? value : min), first);
-}
-
-function safeParse0G(value: string): bigint {
-  const normalized = value.trim();
-  if (!/^\d+(?:\.\d{1,18})?$/u.test(normalized)) return 0n;
-  return parseEther(normalized);
 }
 
 function defaultsError(code: string, message: string, status: number) {

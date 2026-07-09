@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { AppShell } from "@/components/app/AppShell";
 import { useOgNetwork } from "@/components/app/useOgNetwork";
+import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import type {
   AiScanAgentLogEntry,
   AiScanMode,
@@ -225,6 +226,7 @@ export function DiscoverSurface() {
   }
 
   function loadSampleAddress() {
+    dispatchSigmaPetReaction("scan.sample", { force: true });
     setTargetAddress(SAMPLE_TARGETS[targetType]);
     setDraftError(null);
     resetPreview();
@@ -245,6 +247,7 @@ export function DiscoverSurface() {
     setActiveStepIndex(0);
     setScanResult(null);
     setScanState("running");
+    dispatchSigmaPetReaction("scan.start", { force: true });
 
     try {
       const response = await fetch("/api/ai-scan", {
@@ -268,10 +271,12 @@ export function DiscoverSurface() {
       setActiveStepIndex(ARCHITECTURE_STEPS.length - 1);
       setScanResult(payload.data.report);
       setScanState("complete");
+      dispatchSigmaPetReaction("scan.success", { force: true });
     } catch (error) {
       setScanState("idle");
       setScanResult(null);
       setDraftError(error instanceof Error ? error.message : "AI Scan backend is unavailable.");
+      dispatchSigmaPetReaction("scan.fail", { force: true });
     }
   }
 

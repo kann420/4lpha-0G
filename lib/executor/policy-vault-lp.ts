@@ -26,9 +26,10 @@ import {
   policyVaultV3Abi,
   type PolicyVaultV3LpActionRequest,
 } from "@/lib/contracts/policy-vault-v3";
+import { policyVaultV4LpEntryAbi, policyVaultV4LpExitAbi } from "@/lib/contracts/policy-vault-v4";
 import { findZiaLpVaultByPool, poolIdFromAddress, uniswapV3PoolAbi, ZIA_LP_MAINNET } from "@/lib/contracts/zia-lp";
 import { proofRegistryAbi as PROOF_REGISTRY_ABI } from "@/lib/contracts/proof-registry-abi";
-import { resolveMainnetV3VaultForOwner, readConfiguredMainnetV3VaultAddress } from "@/lib/agent/mainnet-vault-resolver";
+import { resolveMainnetV3VaultForOwner } from "@/lib/agent/mainnet-vault-resolver";
 import { uploadBytesTo0GStorage } from "@/lib/og/storage-upload";
 import { assertLpMainnetEnv, LP_MAINNET_CHAIN_ID as MAINNET_CHAIN_ID } from "@/lib/agent/lp/lp-env-gate";
 const ZERO_HASH = `0x${"00".repeat(32)}` as Hex;
@@ -88,6 +89,7 @@ export interface PolicyVaultLpExecution {
   auditRoot: Hex;
   vaultActionHash: Hex;
   storageRef: string;
+  storageWarning?: string;
   lpTxHash: Hex;
   proofTxHash: Hex | undefined; // undefined when proofAlreadyAccepted skipped acceptProof
   tokenId?: bigint;
@@ -110,10 +112,32 @@ export async function executeMainnetPolicyVaultLpAction(
 
   const vaultAddress = await resolveVault(runtime, input.vaultAddress, proofAccount.address);
   if (vaultAddress === null) {
-    throw new Error("No mainnet V3 Policy Vault resolved for this deployer wallet.");
+    throw new Error("No mainnet Policy Vault resolved for this deployer wallet.");
+  }
+  const isV4LpEntry = await isV4LpEntryVault(runtime, vaultAddress);
+
+  // B1 FIX: V4 splits LP into LpEntry (entries: zap-in-mint, stake) and LpExit (exits: unstake,
+  // zap-out). deployment.vault resolves to the LpEntry third; unstakeLp/zapOut live ONLY on LpExit.
+  // For a V4 exit action, route the write + action-hash reads + executor/proof preflight to the
+  // LpExit third (its vaultActionHashForLp binds address(this)); policySnapshotHash still comes from
+  // LpEntry (LpExit validates policySnapshotHash == lpEntry.policyHash()).
+  const isExitAction = input.action.kind === "unstake" || input.action.kind === "zap-out";
+  let actionVault = vaultAddress;
+  let actionLpAbi: Abi = policyVaultV3LpAbi as unknown as Abi;
+  if (isV4LpEntry && isExitAction) {
+    const lpExitVault = (await runtime.publicClient.readContract({
+      address: vaultAddress,
+      abi: policyVaultV4LpEntryAbi,
+      functionName: "lpExitVault",
+    })) as Address;
+    if (!lpExitVault || lpExitVault === zeroAddress) {
+      throw new Error("V4 LpEntry has no linked LpExit vault (setLpExitVault not called).");
+    }
+    actionVault = lpExitVault;
+    actionLpAbi = policyVaultV4LpExitAbi as unknown as Abi;
   }
 
-  // V3 vault must have an LP adapter configured for LP actions.
+  // V3/V4 LP vault must have an LP adapter configured for LP actions.
   const lpAdapter = await runtime.publicClient.readContract({
     address: vaultAddress,
     abi: policyVaultV3LpAbi,
@@ -128,20 +152,25 @@ export async function executeMainnetPolicyVaultLpAction(
   // before any gas is spent, mirroring the V2 trade executor (policy-vault-trade.ts:306-332).
   // The vault's immutable proofRegistry is the authoritative acceptProof target — the env
   // override is only a cross-check, never the anchoring registry.
+  // For V4 exits, preflight against the LpExit third (executor/paused/executorRevoked/proofRegistry
+  // live there); reads use the V3 ABI selectors, which the LpExit contract also exposes.
   const [vaultExecutor, agentKeyEnabled, paused, executorRevoked, vaultProofRegistry] = await Promise.all([
-    runtime.publicClient.readContract({ address: vaultAddress, abi: policyVaultV3Abi, functionName: "executor" }),
-    runtime.publicClient.readContract({ address: vaultAddress, abi: policyVaultV3Abi, functionName: "agentKeyEnabled", args: [input.agentKey] }),
-    runtime.publicClient.readContract({ address: vaultAddress, abi: policyVaultV3Abi, functionName: "paused" }),
-    runtime.publicClient.readContract({ address: vaultAddress, abi: policyVaultV3Abi, functionName: "executorRevoked" }),
-    runtime.publicClient.readContract({ address: vaultAddress, abi: policyVaultV3Abi, functionName: "proofRegistry" }),
+    runtime.publicClient.readContract({ address: actionVault, abi: policyVaultV3Abi, functionName: "executor" }),
+    runtime.publicClient.readContract({ address: actionVault, abi: policyVaultV3Abi, functionName: "agentKeyEnabled", args: [input.agentKey] }),
+    runtime.publicClient.readContract({ address: actionVault, abi: policyVaultV3Abi, functionName: "paused" }),
+    runtime.publicClient.readContract({ address: actionVault, abi: policyVaultV3Abi, functionName: "executorRevoked" }),
+    runtime.publicClient.readContract({ address: actionVault, abi: policyVaultV3Abi, functionName: "proofRegistry" }),
   ]) as [Address, boolean, boolean, boolean, Address];
   if (vaultExecutor.toLowerCase() !== executorAccount.address.toLowerCase()) {
     throw new Error("VAULT_EXECUTOR_PRIVATE_KEY does not control this vault executor.");
   }
-  if (!agentKeyEnabled) {
-    throw new Error("Agent key is not enabled on this V3 vault (call setAgentKeyEnabled on the vault first).");
+  // V4 exits are NOT gated by agentKey or pause on-chain (only revokeExecutor is the hard kill, B4).
+  // Mirror that here so the server preflight does not re-introduce the exit-lockup B4 removed.
+  const enforceEntryGates = !(isV4LpEntry && isExitAction);
+  if (enforceEntryGates && !agentKeyEnabled) {
+    throw new Error("Agent key is not enabled on this vault (call setAgentKeyEnabled on the vault first).");
   }
-  if (paused) {
+  if (enforceEntryGates && paused) {
     throw new Error("PolicyVault is paused");
   }
   if (executorRevoked) {
@@ -163,7 +192,7 @@ export async function executeMainnetPolicyVaultLpAction(
   }
 
   const block = await runtime.publicClient.getBlock();
-  const deadlineWindow = await readDeadlineWindow(runtime, vaultAddress);
+  const deadlineWindow = await readDeadlineWindow(runtime, vaultAddress, isV4LpEntry);
   const deadline = block.timestamp + (deadlineWindow > 90n ? deadlineWindow - 30n : deadlineWindow);
   const nonce = randomNonce();
   const draftRequest = buildDraftLpRequest(input, deadline, nonce, policySnapshotHash);
@@ -180,7 +209,7 @@ export async function executeMainnetPolicyVaultLpAction(
         runtime.publicClient.readContract({ address: vaultAddress, abi: policyVaultV3Abi, functionName: "allowedLpPools", args: [draftRequest.poolId] }),
         runtime.publicClient.readContract({ address: vaultAddress, abi: policyVaultV3Abi, functionName: "allowedStakeVaults", args: [draftRequest.stakeVault] }),
         runtime.publicClient.readContract({ address: vaultAddress, abi: policyVaultV3Abi, functionName: "stakeVaultForLpPool", args: [draftRequest.poolId] }),
-        runtime.publicClient.readContract({ address: vaultAddress, abi: policyVaultV3Abi, functionName: "policy" }),
+        readLpPolicyForAllowStaking(runtime, vaultAddress, isV4LpEntry),
       ]) as [boolean, boolean, Address, unknown];
       if (!lpPoolAllowed) {
         throw new Error("LP pool is not allowlisted on this V3 vault (InvalidLpPool)");
@@ -193,7 +222,9 @@ export async function executeMainnetPolicyVaultLpAction(
       }
       // Decode through the shared helper because viem may return nested structs
       // as positional tuples or named objects.
-      const allowStaking = normalizePolicyVaultV3Policy(currentPolicy).lp.allowStaking;
+      const allowStaking = isV4LpEntry
+        ? normalizePolicyVaultV4LpPolicy(currentPolicy).allowStaking
+        : normalizePolicyVaultV3Policy(currentPolicy).lp.allowStaking;
       if (allowStaking !== true) {
         throw new Error("LP staking is disabled by policy (StakingDisabled)");
       }
@@ -233,14 +264,14 @@ export async function executeMainnetPolicyVaultLpAction(
     auditRoot: auditBundle.auditRoot,
   };
   const vaultActionHash = await runtime.publicClient.readContract({
-    address: vaultAddress,
-    abi: policyVaultV3LpAbi,
+    address: actionVault,
+    abi: actionLpAbi,
     functionName: "vaultActionHashForLp",
     args: [requestForHash],
   }) as Hex;
   const actionHash = await runtime.publicClient.readContract({
-    address: vaultAddress,
-    abi: policyVaultV3LpAbi,
+    address: actionVault,
+    abi: actionLpAbi,
     functionName: "actionHashFor",
     args: [vaultActionHash, auditBundle.auditRoot, policySnapshotHash],
   }) as Hex;
@@ -329,8 +360,8 @@ export async function executeMainnetPolicyVaultLpAction(
   const { functionName, parseResult } = lpEntrypointFor(input.action.kind);
   const lpSimulation = await runtime.publicClient.simulateContract({
     account: executorAccount.address,
-    address: vaultAddress,
-    abi: policyVaultV3LpAbi,
+    address: actionVault,
+    abi: actionLpAbi,
     functionName,
     args: [request],
   });
@@ -373,6 +404,7 @@ export async function executeMainnetPolicyVaultLpAction(
     auditRoot: auditBundle.auditRoot,
     vaultActionHash,
     storageRef: auditBundle.storageRef,
+    storageWarning: auditBundle.storageWarning,
     lpTxHash,
     proofTxHash,
     tokenId,
@@ -512,13 +544,30 @@ async function resolveVault(runtime: Runtime, vaultAddress: Address | undefined,
   if (vaultAddress) {
     return getAddress(vaultAddress);
   }
-  const fromRegistry = await resolveMainnetV3VaultForOwner(owner).catch(() => null);
-  if (fromRegistry) return fromRegistry;
-  const fromEnv = readConfiguredMainnetV3VaultAddress();
-  return fromEnv ?? null;
+  return await resolveMainnetV3VaultForOwner(owner, runtime.publicClient).catch(() => null);
 }
 
-async function readDeadlineWindow(runtime: Runtime, vault: Address): Promise<bigint> {
+async function isV4LpEntryVault(runtime: Runtime, vault: Address): Promise<boolean> {
+  const linkedExit = await runtime.publicClient.readContract({
+    address: vault,
+    abi: policyVaultV4LpEntryAbi,
+    functionName: "lpExitVault",
+  }).catch(() => zeroAddress) as Address;
+  return linkedExit !== zeroAddress;
+}
+
+async function readLpPolicyForAllowStaking(runtime: Runtime, vault: Address, isV4LpEntry: boolean): Promise<unknown> {
+  return runtime.publicClient.readContract({
+    address: vault,
+    abi: isV4LpEntry ? policyVaultV4LpEntryAbi : policyVaultV3Abi,
+    functionName: "policy",
+  });
+}
+
+async function readDeadlineWindow(runtime: Runtime, vault: Address, isV4LpEntry: boolean): Promise<bigint> {
+  if (isV4LpEntry) {
+    return 24n * 60n * 60n;
+  }
   const rawPolicy = await runtime.publicClient.readContract({
     address: vault,
     abi: policyVaultV3Abi,
@@ -534,6 +583,16 @@ async function readDeadlineWindow(runtime: Runtime, vault: Address): Promise<big
     throw new Error("Could not read V3 policy.maxDeadlineWindowSeconds");
   }
   return window;
+}
+
+function normalizePolicyVaultV4LpPolicy(raw: unknown): { allowStaking: boolean } {
+  const record = raw as Record<string, unknown>;
+  const list = raw as readonly unknown[];
+  const value = record?.allowStaking ?? list?.[6];
+  if (typeof value !== "boolean") {
+    throw new Error("Could not read V4 lpPolicy.allowStaking");
+  }
+  return { allowStaking: value };
 }
 
 function resolveMainnetRuntime() {
@@ -579,10 +638,29 @@ function make0GMainnetChain(rpcUrl: string): Chain {
   };
 }
 
-async function uploadLpAudit(payload: unknown): Promise<{ auditRoot: Hex; storageRef: string }> {
+async function uploadLpAudit(payload: unknown): Promise<{ auditRoot: Hex; storageRef: string; storageWarning?: string }> {
   const encoded = new TextEncoder().encode(`${stableJson(payload)}\n`);
-  const upload = await uploadBytesTo0GStorage(encoded);
-  return { auditRoot: upload.rootHash, storageRef: upload.storageRef };
+  try {
+    const upload = await uploadBytesTo0GStorage(encoded);
+    return { auditRoot: upload.rootHash, storageRef: upload.storageRef };
+  } catch (error) {
+    const auditRoot = keccak256(encoded);
+    const reason = sanitizeStorageFallbackReason(error);
+    return {
+      auditRoot,
+      storageRef: `local-fallback:${auditRoot}:0g-storage-unavailable`,
+      storageWarning: `0G Storage upload failed; anchored local fallback audit root. ${reason}`,
+    };
+  }
+}
+
+function sanitizeStorageFallbackReason(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return raw
+    .replace(/https?:\/\/[^\s"']+/g, "[url]")
+    .replace(/\b(?:sk|mk)-[A-Za-z0-9._-]{8,}\b/g, "[redacted-key]")
+    .replace(/[A-Fa-f0-9]{64,}/g, "[redacted-hex]")
+    .slice(0, 180);
 }
 
 function hashJson(value: unknown): Hex {

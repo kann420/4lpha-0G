@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { type Hex } from "viem";
+import { getAddress, type Address, type Hex } from "viem";
 import {
   executeCuratedTrade,
   quoteCuratedTrade,
@@ -42,6 +42,17 @@ export function listAgentTradeRoutes(networkId: OgNetworkId): AgentTradeRouteOpt
   return AGENT_TRADE_ROUTES.filter((route) => route.networkId === networkId);
 }
 
+// B5 FIX: for a V4 agent the workspace's canonical `vault.vault` is the LpEntry third, which has
+// no swap surface (buy/sell/allowedTokens/positionUnits). Swap quote/preview/execute must target
+// the Swap third (v4SwapVault). Returns undefined when nothing is resolvable.
+function swapVaultAddressOf(
+  vault: { vault?: Address; vaultVersion?: number; v4SwapVault?: Address } | undefined | null,
+): Address | undefined {
+  if (!vault) return undefined;
+  if ((vault.vaultVersion ?? 1) >= 4 && vault.v4SwapVault) return vault.v4SwapVault;
+  return vault.vault;
+}
+
 export async function buildAgentTradePreview(request: AgentTradeRequest): Promise<AgentTradePreview> {
   const route = validateRouteRequest(request);
   if (request.networkId === "mainnet") {
@@ -71,7 +82,7 @@ export async function executeAgentTrade(request: AgentTradeRequest): Promise<{
         ...request,
         agentId: workspace.agent.deployment.id,
         ownerAddress: workspace.agent.deployment.owner,
-        vaultAddress: preview.vaultAddress ?? workspace.vault.vault ?? workspace.agent.deployment.vault,
+        vaultAddress: preview.vaultAddress ?? swapVaultAddressOf(workspace.vault) ?? workspace.agent.deployment.vault,
       }
     : request;
   if (!workspace.agent.deployment) {
@@ -341,9 +352,13 @@ async function buildMainnetTradePreview(
   if (workspace?.agent.status === "removed") {
     throw new AgentTradeError("Removed agent records are read-only and cannot trade.", "agent_removed", 409);
   }
-  const vaultAddress = workspace?.vault.vault ?? (
-    request.ownerAddress ? await resolveMainnetVaultForOwner(request.ownerAddress).catch(() => null) : null
-  );
+  // Prefer an explicitly supplied Swap-third address (the worker passes the agent's
+  // own v4SwapVault). This keeps the trade bound to the right vault even when a
+  // quiknode 429 storm degrades the owner-workspace snapshot and swapVaultAddressOf
+  // would otherwise resolve to nothing.
+  const vaultAddress = (request.vaultAddress ? getAddress(request.vaultAddress) : undefined)
+    ?? swapVaultAddressOf(workspace?.vault)
+    ?? (request.ownerAddress ? await resolveMainnetVaultForOwner(request.ownerAddress).catch(() => null) : null);
   const quote = await quoteCuratedTrade({
     amount: request.amountIn,
     networkId: "mainnet",

@@ -13,7 +13,10 @@ export const ACTION_NONCE_SCOPES = [
   "lp-unstake",
   "lp-zap-out",
   "lp-automation",
+  "lp-policy",
   "vault-withdraw-native",
+  "vault-migrate",
+  "vault-migrate-v4",
 ] as const;
 
 export type ActionNonceScope = (typeof ACTION_NONCE_SCOPES)[number];

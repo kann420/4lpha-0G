@@ -6,7 +6,6 @@ import { dirname, join } from "node:path";
 import {
   createPublicClient,
   createWalletClient,
-  encodeAbiParameters,
   formatEther,
   formatUnits,
   getAddress,
@@ -24,13 +23,15 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { agenticIdAbi, agentMintedEvent, type AgenticIdIntelligentData } from "@/lib/contracts/agentic-id";
+import { agentKeyForDeployment, OgAgentDeployError } from "@/lib/agent/agent-deploy-common";
 import { CURATED_MAINNET_POLICY_VAULT_ROUTES } from "@/lib/contracts/curated-routes";
 import { policyVaultAbi, policyVaultAgentKeyAbi } from "@/lib/contracts/policy-vault";
 import { LP_ACTION_TYPE, normalizePolicyVaultV3Policy, policyVaultV3Abi, policyVaultV3LpAbi } from "@/lib/contracts/policy-vault-v3";
 import { deriveMaxPositions } from "@/lib/agent/lp/lp-fence";
 import { computeLpPositionAccounting, type LpPoolMeta } from "@/lib/agent/lp/lp-position-accounting";
+import { readLpPositionRegistry } from "@/lib/agent/lp/lp-position-registry";
 import { ZIA_LP_VAULTS, findZiaLpVaultByPool, poolIdFromAddress, ziaNonfungiblePositionManagerAbi, uniswapV3PoolAbi, ZIA_LP_MAINNET } from "@/lib/contracts/zia-lp";
-import { getZiaPool } from "@/lib/integrations/zia-tradegpt";
+import { getZiaPool, getZiaTokenLogoUrl } from "@/lib/integrations/zia-tradegpt";
 import {
   readConfiguredMainnetVaultAddress,
   readConfiguredMainnetV3VaultAddress,
@@ -38,8 +39,11 @@ import {
   resolveMainnetVaultForOwner,
   resolveMainnetVaultVersionsForOwner,
   resolveMainnetV3VaultForOwner,
+  resolveMainnetV4VaultForOwner,
 } from "@/lib/agent/mainnet-vault-resolver";
+import { policyVaultV4LpEntryAbi, policyVaultV4LpExitAbi, policyVaultV4SwapAbi } from "@/lib/contracts/policy-vault-v4";
 import { getOgNetwork } from "@/lib/og/networks";
+import { makeMainnetTransport } from "@/lib/og/mainnet-rpc";
 import { downloadBytesFrom0GStorage } from "@/lib/og/storage-download";
 import { uploadBytesTo0GStorage, type ZeroGStorageProgress } from "@/lib/og/storage-upload";
 import {
@@ -77,6 +81,13 @@ const MAX_STORAGE_SYNC_LAG_BLOCKS = 120n;
 const STORAGE_SNAPSHOT_CACHE_TTL_MS = 60_000;
 const WORKSPACE_READ_TIMEOUT_MS = 6_000;
 const AUXILIARY_READ_TIMEOUT_MS = 2_500;
+// LP listing (public-RPC getLogs + ~7 scalar reads per position + pool meta) is
+// heavier than a single scalar read. The public 0G RPC does 10 positions in
+// ~1.4s idle, but under load it can exceed the 2.5s auxiliary budget — and the
+// caller's `.catch(() => [])` then silently drops ALL positions (Bug 1
+// flicker). Give the LP listing its own budget so it does not get starved by the
+// generic auxiliary timeout.
+const LP_LISTING_TIMEOUT_MS = 12_000;
 const ON_CHAIN_ROSTER_READ_TIMEOUT_MS = WORKSPACE_READ_TIMEOUT_MS;
 const AGENT_METADATA_READ_TIMEOUT_MS = 3_000;
 const OG_RPC_TIMEOUT_MS = 4_000;
@@ -117,6 +128,53 @@ const lpActionExecutedV3Event = parseAbiItem(
   "event LpActionExecutedV3(bytes32 indexed actionHash, bytes32 indexed agentKey, uint8 indexed actionType, bytes32 poolId, uint256 tokenId, uint256 amountIn0G, uint256 amountOut, int256 liquidityDelta, bytes32 auditRoot, bytes32 policySnapshotHash)",
 );
 
+// LP listing reads (getLogs + per-token scalar reads) go through the PUBLIC
+// 0G RPC, not quiknode. The quiknode RPC (OG_RPC_URL) caps eth_getLogs at a
+// 5-block range on the discover plan AND rate-limits to ~52 reads/min — so the
+// LP listing (one getLogs + ~7 reads per position) 429s/times out on quiknode
+// and the UI flickers empty (Bug 1). The public 0G RPC (the documented mainnet
+// endpoint in AGENTS.md, not a secret) has no getLogs cap, but IT also rate-
+// limits: ~50 requests per burst. 10 positions × 7 per-token reads = 70 reads
+// fired in parallel exceed that burst cap → "request rate exceeded" → the
+// caller's .catch(()=>[]) silently drops ALL positions (Bug 1 under load).
+// Mitigation: the per-token reads are chunked (LP_LISTING_CHUNK_SIZE) AND the
+// lpClient has a generous retryCount so viem backs off transient 429s.
+// Configurable via OG_PUBLIC_RPC_URL.
+let lpListingClient: PublicClient | null = null;
+function getLpListingClient(): PublicClient {
+  if (lpListingClient) return lpListingClient;
+  const rpcUrl = process.env.OG_PUBLIC_RPC_URL?.trim() || "https://evmrpc.0g.ai";
+  const retryCount = Number(process.env.OG_PUBLIC_RPC_RETRY_COUNT ?? 6);
+  const retryDelay = Number(process.env.OG_PUBLIC_RPC_RETRY_DELAY_MS ?? 250);
+  lpListingClient = createPublicClient({
+    chain: make0GMainnetChain(rpcUrl),
+    transport: http(rpcUrl, {
+      retryCount: Number.isFinite(retryCount) && retryCount >= 0 ? retryCount : 6,
+      retryDelay: Number.isFinite(retryDelay) && retryDelay >= 0 ? retryDelay : 250,
+      timeout: OG_RPC_TIMEOUT_MS,
+    }),
+  });
+  return lpListingClient;
+}
+// Max positions read per parallel chunk. Each position fires 7 readContract
+// calls in parallel, and the public 0G RPC bursts at ~50 reqs — 3 positions =
+// 21 parallel reqs per chunk, safely under the cap. Chunks run sequentially.
+const LP_LISTING_CHUNK_SIZE = 3;
+
+// Vault deploy block cache — the getLogs fallback narrows the range to
+// [deployBlock, latest] so the public RPC getLogs stays small + fast even for
+// agents deployed days ago. Cached per deployTxHash so the 30s UI poll does not
+// re-fetch the receipt every cycle.
+const lpDeployBlockCache = new Map<Hex, bigint>();
+async function getLpDeployBlock(client: PublicClient, deployTxHash: Hex): Promise<bigint | undefined> {
+  const cached = lpDeployBlockCache.get(deployTxHash);
+  if (cached !== undefined) return cached;
+  const receipt = await client.getTransactionReceipt({ hash: deployTxHash }).catch(() => null);
+  if (!receipt) return undefined;
+  lpDeployBlockCache.set(deployTxHash, receipt.blockNumber);
+  return receipt.blockNumber;
+}
+
 const erc20DecimalsAbi = [
   {
     inputs: [],
@@ -127,17 +185,10 @@ const erc20DecimalsAbi = [
   },
 ] as const;
 
-export class OgAgentDeployError extends Error {
-  constructor(
-    message: string,
-    readonly code: string,
-    readonly status: number,
-  ) {
-    super(message);
-  }
-}
+export { agentKeyForDeployment, OgAgentDeployError } from "@/lib/agent/agent-deploy-common";
 
 export interface DeploySingleOgAgentInput {
+  allowZeroVaultBalance?: boolean;
   filterIds: OgAgentFilterId[];
   name: string;
   ownerAddress?: Address;
@@ -226,8 +277,51 @@ export interface StoredAgentTradeArtifact {
 
 export type StoredAgentTradeSide = "buy" | "sell";
 
+// Short-TTL cache + in-flight de-dup for live workspace reads. A single page
+// visit can otherwise trigger several near-simultaneous identical loads (the
+// wallet-hydration mount race, list-page-then-detail-page navigation, the 30s
+// UI poll) each re-running the full RPC/roster/LP-position fan-out. Callers
+// that mutate agent state (mint/stake/unstake/zap-out/pause/resume/remove/
+// policy/automation) MUST call invalidateOgAgentWorkspaceCache() after a
+// successful write so the client's immediate follow-up refresh is never
+// served stale pre-mutation data.
+const AGENT_WORKSPACE_CACHE_TTL_MS = 4_000;
+const agentWorkspaceCache = new Map<string, { expiresAt: number; promise: Promise<OgAgentWorkspace> }>();
+
+function agentWorkspaceCacheKey(agentId: string | undefined, ownerAddress: Address | undefined, live: boolean): string {
+  return `${agentId ?? ""}:${ownerAddress?.toLowerCase() ?? ""}:${live ? "1" : "0"}`;
+}
+
+export function invalidateOgAgentWorkspaceCache(): void {
+  agentWorkspaceCache.clear();
+}
+
 export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspaceInput): Promise<OgAgentWorkspace> {
-  const { agentId, live, ownerAddress } = normalizeWorkspaceInput(input);
+  const normalized = normalizeWorkspaceInput(input);
+  if (!normalized.live) {
+    return loadOgAgentWorkspaceUncached(normalized);
+  }
+  const key = agentWorkspaceCacheKey(normalized.agentId, normalized.ownerAddress, normalized.live);
+  const cached = agentWorkspaceCache.get(key);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    return cached.promise;
+  }
+  const promise = loadOgAgentWorkspaceUncached(normalized).catch((error: unknown) => {
+    // Never let a failed load poison the cache for the next (retried) call.
+    if (agentWorkspaceCache.get(key)?.promise === promise) {
+      agentWorkspaceCache.delete(key);
+    }
+    throw error;
+  });
+  agentWorkspaceCache.set(key, { expiresAt: now + AGENT_WORKSPACE_CACHE_TTL_MS, promise });
+  return promise;
+}
+
+async function loadOgAgentWorkspaceUncached(
+  normalized: { agentId?: string; live: boolean; ownerAddress?: Address },
+): Promise<OgAgentWorkspace> {
+  const { agentId, live, ownerAddress } = normalized;
   const identity = await resolveAgenticIdAddress();
   const workspaceTimeoutMs = live ? WORKSPACE_READ_TIMEOUT_MS : AUXILIARY_READ_TIMEOUT_MS;
   let [vault, storage] = await Promise.all([
@@ -248,36 +342,79 @@ export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspace
       warnings: ["Live 0G Storage check deferred for fast UI load."],
     } satisfies OgAgentStorageSnapshot),
   ]);
+  // Do NOT scope by vaultAddress here. A V4 owner can have multiple agents
+  // each on their own dedicated Swap/LpEntry/LpExit trio (e.g. one predating
+  // a registry redeploy, one after) — `vault.vault` is only ONE resolved
+  // trio, and the on-chain V4 registry stores a single vaultOf(owner) slot
+  // that the most recent registration overwrites. Filtering the roster to
+  // that one resolved vault silently drops every other legitimate agent for
+  // this owner. `assertAgentTypeQuota` already relies on ownerAddress-only
+  // scoping + filterActiveOnChainAgentRecords' per-deployment vault check for
+  // exactly this reason — match that pattern here.
   let roster = await readAgentDeploymentRoster(identity.address, {
     agentId,
     includeOnChain: live,
     ownerAddress: vault.owner ?? ownerAddress,
+  });
+  debugAgentWorkspaceSelection({
+    agentId,
+    live,
+    ownerAddress,
+    rosterActiveIds: roster.active.map((deployment) => deployment.id),
     vaultAddress: vault.vault,
+    vaultOwner: vault.owner,
+    vaultReady: vault.ready,
+    vaultVersion: vault.vaultVersion,
+    v4LpEntryVault: vault.v4LpEntryVault,
+    v4SwapVault: vault.v4SwapVault,
   });
   let deployments = roster.active;
   let removedDeployments = roster.removed;
   let deployment = selectAgentDeployment(deployments, agentId);
   let removedDeployment = deployment ? null : selectRemovedAgentDeployment(removedDeployments, agentId);
-  if (!ownerAddress && deployment && vault.owner?.toLowerCase() !== deployment.owner.toLowerCase()) {
-    vault = await withTimeout(
-      readVaultSnapshot(undefined, { ownerAddress: deployment.owner }),
-      workspaceTimeoutMs,
-      "Policy Vault state",
-    ).catch((error): OgAgentVaultSnapshot => ({
-      owner: deployment?.owner,
-      ready: false,
-      warnings: [error instanceof Error ? error.message : "Unable to read Policy Vault state."],
-    }));
-    roster = await readAgentDeploymentRoster(identity.address, {
-      agentId,
-      includeOnChain: live,
-      ownerAddress: vault.owner ?? deployment.owner,
-      vaultAddress: vault.vault,
-    });
-    deployments = roster.active;
-    removedDeployments = roster.removed;
-    deployment = selectAgentDeployment(deployments, agentId);
-    removedDeployment = deployment ? null : selectRemovedAgentDeployment(removedDeployments, agentId);
+  const selectedVaultMatchesDeployment = deployment && vault.vault
+    ? deploymentMatchesVaultAddress(deployment, vault.vault)
+    : false;
+  if (deployment && !selectedVaultMatchesDeployment) {
+    // `vault` was resolved generically for the owner (vaultOf(owner) — a
+    // SINGLE on-chain registry slot), but this deployment's own vault trio
+    // does not match it. A V4 owner can have multiple agents, each on its own
+    // dedicated Swap/LpEntry/LpExit trio registered at different times — the
+    // registry slot only ever reflects the MOST RECENTLY registered one, so
+    // re-resolving via readVaultSnapshot(ownerAddress) would just return that
+    // SAME wrong trio again. Read directly from THIS deployment's own known
+    // vault addresses instead (roster/deployment selection above is already
+    // owner-scoped and unaffected by this — only `vault` itself is stale).
+    if (deployment.v4SwapVault && deployment.vault && deployment.v4LpExitVault) {
+      // Use the public RPC (getLpListingClient), not quiknode. This read fires
+      // ~24 parallel calls across 3 contracts — quiknode's ~52 reads/min cap
+      // makes that batch time out under load (confirmed: 6s timeout wipes
+      // `vault.vault`, which then silently skips the LP-position read below).
+      // The public RPC already proves reliable for LP listing's own bursts.
+      vault = await withTimeout(
+        readV4LpVaultSnapshot(
+          getLpListingClient(),
+          { swapVault: deployment.v4SwapVault, lpEntryVault: deployment.vault, lpExitVault: deployment.v4LpExitVault },
+          { ownerAddress: deployment.owner },
+        ),
+        LP_LISTING_TIMEOUT_MS,
+        "Policy Vault state",
+      ).catch((error): OgAgentVaultSnapshot => ({
+        owner: deployment?.owner,
+        ready: false,
+        warnings: [error instanceof Error ? error.message : "Unable to read Policy Vault state."],
+      }));
+    } else {
+      vault = await withTimeout(
+        readVaultSnapshot(undefined, { ownerAddress: deployment.owner }),
+        workspaceTimeoutMs,
+        "Policy Vault state",
+      ).catch((error): OgAgentVaultSnapshot => ({
+        owner: deployment?.owner,
+        ready: false,
+        warnings: [error instanceof Error ? error.message : "Unable to read Policy Vault state."],
+      }));
+    }
   }
   const selectedDeployment = deployment ?? removedDeployment ?? null;
   const selectedAgentKeyEnabled = live && selectedDeployment && vault.vault && (vault.vaultVersion ?? 1) >= 2
@@ -287,7 +424,7 @@ export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspace
         "Agent key status",
       ).catch(() => undefined)
     : undefined;
-  const status = removedDeployment
+  let status: OgAgentWorkspace["agent"]["status"] = removedDeployment
     ? "removed"
     : deployment
       ? deployment.paused || selectedAgentKeyEnabled === false
@@ -301,11 +438,17 @@ export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspace
     if (rpcUrl) {
       const publicClient = create0GPublicClient(rpcUrl);
       const agentKey = selectedDeployment.agentKey ?? agentKeyForDeployment(selectedDeployment);
-      const vaultAddr = vault.vault;
+      // B5/H2 FIX: swap positions (agentPositionUnits) live on the Swap third for V4.
+      const swapVaultAddr =
+        (vault.vaultVersion ?? 1) >= 4 && vault.v4SwapVault ? vault.v4SwapVault : vault.vault;
+      // LP NFT accounting lives on the LpEntry third (= vault.vault for V4), NOT the Swap third.
+      // Reading LP positions from swapVaultAddr returns nothing → "blind hold" even when the agent
+      // holds a position (regression guard for the B5/H2 swap-read change).
+      const lpVaultAddr = vault.vault;
       vault = {
         ...vault,
         sellablePositions: await withTimeout(
-          readSellablePositions(publicClient, vaultAddr, { agentKey }),
+          readSellablePositions(publicClient, swapVaultAddr, { agentKey }),
           AUXILIARY_READ_TIMEOUT_MS,
           "sellable positions",
         ).catch(() => []),
@@ -315,13 +458,21 @@ export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspace
         vault = {
           ...vault,
           sellableLpPositions: await withTimeout(
-            readSellableLpPositions(publicClient, vaultAddr, { agentKey }),
-            AUXILIARY_READ_TIMEOUT_MS,
+            readSellableLpPositions(publicClient, lpVaultAddr, {
+              agentKey,
+              deployTxHash: selectedDeployment.deployTxHash,
+            }),
+            LP_LISTING_TIMEOUT_MS,
             "sellable LP positions",
           ).catch(() => []),
         };
       }
     }
+  }
+  const hasManagedLpPosition = (vault.sellableLpPositions?.length ?? 0) > 0;
+  const zeroBalanceOnlyWithLpPosition = Boolean(deployment && hasManagedLpPosition && isOnlyZeroBalanceWarning(vault));
+  if (status === "blocked" && zeroBalanceOnlyWithLpPosition) {
+    status = "armed";
   }
   const logs = await withTimeout(
     readAgentLogEntries({ deployment: selectedDeployment, includeOnChain: live, storage, vault }),
@@ -334,7 +485,13 @@ export async function loadOgAgentWorkspace(input?: string | LoadOgAgentWorkspace
       deployment: selectedDeployment,
       id: selectedDeployment?.id ?? agentId ?? SINGLE_OG_AGENT_ID,
       name: selectedDeployment?.name ?? SINGLE_OG_AGENT_NAME,
-      readiness: removedDeployment ? "blocked" : deployment && vault.ready ? "ready" : vault.ready ? "review" : "blocked",
+      readiness: removedDeployment
+        ? "blocked"
+        : deployment && (vault.ready || zeroBalanceOnlyWithLpPosition)
+          ? "ready"
+          : vault.ready
+            ? "review"
+            : "blocked",
       status,
     },
     agents: deployments,
@@ -373,6 +530,11 @@ function normalizeWorkspaceInput(input?: string | LoadOgAgentWorkspaceInput): {
   };
 }
 
+function debugAgentWorkspaceSelection(payload: unknown): void {
+  if (process.env.OG_AGENT_WORKSPACE_DEBUG !== "true") return;
+  console.info(JSON.stringify({ payload, timestamp: new Date().toISOString(), type: "agent-workspace-selection" }));
+}
+
 export async function deploySingleOgAgent(input: DeploySingleOgAgentInput): Promise<OgAgentDeploymentRecord> {
   const name = input.name.trim();
   if (name.length < 3 || name.length > 80) {
@@ -407,9 +569,15 @@ export async function deploySingleOgAgent(input: DeploySingleOgAgentInput): Prom
   if (!bytecode || bytecode === "0x") {
     throw new OgAgentDeployError("Configured Agentic ID address has no bytecode.", "identity_not_deployed", 409);
   }
+  // Fail-closed if the pinned identity address is not the canonical ERC-7857
+  // AgenticID. A non-empty bytecode alone is not enough — a stale proxy or wrong
+  // contract could pass the bytecode check. Require ERC-165 + IERC7857 +
+  // IERC7857Metadata support on-chain before any agent mint proceeds.
+  await assertAgenticIdInterfaces(publicClient, identity.address);
 
   const vault = await readVaultSnapshot(publicClient, { ownerAddress: input.ownerAddress });
-  if (!vault.ready || !vault.vault || !vault.executor || !vault.owner || !vault.policy) {
+  const vaultReadyForDeploy = vault.ready || (input.allowZeroVaultBalance === true && isOnlyZeroBalanceWarning(vault));
+  if (!vaultReadyForDeploy || !vault.vault || !vault.executor || !vault.owner || !vault.policy) {
     throw new OgAgentDeployError(
       vault.warnings.join(" ") || "Policy Vault is not ready for agent deployment.",
       "vault_not_ready",
@@ -497,19 +665,27 @@ export async function deploySingleOgAgent(input: DeploySingleOgAgentInput): Prom
     deployer.address.toLowerCase() === readyVault.owner.toLowerCase();
   let agentKeyEnableTxHash: Hex | undefined;
   if (deployerIsVaultOwner) {
-    const enableSimulation = await publicClient.simulateContract({
-      account: deployer.address,
-      address: readyVault.vault,
-      abi: policyVaultAgentKeyAbi,
-      functionName: "setAgentKeyEnabled",
-      args: [agentKey, true],
-    });
-    agentKeyEnableTxHash = await walletClient.writeContract({
-      ...enableSimulation.request,
-      account: deployer,
-      chain,
-    });
-    await waitForReceipt(publicClient, agentKeyEnableTxHash, "Agent key enable");
+    const enableVaults = uniqueAddresses(
+      (readyVault.vaultVersion ?? 1) >= 4
+        ? [readyVault.vault, readyVault.v4LpExitVault, readyVault.v4SwapVault]
+        : [readyVault.vault],
+    );
+    for (const enableVault of enableVaults) {
+      const enableSimulation = await publicClient.simulateContract({
+        account: deployer.address,
+        address: enableVault,
+        abi: policyVaultAgentKeyAbi,
+        functionName: "setAgentKeyEnabled",
+        args: [agentKey, true],
+      });
+      const enableTxHash = await walletClient.writeContract({
+        ...enableSimulation.request,
+        account: deployer,
+        chain,
+      });
+      await waitForReceipt(publicClient, enableTxHash, `Agent key enable ${enableVault}`);
+      agentKeyEnableTxHash ??= enableTxHash;
+    }
   }
 
   const record = {
@@ -531,6 +707,10 @@ export async function deploySingleOgAgent(input: DeploySingleOgAgentInput): Prom
     agentKey,
     agentKeyEnableTxHash,
     runtime: normalizeRuntimeSettings(input.runtime),
+    vaultVersion: readyVault.vaultVersion,
+    v4SwapVault: readyVault.v4SwapVault,
+    v4LpEntryVault: readyVault.v4LpEntryVault,
+    v4LpExitVault: readyVault.v4LpExitVault,
   } satisfies OgAgentDeploymentRecord;
 
   await upsertAgentDeploymentRecord(record);
@@ -606,18 +786,6 @@ export async function storeAgentTradeArtifact(
   await writeJsonArtifact(agentTradeArtifactPath(agentId, side), artifact);
 }
 
-export function agentKeyForDeployment(deployment: Pick<OgAgentDeploymentRecord, "identityAddress" | "tokenId">): Hex {
-  return keccak256(
-    encodeAbiParameters(
-      [
-        { name: "identityAddress", type: "address" },
-        { name: "tokenId", type: "uint256" },
-      ],
-      [deployment.identityAddress, BigInt(deployment.tokenId)],
-    ),
-  );
-}
-
 async function readPolicyHash(
   publicClient: PublicClient,
   vault: Address,
@@ -628,6 +796,25 @@ async function readPolicyHash(
     functionName: "policyHash",
   }) as Promise<Hex>;
 }
+
+type SwapPolicyFields = {
+  perTradeCap0G: bigint;
+  dailyCap0G: bigint;
+  maxExposure0G: bigint;
+  cooldownSeconds: bigint;
+  maxDeadlineWindowSeconds: bigint;
+  defaultMinOutBps: number;
+};
+
+type LpPolicyFields = {
+  perLpActionCap0G: bigint;
+  lpDailyCap0G: bigint;
+  maxLpExposure0G: bigint;
+  cooldownSecondsLp: bigint;
+  lpMinOutBps: number;
+  minLiquidityFloor: bigint;
+  allowStaking: boolean;
+};
 
 async function readVaultSnapshot(
   client?: PublicClient,
@@ -643,11 +830,33 @@ async function readVaultSnapshot(
   }
 
   const publicClient = client ?? create0GPublicClient(rpcUrl);
-  // V3 wins: a V3 singleton (off-chain registry) takes precedence over any V2 factory vault
-  // because V3 is the superset surface (swap + LP). V2 coexistence is allowed; if no V3 entry
-  // exists for the owner we fall back to the latest V2 factory vault.
+  // V4 wins: the split trio is the active LP surface after migration. If no V4
+  // trio exists for the owner, keep the prior V3 > V2 fallback order.
+  const v4Vault = options.ownerAddress
+    ? await resolveMainnetV4VaultForOwner(options.ownerAddress, undefined, publicClient).catch(() => null)
+    : null;
+  if (v4Vault !== null) {
+    const chainId = await publicClient.getChainId();
+    if (chainId !== MAINNET_CHAIN_ID) {
+      return {
+        ready: false,
+        owner: options.ownerAddress,
+        vault: v4Vault.lpEntryVault,
+        vaultVersion: 4,
+        v4SwapVault: v4Vault.swapVault,
+        v4LpEntryVault: v4Vault.lpEntryVault,
+        v4LpExitVault: v4Vault.lpExitVault,
+        warnings: [`RPC chain mismatch: expected ${MAINNET_CHAIN_ID}, got ${chainId}.`],
+      };
+    }
+    return readV4LpVaultSnapshot(publicClient, v4Vault, options);
+  }
+
+  // V3 wins over any V2 factory vault because V3 is the legacy superset surface
+  // (swap + LP). V2 coexistence is allowed; if no V3 entry exists for the owner
+  // we fall back to the latest V2 factory vault.
   const v3Vault = options.ownerAddress
-    ? await resolveMainnetV3VaultForOwner(options.ownerAddress).catch(() => null)
+    ? await resolveMainnetV3VaultForOwner(options.ownerAddress, publicClient).catch(() => null)
     : (readConfiguredMainnetVaultAddress() ?? null);
   const versionedVaults = v3Vault === null && options.ownerAddress
     ? await resolveMainnetVaultVersionsForOwner(options.ownerAddress, publicClient).catch(() => [])
@@ -714,14 +923,6 @@ async function readVaultSnapshot(
   let lpDailySpent0G: string | undefined;
   let openLpExposure0G: string | undefined;
   let lpPolicy: OgAgentVaultSnapshot["lpPolicy"];
-  type SwapPolicyFields = {
-    perTradeCap0G: bigint;
-    dailyCap0G: bigint;
-    maxExposure0G: bigint;
-    cooldownSeconds: bigint;
-    maxDeadlineWindowSeconds: bigint;
-    defaultMinOutBps: number;
-  };
   let swapPolicy: SwapPolicyFields;
   if (isV3) {
     const [v3PolicyRaw, v3LpAdapter, v3LpDailySpent, v3OpenLpExposure] = await Promise.all([
@@ -817,6 +1018,226 @@ async function readVaultSnapshot(
   };
 }
 
+async function readV4LpVaultSnapshot(
+  publicClient: PublicClient,
+  v4Vault: { swapVault: Address; lpEntryVault: Address; lpExitVault: Address },
+  options: { ownerAddress?: Address } = {},
+): Promise<OgAgentVaultSnapshot> {
+  const { swapVault, lpEntryVault, lpExitVault } = v4Vault;
+  const [
+    owner,
+    executor,
+    lpAdapter,
+    proofRegistry,
+    paused,
+    executorRevoked,
+    lpDailySpentRaw,
+    openLpExposureRaw,
+    lpPolicyRaw,
+    balance,
+    linkedLpExit,
+    exitOwner,
+    exitExecutor,
+    exitProofRegistry,
+    exitPaused,
+    exitExecutorRevoked,
+    swapOwner,
+    swapExecutor,
+    swapAdapter,
+    swapProofRegistry,
+    swapPaused,
+    swapExecutorRevoked,
+    swapDailySpentRaw,
+    swapOpenExposureRaw,
+    swapPolicyRaw,
+    swapBalance,
+    exitBalance,
+  ] = await Promise.all([
+    publicClient.readContract({ address: lpEntryVault, abi: policyVaultV4LpEntryAbi, functionName: "owner" }) as Promise<Address>,
+    publicClient.readContract({ address: lpEntryVault, abi: policyVaultV4LpEntryAbi, functionName: "executor" }) as Promise<Address>,
+    publicClient.readContract({ address: lpEntryVault, abi: policyVaultV4LpEntryAbi, functionName: "lpAdapter" }) as Promise<Address>,
+    publicClient.readContract({ address: lpEntryVault, abi: policyVaultV4LpEntryAbi, functionName: "proofRegistry" }) as Promise<Address>,
+    publicClient.readContract({ address: lpEntryVault, abi: policyVaultV4LpEntryAbi, functionName: "paused" }) as Promise<boolean>,
+    publicClient.readContract({ address: lpEntryVault, abi: policyVaultV4LpEntryAbi, functionName: "executorRevoked" }) as Promise<boolean>,
+    publicClient.readContract({ address: lpEntryVault, abi: policyVaultV4LpEntryAbi, functionName: "lpDailySpent0G" }) as Promise<bigint>,
+    publicClient.readContract({ address: lpEntryVault, abi: policyVaultV4LpEntryAbi, functionName: "openLpExposure0G" }) as Promise<bigint>,
+    publicClient.readContract({ address: lpEntryVault, abi: policyVaultV4LpEntryAbi, functionName: "policy" }),
+    publicClient.getBalance({ address: lpEntryVault }),
+    publicClient.readContract({ address: lpEntryVault, abi: policyVaultV4LpEntryAbi, functionName: "lpExitVault" }) as Promise<Address>,
+    publicClient.readContract({ address: lpExitVault, abi: policyVaultV4LpExitAbi, functionName: "owner" }) as Promise<Address>,
+    publicClient.readContract({ address: lpExitVault, abi: policyVaultV4LpExitAbi, functionName: "executor" }) as Promise<Address>,
+    publicClient.readContract({ address: lpExitVault, abi: policyVaultV4LpExitAbi, functionName: "proofRegistry" }) as Promise<Address>,
+    publicClient.readContract({ address: lpExitVault, abi: policyVaultV4LpExitAbi, functionName: "paused" }) as Promise<boolean>,
+    publicClient.readContract({ address: lpExitVault, abi: policyVaultV4LpExitAbi, functionName: "executorRevoked" }) as Promise<boolean>,
+    publicClient.readContract({ address: swapVault, abi: policyVaultV4SwapAbi, functionName: "owner" }) as Promise<Address>,
+    publicClient.readContract({ address: swapVault, abi: policyVaultV4SwapAbi, functionName: "executor" }) as Promise<Address>,
+    publicClient.readContract({ address: swapVault, abi: policyVaultV4SwapAbi, functionName: "swapAdapter" }) as Promise<Address>,
+    publicClient.readContract({ address: swapVault, abi: policyVaultV4SwapAbi, functionName: "proofRegistry" }) as Promise<Address>,
+    publicClient.readContract({ address: swapVault, abi: policyVaultV4SwapAbi, functionName: "paused" }) as Promise<boolean>,
+    publicClient.readContract({ address: swapVault, abi: policyVaultV4SwapAbi, functionName: "executorRevoked" }) as Promise<boolean>,
+    publicClient.readContract({ address: swapVault, abi: policyVaultV4SwapAbi, functionName: "dailySpent0G" }) as Promise<bigint>,
+    publicClient.readContract({ address: swapVault, abi: policyVaultV4SwapAbi, functionName: "openExposure0G" }) as Promise<bigint>,
+    publicClient.readContract({ address: swapVault, abi: policyVaultV4SwapAbi, functionName: "policy" }),
+    publicClient.getBalance({ address: swapVault }),
+    publicClient.getBalance({ address: lpExitVault }),
+  ]);
+
+  const swapPolicy = normalizeV4SwapPolicySnapshot(swapPolicyRaw);
+  const lpPolicyFields = normalizeV4LpPolicySnapshot(lpPolicyRaw);
+  const warnings: string[] = [];
+  if (options.ownerAddress && owner.toLowerCase() !== options.ownerAddress.toLowerCase()) {
+    warnings.push("Resolved V4 Policy Vault owner does not match the connected wallet.");
+  }
+  if (swapOwner.toLowerCase() !== owner.toLowerCase() || exitOwner.toLowerCase() !== owner.toLowerCase()) {
+    warnings.push("V4 Policy Vault trio owner mismatch.");
+  }
+  if (swapExecutor.toLowerCase() !== executor.toLowerCase() || exitExecutor.toLowerCase() !== executor.toLowerCase()) {
+    warnings.push("V4 Policy Vault trio executor mismatch.");
+  }
+  if (swapProofRegistry.toLowerCase() !== proofRegistry.toLowerCase() || exitProofRegistry.toLowerCase() !== proofRegistry.toLowerCase()) {
+    warnings.push("V4 Policy Vault trio proof registry mismatch.");
+  }
+  if (linkedLpExit.toLowerCase() !== lpExitVault.toLowerCase()) {
+    warnings.push("V4 LP Entry is not wired to the registered LP Exit vault.");
+  }
+  if (paused) warnings.push("Policy Vault is paused.");
+  if (executorRevoked) warnings.push("Policy Vault executor is revoked.");
+  if (exitPaused) warnings.push("V4 LP Exit is paused.");
+  if (exitExecutorRevoked) warnings.push("V4 LP Exit executor is revoked.");
+  if (swapPaused) warnings.push("V4 Swap vault is paused.");
+  if (swapExecutorRevoked) warnings.push("V4 Swap vault executor is revoked.");
+  if (balance <= 0n) {
+    warnings.push(
+      swapBalance > 0n
+        ? "LP Entry has no 0G balance; V4 Swap has native 0G available for transfer."
+        : "Policy Vault has no 0G balance.",
+    );
+  }
+  const configuredExecutor = readAddress(process.env.NEXT_PUBLIC_VAULT_EXECUTOR_MAINNET_ADDRESS);
+  if (configuredExecutor && configuredExecutor.toLowerCase() !== executor.toLowerCase()) {
+    warnings.push("Vault executor does not match NEXT_PUBLIC_VAULT_EXECUTOR_MAINNET_ADDRESS.");
+  }
+
+  // B5/T8 FIX: swap positions live on the Swap third (agentPositionUnits/positionUnits), NOT LpEntry.
+  // Read them from swapVault so V4 agents expose sellable positions (previously hardcoded []).
+  const sellablePositions = await readSellablePositions(publicClient, swapVault).catch(() => []);
+
+  return {
+    adapter: swapAdapter,
+    balance0G: formatEther(balance),
+    dailySpent0G: formatEther(swapDailySpentRaw),
+    executor,
+    executorRevoked: executorRevoked || exitExecutorRevoked || swapExecutorRevoked,
+    lpAdapter,
+    lpDailySpent0G: formatEther(lpDailySpentRaw),
+    lpPolicy: {
+      perLpActionCap0G: formatEther(lpPolicyFields.perLpActionCap0G),
+      lpDailyCap0G: formatEther(lpPolicyFields.lpDailyCap0G),
+      maxLpExposure0G: formatEther(lpPolicyFields.maxLpExposure0G),
+      cooldownSecondsLp: lpPolicyFields.cooldownSecondsLp.toString(),
+      lpMinOutBps: lpPolicyFields.lpMinOutBps,
+      minLiquidityFloor: lpPolicyFields.minLiquidityFloor.toString(),
+      allowStaking: lpPolicyFields.allowStaking,
+      lpMaxPositions: deriveMaxPositions({
+        perLpActionCap0G: lpPolicyFields.perLpActionCap0G,
+        maxLpExposure0G: lpPolicyFields.maxLpExposure0G,
+      }),
+      lpMaxPerPosition0G: formatEther(lpPolicyFields.perLpActionCap0G),
+    },
+    openExposure0G: formatEther(swapOpenExposureRaw),
+    openLpExposure0G: formatEther(openLpExposureRaw),
+    owner,
+    paused: paused || exitPaused || swapPaused,
+    policy: {
+      cooldownSeconds: swapPolicy.cooldownSeconds.toString(),
+      dailyCap0G: formatEther(swapPolicy.dailyCap0G),
+      defaultMinOutBps: swapPolicy.defaultMinOutBps,
+      maxDeadlineWindowSeconds: swapPolicy.maxDeadlineWindowSeconds.toString(),
+      maxExposure0G: formatEther(swapPolicy.maxExposure0G),
+      perTradeCap0G: formatEther(swapPolicy.perTradeCap0G),
+    },
+    proofRegistry,
+    ready: warnings.length === 0,
+    sellablePositions,
+    vault: lpEntryVault,
+    vaultVersion: 4,
+    v4SwapVault: swapVault,
+    v4LpEntryVault: lpEntryVault,
+    v4LpExitVault: lpExitVault,
+    v4SwapBalance0G: formatEther(swapBalance),
+    v4LpEntryBalance0G: formatEther(balance),
+    v4LpExitBalance0G: formatEther(exitBalance),
+    warnings,
+  };
+}
+
+function isOnlyZeroBalanceWarning(vault: OgAgentVaultSnapshot): boolean {
+  return Boolean(
+    vault.vault &&
+      vault.paused !== true &&
+      vault.executorRevoked !== true &&
+      vault.warnings.length > 0 &&
+      vault.warnings.every(isLpFundingWarning),
+  );
+}
+
+function isLpFundingWarning(warning: string): boolean {
+  return warning === "Policy Vault has no 0G balance." || warning.startsWith("LP Entry has no 0G balance;");
+}
+
+function uniqueAddresses(addresses: Array<Address | undefined>): Address[] {
+  const seen = new Set<string>();
+  const unique: Address[] = [];
+  for (const address of addresses) {
+    if (!address) continue;
+    const key = address.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(address);
+  }
+  return unique;
+}
+
+function normalizeV4SwapPolicySnapshot(raw: unknown): SwapPolicyFields {
+  return {
+    perTradeCap0G: readPolicyBigIntField(raw, 0, "perTradeCap0G"),
+    dailyCap0G: readPolicyBigIntField(raw, 1, "dailyCap0G"),
+    maxExposure0G: readPolicyBigIntField(raw, 2, "maxExposure0G"),
+    cooldownSeconds: readPolicyBigIntField(raw, 3, "cooldownSeconds"),
+    maxDeadlineWindowSeconds: readPolicyBigIntField(raw, 4, "maxDeadlineWindowSeconds"),
+    defaultMinOutBps: Number(readPolicyBigIntField(raw, 5, "defaultMinOutBps")),
+  };
+}
+
+function normalizeV4LpPolicySnapshot(raw: unknown): LpPolicyFields {
+  return {
+    perLpActionCap0G: readPolicyBigIntField(raw, 0, "perLpActionCap0G"),
+    lpDailyCap0G: readPolicyBigIntField(raw, 1, "lpDailyCap0G"),
+    maxLpExposure0G: readPolicyBigIntField(raw, 2, "maxLpExposure0G"),
+    cooldownSecondsLp: readPolicyBigIntField(raw, 3, "cooldownSecondsLp"),
+    lpMinOutBps: Number(readPolicyBigIntField(raw, 4, "lpMinOutBps")),
+    minLiquidityFloor: readPolicyBigIntField(raw, 5, "minLiquidityFloor"),
+    allowStaking: readPolicyBoolField(raw, 6, "allowStaking"),
+  };
+}
+
+function readPolicyBigIntField(raw: unknown, index: number, key: string): bigint {
+  const record = raw as Record<string, unknown>;
+  const list = raw as readonly unknown[];
+  const value = record?.[key] ?? list?.[index];
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number" || typeof value === "string") return BigInt(value);
+  throw new Error(`Missing bigint policy field ${key}.`);
+}
+
+function readPolicyBoolField(raw: unknown, index: number, key: string): boolean {
+  const record = raw as Record<string, unknown>;
+  const list = raw as readonly unknown[];
+  const value = record?.[key] ?? list?.[index];
+  if (typeof value === "boolean") return value;
+  throw new Error(`Missing boolean policy field ${key}.`);
+}
+
 export async function readAgentKeyEnabled(vault: Address, deployment: OgAgentDeploymentRecord): Promise<boolean> {
   const rpcUrl = process.env.OG_RPC_URL?.trim();
   if (!rpcUrl) {
@@ -845,7 +1266,7 @@ async function readSellablePositions(
   }
 
   const positions = await Promise.all(
-    Array.from(routesByToken.values()).map(async (route) => {
+    Array.from(routesByToken.values()).map(async (route): Promise<OgAgentVaultPosition | null> => {
       const amountRaw = options.agentKey
         ? await publicClient.readContract({
             address: vault,
@@ -863,11 +1284,14 @@ async function readSellablePositions(
         return null;
       }
 
-      const decimals = await publicClient.readContract({
-        address: route.tokenOut,
-        abi: erc20DecimalsAbi,
-        functionName: "decimals",
-      }).catch(() => 18);
+      const [decimals, logoUrl] = await Promise.all([
+        publicClient.readContract({
+          address: route.tokenOut,
+          abi: erc20DecimalsAbi,
+          functionName: "decimals",
+        }).catch(() => 18),
+        getZiaTokenLogoUrl(route.tokenOut).catch(() => null),
+      ]);
 
       return {
         amount: trimDecimal(formatUnits(amountRaw, decimals)),
@@ -877,6 +1301,7 @@ async function readSellablePositions(
         routeId: route.id,
         symbol: route.symbol.replace(/-direct|-oku/u, ""),
         tokenAddress: route.tokenOut,
+        logoUrl,
       } satisfies OgAgentVaultPosition;
     }),
   );
@@ -891,30 +1316,69 @@ async function readSellablePositions(
 /// user-facing USD price range) computed from NFPM positions() tokensOwed, pool slot0, and the
 /// Zia pool metadata (prices, APR, symbols, decimals). Accounting fields are optional — when the
 /// Zia pool fetch fails they are left undefined and the UI shows "—" rather than fake numbers.
-async function readSellableLpPositions(
+export async function readSellableLpPositions(
   publicClient: PublicClient,
   vault: Address,
-  options: { agentKey?: Hex } = {},
+  options: { agentKey?: Hex; deployTxHash?: Hex } = {},
 ): Promise<OgAgentVaultLpPosition[]> {
   if (!options.agentKey) {
     return [];
   }
   const agentKey = options.agentKey;
-  // Solidity's public getter for mapping(bytes32 => mapping(bytes32 => uint256[]))
-  // exposes agentLpNfts(agentKey, poolId, index), not the full array. Enumerate
-  // minted tokenIds from vault events, then verify each token against current
-  // per-token mappings so burned/zapped positions naturally disappear.
-  const mintLogs = await publicClient.getLogs({
-    address: vault,
-    event: lpActionExecutedV3Event,
-    args: { agentKey },
-    fromBlock: 0n,
-    toBlock: "latest",
-  }).catch(() => []);
+  // LP reads use the PUBLIC 0G RPC (getLpListingClient) — quiknode caps
+  // eth_getLogs at a 5-block range + rate-limits to ~52 reads/min, so the
+  // listing flickered empty on quiknode (Bug 1). The public RPC handles the
+  // getLogs + ~7 per-token reads for 10 positions in ~1s. The passed
+  // publicClient (quiknode) is kept as the fallback param for non-LP reads.
+  const lpClient = getLpListingClient();
+  // Enumerate minted tokenIds. Primary source = the server-side position
+  // registry (lib/agent/lp/lp-position-registry.ts), populated at mint time and
+  // by the one-shot backfill script. This works around the deployed V3 vault
+  // 0xfd391E... lacking the agentLpNfts array getter (added to source after that
+  // vault deployed). Every tokenId here is still re-validated per-token below
+  // via lpNftOwner/lpNftPool/NFPM, so a stale or drifted registry entry cannot
+  // poison the listing — burned/zapped positions are filtered at the
+  // ownerAgent/deployedNative check.
+  const registry = await readLpPositionRegistry(agentKey);
   const tokenIds = new Set<string>();
-  for (const log of mintLogs) {
-    if (Number(log.args.actionType ?? -1) === 2 && log.args.tokenId !== undefined) {
-      tokenIds.add(log.args.tokenId.toString());
+  if (registry) {
+    for (const entry of registry.positions) tokenIds.add(entry.tokenId);
+  } else if (options.deployTxHash) {
+    // Legacy agent: registry file missing (never minted via the new hook, never
+    // backfilled). Fall back to public-RPC getLogs narrowed to [deployBlock,
+    // latest] so the range is small + fast (the vault deployed hours/days ago,
+    // not at block 0). getLogs on quiknode is unusable (5-block cap); the public
+    // RPC handles the full range in ~300ms.
+    const deployBlock = await getLpDeployBlock(lpClient, options.deployTxHash);
+    if (deployBlock !== undefined) {
+      const mintLogs = await lpClient.getLogs({
+        address: vault,
+        event: lpActionExecutedV3Event,
+        args: { agentKey },
+        fromBlock: deployBlock,
+        toBlock: "latest",
+      }).catch(() => []);
+      for (const log of mintLogs) {
+        if (Number(log.args.actionType ?? -1) === 2 && log.args.tokenId !== undefined) {
+          tokenIds.add(log.args.tokenId.toString());
+        }
+      }
+    }
+  } else {
+    // Registry missing AND no deployTxHash on the record (very old deployment):
+    // best-effort public-RPC getLogs from block 0. The public RPC has no 5-block
+    // cap, so a full-range scan is acceptable here, unlike quiknode.
+    const mintLogs = await lpClient.getLogs({
+      address: vault,
+      event: lpActionExecutedV3Event,
+      args: { agentKey },
+      fromBlock: 0n,
+      toBlock: "latest",
+    }).catch(() => []);
+    for (const log of mintLogs) {
+      if (Number(log.args.actionType ?? -1) === 2 && log.args.tokenId !== undefined) {
+        tokenIds.add(log.args.tokenId.toString());
+      }
     }
   }
 
@@ -922,35 +1386,56 @@ async function readSellableLpPositions(
   // minted tokenId. tokensOwed0/1 come from NFPM positions() ([11]/[12]); liquidity
   // from [7]. Staked positions report real liquidity too (the hardcode "staked ? 0"
   // was dropped — NFPM positions() returns real liquidity regardless of NFT owner).
-  const rawPositions = await Promise.all(
-    [...tokenIds].map(async (tokenIdString): Promise<{
-      tokenId: string;
-      poolId: Hex;
-      poolAddress: Address;
-      poolLabel: string;
-      stakeVault: Address | undefined;
-      tickLower: number;
-      tickUpper: number;
-      deployedNative0G: string;
-      liquidity: bigint;
-      tokensOwed0: bigint;
-      tokensOwed1: bigint;
-      staked: boolean;
-    } | null> => {
+  // Reads are CHUNKED (LP_LISTING_CHUNK_SIZE) — the public 0G RPC bursts at ~50
+  // reqs and 10 positions × 7 parallel reads = 70 reqs exceed that cap, so a flat
+  // Promise.all hits "request rate exceeded" and the caller drops ALL positions
+  // (Bug 1 under load). Chunks run sequentially; each chunk stays under the cap.
+  const tokenIdList = [...tokenIds];
+  const rawPositions: ({
+    tokenId: string;
+    poolId: Hex;
+    poolAddress: Address;
+    poolLabel: string;
+    stakeVault: Address | undefined;
+    tickLower: number;
+    tickUpper: number;
+    deployedNative0G: string;
+    liquidity: bigint;
+    tokensOwed0: bigint;
+    tokensOwed1: bigint;
+    staked: boolean;
+  } | null)[] = [];
+  for (let chunkStart = 0; chunkStart < tokenIdList.length; chunkStart += LP_LISTING_CHUNK_SIZE) {
+    const chunk = tokenIdList.slice(chunkStart, chunkStart + LP_LISTING_CHUNK_SIZE);
+    const chunkResults = await Promise.all(
+      chunk.map(async (tokenIdString): Promise<{
+        tokenId: string;
+        poolId: Hex;
+        poolAddress: Address;
+        poolLabel: string;
+        stakeVault: Address | undefined;
+        tickLower: number;
+        tickUpper: number;
+        deployedNative0G: string;
+        liquidity: bigint;
+        tokensOwed0: bigint;
+        tokensOwed1: bigint;
+        staked: boolean;
+      } | null> => {
       const tokenId = BigInt(tokenIdString);
       const [ownerAgent, poolId, deployedNative, tickLower, tickUpper, position, nftOwner] = await Promise.all([
-        publicClient.readContract({ address: vault, abi: policyVaultV3Abi, functionName: "lpNftOwner", args: [tokenId] }) as Promise<Hex>,
-        publicClient.readContract({ address: vault, abi: policyVaultV3Abi, functionName: "lpNftPool", args: [tokenId] }) as Promise<Hex>,
-        publicClient.readContract({ address: vault, abi: policyVaultV3Abi, functionName: "lpNftDeployedNative", args: [tokenId] }) as Promise<bigint>,
-        publicClient.readContract({ address: vault, abi: policyVaultV3Abi, functionName: "lpNftTickLower", args: [tokenId] }) as Promise<number>,
-        publicClient.readContract({ address: vault, abi: policyVaultV3Abi, functionName: "lpNftTickUpper", args: [tokenId] }) as Promise<number>,
-        publicClient.readContract({
+        lpClient.readContract({ address: vault, abi: policyVaultV3Abi, functionName: "lpNftOwner", args: [tokenId] }) as Promise<Hex>,
+        lpClient.readContract({ address: vault, abi: policyVaultV3Abi, functionName: "lpNftPool", args: [tokenId] }) as Promise<Hex>,
+        lpClient.readContract({ address: vault, abi: policyVaultV3Abi, functionName: "lpNftDeployedNative", args: [tokenId] }) as Promise<bigint>,
+        lpClient.readContract({ address: vault, abi: policyVaultV3Abi, functionName: "lpNftTickLower", args: [tokenId] }) as Promise<number>,
+        lpClient.readContract({ address: vault, abi: policyVaultV3Abi, functionName: "lpNftTickUpper", args: [tokenId] }) as Promise<number>,
+        lpClient.readContract({
           address: ZIA_LP_MAINNET.nonfungiblePositionManager,
           abi: ziaNonfungiblePositionManagerAbi,
           functionName: "positions",
           args: [tokenId],
         }).catch(() => null) as Promise<readonly unknown[] | null>,
-        publicClient.readContract({
+        lpClient.readContract({
           address: ZIA_LP_MAINNET.nonfungiblePositionManager,
           abi: ziaNonfungiblePositionManagerAbi,
           functionName: "ownerOf",
@@ -994,8 +1479,10 @@ async function readSellableLpPositions(
         tokensOwed1,
         staked,
       };
-    }),
-  );
+      }),
+    );
+    rawPositions.push(...chunkResults);
+  }
   const valid = rawPositions.filter((p): p is NonNullable<typeof p> => p !== null);
   if (valid.length === 0) {
     return [];
@@ -1006,7 +1493,7 @@ async function readSellableLpPositions(
   // slot0 fails for a pool, positions in that pool ship without accounting fields
   // (UI shows "—") but still report liquidity/ticks/deployedNative.
   const poolAddresses = [...new Set(valid.map((p) => p.poolAddress.toLowerCase()))];
-  const poolMetaMap = await fetchPoolMetaMap(publicClient, poolAddresses);
+  const poolMetaMap = await fetchPoolMetaMap(lpClient, poolAddresses);
   const withAccounting: OgAgentVaultLpPosition[] = valid.map((p) => {
     const poolMeta = poolMetaMap.get(p.poolAddress.toLowerCase()) ?? null;
     const base: OgAgentVaultLpPosition = {
@@ -1038,6 +1525,8 @@ async function readSellableLpPositions(
       ...base,
       token0Symbol: accounting.token0Symbol,
       token1Symbol: accounting.token1Symbol,
+      token0LogoUrl: poolMeta.token0LogoUrl,
+      token1LogoUrl: poolMeta.token1LogoUrl,
       token0Decimals: accounting.token0Decimals,
       token1Decimals: accounting.token1Decimals,
       amount0: accounting.amount0,
@@ -1104,6 +1593,13 @@ async function fetchPoolMeta(publicClient: PublicClient, poolAddress: Address): 
   if (!slot0 || !ziaPool) {
     return null;
   }
+  // Best-effort pair-icon logos — cached separately (much longer TTL than pool
+  // meta) since logos rarely change. A failed/missing logo never blocks the
+  // position from rendering; the card falls back to an initials avatar.
+  const [token0LogoUrl, token1LogoUrl] = await Promise.all([
+    getZiaTokenLogoUrl(ziaPool.token0.address).catch(() => null),
+    getZiaTokenLogoUrl(ziaPool.token1.address).catch(() => null),
+  ]);
   return {
     poolAddress,
     sqrtPriceX96: slot0[0],
@@ -1117,6 +1613,8 @@ async function fetchPoolMeta(publicClient: PublicClient, poolAddress: Address): 
     aprTotal: ziaPool.apr.total,
     aprTrading: ziaPool.apr.trading,
     aprStaking: ziaPool.apr.staking,
+    token0LogoUrl,
+    token1LogoUrl,
   };
 }
 
@@ -1704,8 +2202,11 @@ async function readOnChainTradeLogEntries(deployment: OgAgentDeploymentRecord): 
   const deployReceipt = await publicClient.getTransactionReceipt({ hash: deployment.deployTxHash }).catch(() => null);
   const fromBlock = deployReceipt?.blockNumber ?? 0n;
   const agentKey = deployment.agentKey ?? agentKeyForDeployment(deployment);
+  // B5/T7 FIX: swap trades are emitted by the Swap third for V4, not the LpEntry (deployment.vault).
+  const tradeVault =
+    (deployment.vaultVersion ?? 1) >= 4 && deployment.v4SwapVault ? deployment.v4SwapVault : deployment.vault;
   const v2Logs = await publicClient.getLogs({
-    address: deployment.vault,
+    address: tradeVault,
     event: tradeExecutedV2Event,
     args: { agentKey },
     fromBlock,
@@ -1713,7 +2214,7 @@ async function readOnChainTradeLogEntries(deployment: OgAgentDeploymentRecord): 
   }).catch(() => []);
   const sourceEvent = v2Logs.length > 0 ? "TradeExecutedV2" : "TradeExecuted";
   const logs = v2Logs.length > 0 ? v2Logs : await publicClient.getLogs({
-    address: deployment.vault,
+    address: tradeVault,
     event: tradeExecutedEvent,
     fromBlock,
     toBlock: "latest",
@@ -1935,7 +2436,10 @@ function normalizeRuntimeSettings(input: Partial<OgAgentRuntimeSettings> | undef
   return {
     maxCapitalPerTrade0G: sanitizeDecimalString(input?.maxCapitalPerTrade0G),
     maxHoldingMinutes: clampInteger(input?.maxHoldingMinutes, 1, 24 * 60, 30),
-    maxPositions: clampInteger(input?.maxPositions, 1, 8, 2),
+    maxPositions: clampInteger(input?.maxPositions, 1, 10, 2),
+    minAprPct: normalizeOptionalNumber(input?.minAprPct, 0, 1000),
+    maxAprPct: normalizeOptionalNullableNumber(input?.maxAprPct, 0, 1000),
+    maxPerPosition0G: sanitizeDecimalString(input?.maxPerPosition0G),
     signalConfidence: clampInteger(input?.signalConfidence, 1, 100, 75),
     slippageBps: clampInteger(input?.slippageBps, 1, 1000, 75),
     // Preserve automation as-is. Only autoMint is defined today; it is a
@@ -1947,10 +2451,22 @@ function normalizeRuntimeSettings(input: Partial<OgAgentRuntimeSettings> | undef
 
 function sanitizeDecimalString(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
-  if (!trimmed || !/^(?:0|[1-9]\d*)(?:\.\d{1,18})?$/u.test(trimmed)) {
+  if (!trimmed || !/^(?:0|[1-9]\d*)(?:\.\d{1,18})?$/u.test(trimmed) || /^0+(?:\.0+)?$/u.test(trimmed)) {
     return undefined;
   }
   return trimmed;
+}
+
+function normalizeOptionalNumber(value: number | undefined, min: number, max: number): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeOptionalNullableNumber(value: number | null | undefined, min: number, max: number): number | null | undefined {
+  if (value === null) return null;
+  return normalizeOptionalNumber(value, min, max);
 }
 
 function clampInteger(value: number | undefined, min: number, max: number, fallback: number): number {
@@ -1961,19 +2477,12 @@ function clampInteger(value: number | undefined, min: number, max: number, fallb
 }
 
 function create0GPublicClient(rpcUrl: string): PublicClient {
-  // Default retryCount:0 preserves fast-fail behavior; an env override
-  // (OG_RPC_RETRY_COUNT/OG_RPC_RETRY_DELAY_MS) opts into 429 backoff for
-  // bursty one-off scripts (e.g. the recovery). viem only retries
-  // non-deterministic errors (429/5xx/network) — never contract reverts.
-  const retryCount = Number(process.env.OG_RPC_RETRY_COUNT ?? 0);
-  const retryDelay = Number(process.env.OG_RPC_RETRY_DELAY_MS ?? 150);
+  // Prefer quiknode (OG_MAINNET_RPC_URL) with the public RPC as fallback, and
+  // batch read bursts to stay under quiknode's ~15 req/s ceiling. 429/5xx/network
+  // errors back off via OG_RPC_RETRY_COUNT/MS; contract reverts never retry.
   return createPublicClient({
     chain: make0GMainnetChain(rpcUrl),
-    transport: http(rpcUrl, {
-      retryCount: Number.isFinite(retryCount) && retryCount >= 0 ? retryCount : 0,
-      retryDelay: Number.isFinite(retryDelay) && retryDelay >= 0 ? retryDelay : 150,
-      timeout: OG_RPC_TIMEOUT_MS,
-    }),
+    transport: makeMainnetTransport(),
   });
 }
 
@@ -2006,6 +2515,52 @@ async function resolveAgenticIdAddress(): Promise<{ address?: Address; fromArtif
   }
   const fromArtifact = readAddress(artifact?.agenticId) ?? readAddress(artifact?.address);
   return { address: fromArtifact ?? undefined, fromArtifact: Boolean(fromArtifact) };
+}
+
+// ERC-165 / ERC-7857 interface IDs the canonical AgenticID must implement.
+// IERC7857 (0xee5a526e) + IERC7857Metadata (0xaa18b754) are computed from the
+// canonical contract ABIs via scripts/print-erc7857-ids.ts (viem
+// getFunctionSelector + XOR, matching Solidity `type(IERC7857).interfaceId`).
+// AgenticID does NOT implement IERC7857DataVerifier (0xdf630116) — that is the
+// separate verifier contract wired per AGENTS.md. Pinning these lets the deploy
+// path fail-closed if AGENT_IDENTITY_MAINNET_ADDRESS points at a non-AgenticID
+// contract (stale proxy, wrong token, wrong chain artifact), so a misconfigured
+// identity never silently backs an agent mint.
+const ERC165_INTERFACE_ID = "0x01ffc9a7" as const;
+const IERC7857_INTERFACE_ID = "0xee5a526e" as const;
+const IERC7857_METADATA_INTERFACE_ID = "0xaa18b754" as const;
+
+const erc165Abi = [
+  {
+    type: "function",
+    name: "supportsInterface",
+    inputs: [{ name: "interfaceId", type: "bytes4" }],
+    outputs: [{ name: "", type: "bool" }],
+    stateMutability: "view",
+  },
+] as const;
+
+async function assertAgenticIdInterfaces(publicClient: PublicClient, address: Address): Promise<void> {
+  const required = [
+    { id: ERC165_INTERFACE_ID, label: "ERC-165" },
+    { id: IERC7857_INTERFACE_ID, label: "IERC7857" },
+    { id: IERC7857_METADATA_INTERFACE_ID, label: "IERC7857Metadata" },
+  ];
+  for (const { id, label } of required) {
+    const supported = await publicClient.readContract({
+      address,
+      abi: erc165Abi,
+      functionName: "supportsInterface",
+      args: [id],
+    });
+    if (!supported) {
+      throw new OgAgentDeployError(
+        `Configured Agentic ID address does not implement ${label} (${id}); it is not the canonical ERC-7857 AgenticID contract.`,
+        "identity_not_agentic_id",
+        409,
+      );
+    }
+  }
 }
 
 function selectAgentDeployment(
@@ -2053,10 +2608,16 @@ async function readAgentDeploymentRoster(
     ...((filter.ownerAddress || filter.vaultAddress) ? onChainRecords : []),
     ...appDeployments,
   ]);
-  const removedCandidates = mergeAgentDeploymentRecords([...onChainRecords, ...appDeployments]);
+  // Tombstone lookup by string id (registry.removedAgentIds) must resolve
+  // against the app registry ONLY, not onChainRecords. A removedId like
+  // "agent-0g-mainnet-9" is not unique across AgenticID identity contracts —
+  // an old, already-dead identity contract can have minted its own tokenId 9,
+  // and mixing that on-chain record into the id-keyed lookup Map lets it
+  // silently overwrite the real (current-identity) candidate, so the real
+  // agent never gets tombstoned and keeps showing as active.
   const removedAgents = buildRemovedAgentRecords(
     registry,
-    removedCandidates,
+    appDeployments,
     readEnvRemovedAgentIds(),
     readEnvRemovedAgentKeys(),
   )
@@ -2067,18 +2628,10 @@ async function readAgentDeploymentRoster(
   // (e.g. a dead V1-vault agent on 0x7a968138…) would otherwise shadow a live
   // agent with the same tokenId on a different contract (e.g. a freshly minted
   // agent on 0x058c5F4C…) and silently exclude it from the active roster.
-  const removedIdentityTokenKeys = new Set(
-    removedAgents
-      .filter((deployment) => deployment.identityAddress && deployment.tokenId)
-      .map((deployment) => `${deployment.identityAddress.toLowerCase()}:${deployment.tokenId}`),
-  );
+  const removedIdentityTokenKeys = new Set(removedAgents.map((deployment) => identityTokenKey(deployment)));
 
   const activeCandidates = deploymentCandidates.filter((deployment) => {
-    if (
-      deployment.identityAddress &&
-      deployment.tokenId &&
-      removedIdentityTokenKeys.has(`${deployment.identityAddress.toLowerCase()}:${deployment.tokenId}`)
-    ) {
+    if (removedIdentityTokenKeys.has(identityTokenKey(deployment))) {
       return false;
     }
     return deploymentMatchesFilter(deployment, filter);
@@ -2095,17 +2648,20 @@ async function filterActiveOnChainAgentRecords(
     return deployments;
   }
 
-  const vault = filter.vaultAddress ?? (
-    filter.ownerAddress ? await resolveMainnetVaultForOwner(filter.ownerAddress).catch(() => null) : null
-  );
-  if (!vault) {
-    return deployments;
-  }
-
+  // Each deployment's agentKeyEnabled/open-position state must be read from
+  // ITS OWN vault, not a single vault shared across every deployment for this
+  // owner. A V4 owner can have multiple agents, each with its own dedicated
+  // Swap/LpEntry/LpExit trio (e.g. one deployed before a registry redeploy,
+  // one after) — `resolveMainnetVaultForOwner`/`filter.vaultAddress` only
+  // resolves whichever ONE trio the on-chain registry currently returns for
+  // that owner. Checking every deployment against that single resolved vault
+  // silently drops any agent whose own vault differs from it (agentKeyEnabled
+  // reads false on a vault where the key was never registered, and it has no
+  // open positions there either, so it gets filtered out entirely).
   const filtered = await Promise.all(
     deployments.map(async (deployment): Promise<OgAgentDeploymentRecord | null> => {
       const enabled = await withTimeout(
-        readAgentKeyEnabled(vault, deployment),
+        readAgentKeyEnabled(deployment.vault, deployment),
         AUXILIARY_READ_TIMEOUT_MS,
         "Agent key status",
       ).catch(() => undefined);
@@ -2113,50 +2669,15 @@ async function filterActiveOnChainAgentRecords(
         return deployment;
       }
 
-      const pausedDeployment = { ...deployment, paused: true } satisfies OgAgentDeploymentRecord;
-      if (filter.agentId === deployment.id) {
-        return pausedDeployment;
-      }
-
-      return (await hasAgentOpenPositions(vault, deployment)) ? pausedDeployment : null;
+      // Any agent that isn't removed stays visible as "paused" once its key
+      // is disabled — regardless of whether it ever held a position. Hiding
+      // disabled-with-no-position agents entirely (the prior behavior) meant
+      // a paused-but-not-removed agent could silently vanish from the roster,
+      // which contradicts the UI's "paused, not removed, still shows" contract.
+      return { ...deployment, paused: true } satisfies OgAgentDeploymentRecord;
     }),
   );
   return filtered.filter((deployment): deployment is OgAgentDeploymentRecord => deployment !== null);
-}
-
-async function hasAgentOpenPositions(vault: Address, deployment: OgAgentDeploymentRecord): Promise<boolean> {
-  const rpcUrl = process.env.OG_RPC_URL?.trim();
-  if (!rpcUrl) {
-    return false;
-  }
-  const publicClient = create0GPublicClient(rpcUrl);
-  const agentKey = deployment.agentKey ?? agentKeyForDeployment(deployment);
-  const openPositionCount = await withTimeout(
-    publicClient.readContract({
-      address: vault,
-      abi: policyVaultAgentKeyAbi,
-      functionName: "agentOpenPositionCount",
-      args: [agentKey],
-    }),
-    AUXILIARY_READ_TIMEOUT_MS,
-    "agent open position count",
-  ).catch(() => undefined);
-  if (typeof openPositionCount === "bigint") {
-    return openPositionCount > 0n;
-  }
-
-  const positions = await withTimeout(
-    readSellablePositions(publicClient, vault, { agentKey }),
-    AUXILIARY_READ_TIMEOUT_MS,
-    "agent-scoped positions",
-  ).catch(() => []);
-  return positions.some((position) => {
-    try {
-      return BigInt(position.amountRaw) > 0n;
-    } catch {
-      return false;
-    }
-  });
 }
 
 function deploymentMatchesFilter(
@@ -2164,12 +2685,65 @@ function deploymentMatchesFilter(
   filter: { ownerAddress?: Address; vaultAddress?: Address },
 ): boolean {
   if (filter.ownerAddress && deployment.owner.toLowerCase() !== filter.ownerAddress.toLowerCase()) return false;
-  if (filter.vaultAddress && deployment.vault.toLowerCase() !== filter.vaultAddress.toLowerCase()) return false;
+  if (filter.vaultAddress && !deploymentMatchesVaultAddress(deployment, filter.vaultAddress)) return false;
   return true;
+}
+
+function deploymentMatchesVaultAddress(deployment: OgAgentDeploymentRecord, vaultAddress: Address): boolean {
+  const target = vaultAddress.toLowerCase();
+  return [
+    deployment.vault,
+    deployment.v4SwapVault,
+    deployment.v4LpEntryVault,
+    deployment.v4LpExitVault,
+  ].some((address) => address?.toLowerCase() === target);
 }
 
 async function readAgentDeploymentRegistryArtifact(): Promise<AgentDeploymentRegistryArtifact | null> {
   return readJsonArtifact<AgentDeploymentRegistryArtifact>(AGENT_REGISTRY_PATH);
+}
+
+// Multi-owner enumeration: every active (non-tombstoned) agent across ALL owners. Reuses the roster
+// reader with NO ownerAddress filter, so the community workers process every user's agents, not just
+// the env-configured owner's. Each record carries its own `owner`, so downstream per-agent workspace
+// loads resolve the correct owner (lp-worker.ts:141 / worker.ts:107 use `deployment.owner`).
+export async function listAllAgentDeployments(): Promise<OgAgentDeploymentRecord[]> {
+  const identity = await resolveAgenticIdAddress();
+  const roster = await readAgentDeploymentRoster(identity.address, { includeOnChain: false });
+  return roster.active;
+}
+
+// An LP agent is identified by the "lp-zia" filter (mirrors lp-worker.ts isLpDeployment).
+export function isLpAgentFilters(filters: readonly string[] | undefined): boolean {
+  return (filters ?? []).some((filterId) => filterId.toLowerCase() === "lp-zia");
+}
+
+// Product limit: each wallet may have at most ONE active LP agent and ONE active trading agent.
+// Enforced at deploy time (before the irreversible AgenticID mint) so a duplicate fails fast.
+//
+// Count only agents the roster treats as ACTIVE for this owner — the same source
+// of truth the /agents UI uses (readAgentDeploymentRoster). Reading raw
+// `registry.agents` was wrong: it also counted tombstoned/env-removed records and
+// stale agents left on a migrated-away vault (their on-chain agent key is no
+// longer enabled), which the UI hides and the user can't remove through the UI.
+// Such an invisible record must never block a fresh deploy.
+export async function assertAgentTypeQuota(owner: Address, kind: "lp" | "trade"): Promise<void> {
+  const identity = await resolveAgenticIdAddress();
+  const roster = await readAgentDeploymentRoster(identity.address, {
+    ownerAddress: owner,
+    includeOnChain: true,
+  });
+  const sameType = roster.active.filter((agent) =>
+    kind === "lp" ? isLpAgentFilters(agent.filters) : !isLpAgentFilters(agent.filters),
+  );
+  if (sameType.length >= 1) {
+    const label = kind === "lp" ? "LP" : "trading";
+    throw new OgAgentDeployError(
+      `This wallet already has an active ${label} agent. Each wallet may create at most one ${label} agent — remove the existing one first.`,
+      "agent_quota_exceeded",
+      409,
+    );
+  }
 }
 
 async function readLegacyDeployResponseRecord(): Promise<OgAgentDeploymentRecord | null> {
@@ -2250,6 +2824,45 @@ export async function setAgentAutomation(
   target.runtime = normalizeRuntimeSettings({
     ...current,
     automation: { ...(current.automation ?? {}), autoMint },
+  });
+  const removedAgents = buildRemovedAgentRecords(registry, deployments);
+  await writeAgentDeploymentRegistry(deployments, removedAgents);
+  return target;
+}
+
+export async function setAgentLpRuntimePolicy(
+  agentId: string,
+  owner: Address,
+  input: {
+    maxAprPct: number | null;
+    maxPerPosition0G: string;
+    maxPositions: number;
+    minAprPct: number;
+  },
+): Promise<OgAgentDeploymentRecord> {
+  const registry = await readAgentDeploymentRegistryArtifact();
+  const deployments = mergeAgentDeploymentRecords([...(registry?.agents ?? [])]);
+  let target: OgAgentDeploymentRecord | undefined;
+  let ownerConflict = false;
+  for (const record of deployments) {
+    if (record.id !== agentId) continue;
+    if (record.owner.toLowerCase() !== owner.toLowerCase()) {
+      ownerConflict = true;
+      continue;
+    }
+    target = record;
+    break;
+  }
+  if (!target) {
+    throw new Error(ownerConflict ? "owner_mismatch" : "agent_not_found");
+  }
+  const current = target.runtime ?? normalizeRuntimeSettings(undefined);
+  target.runtime = normalizeRuntimeSettings({
+    ...current,
+    maxAprPct: input.maxAprPct,
+    maxPerPosition0G: input.maxPerPosition0G,
+    maxPositions: input.maxPositions,
+    minAprPct: input.minAprPct,
   });
   const removedAgents = buildRemovedAgentRecords(registry, deployments);
   await writeAgentDeploymentRegistry(deployments, removedAgents);
@@ -2372,12 +2985,16 @@ async function writeAgentDeploymentRegistry(
   } satisfies AgentDeploymentRegistryArtifact);
 }
 
+function identityTokenKey(deployment: { identityAddress: Address; tokenId: string }): string {
+  return `${deployment.identityAddress.toLowerCase()}:${deployment.tokenId}`;
+}
+
 function mergeAgentDeploymentRecords(records: Array<OgAgentDeploymentRecord | null | undefined>): OgAgentDeploymentRecord[] {
   const byIdentityToken = new Map<string, OgAgentDeploymentRecord>();
   for (const record of records) {
     const normalized = normalizeAgentDeploymentRecord(record);
     if (!normalized) continue;
-    byIdentityToken.set(`${normalized.identityAddress.toLowerCase()}:${normalized.tokenId}`, normalized);
+    byIdentityToken.set(identityTokenKey(normalized), normalized);
   }
   return Array.from(byIdentityToken.values()).sort((left, right) => compareTokenIds(left.tokenId, right.tokenId));
 }
@@ -2398,30 +3015,34 @@ function buildRemovedAgentRecords(
   const removedRecords = (registry?.removedAgents ?? [])
     .map((record) => normalizeRemovedAgentRecord(record))
     .filter((record): record is OgRemovedAgentRecord => record !== null);
-  const removedById = new Map(removedRecords.map((record) => [record.id, record]));
+  // Key by (identityAddress, tokenId), not by the bare `.id` string. The id
+  // "agent-0g-mainnet-{tokenId}" does not encode which AgenticID contract
+  // minted it — a stale tombstone persisted for an old/dead identity contract
+  // (e.g. from a prior V1 cleanup) must not block a fresh removal for the
+  // SAME tokenId once it gets reused on the current identity contract.
+  const removedByKey = new Map(removedRecords.map((record) => [identityTokenKey(record), record]));
   const registryUpdatedAt = registry?.updatedAt;
   const removedAt = registryUpdatedAt && isValidDateString(registryUpdatedAt) ? registryUpdatedAt : new Date().toISOString();
 
   for (const removedId of [...(registry?.removedAgentIds ?? []), ...extraRemovedIds]) {
-    if (removedById.has(removedId)) continue;
     const candidate = candidatesById.get(removedId);
-    if (!candidate) continue;
+    if (!candidate || removedByKey.has(identityTokenKey(candidate))) continue;
     const tombstone = normalizeRemovedAgentRecord({ ...candidate, removedAt });
-    if (tombstone) removedById.set(tombstone.id, tombstone);
+    if (tombstone) removedByKey.set(identityTokenKey(tombstone), tombstone);
   }
 
   for (const removedAgentKey of extraRemovedAgentKeys) {
     const candidate = candidatesByAgentKey.get(removedAgentKey);
-    if (!candidate || removedById.has(candidate.id)) continue;
+    if (!candidate || removedByKey.has(identityTokenKey(candidate))) continue;
     const tombstone = normalizeRemovedAgentRecord({
       ...candidate,
       agentKeyDisabledAt: removedAt,
       removedAt,
     });
-    if (tombstone) removedById.set(tombstone.id, tombstone);
+    if (tombstone) removedByKey.set(identityTokenKey(tombstone), tombstone);
   }
 
-  return mergeRemovedAgentRecords(Array.from(removedById.values()));
+  return mergeRemovedAgentRecords(Array.from(removedByKey.values()));
 }
 
 function readEnvRemovedAgentIds(): Set<string> {

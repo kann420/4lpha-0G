@@ -1,6 +1,8 @@
 "use client";
 
 import Image from "next/image";
+import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
+import { useTheme } from "@/components/providers/ThemeProvider";
 import { OG_NETWORKS } from "@/lib/og/networks";
 import type { OgNetworkId } from "@/lib/types";
 
@@ -22,6 +24,9 @@ export function ZeroGNetworkSwitch({
   activeId: OgNetworkId;
   onChange: (value: OgNetworkId) => void;
 }) {
+  const { theme } = useTheme();
+  const isLight = theme === "light";
+
   return (
     <div className="animate-nav-in inline-flex shrink-0 items-center rounded-full border border-line bg-panel p-1">
       {NETWORK_OPTIONS.map((option) => {
@@ -31,10 +36,15 @@ export function ZeroGNetworkSwitch({
             key={option.id}
             type="button"
             aria-pressed={active}
-            onClick={() => onChange(option.id)}
+            onClick={() => {
+              dispatchSigmaPetReaction("app.network", { force: true });
+              onChange(option.id);
+            }}
             className={`inline-flex h-10 items-center gap-2 rounded-full px-3 text-sm font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 ${
               active
-                ? "bg-invert text-invert-ink"
+                ? isLight
+                  ? "bg-primary/15 text-primary"
+                  : "bg-invert text-invert-ink"
                 : "text-muted hover:text-foreground"
             }`}
           >

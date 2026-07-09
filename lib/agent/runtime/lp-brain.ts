@@ -34,6 +34,16 @@ export interface LpBrainInput {
   fence: LpBrainFence;
   vaultBalance0G: string;
   readiness: { vaultReady: boolean; storageUploadReady: boolean; vaultWarnings: string[] };
+  // Pools that already have an open LP position for this agent (lowercased).
+  // The brain is asked not to re-enter them; the post-parse gate below is the
+  // authoritative backstop (Bug 3: duplicate pool pairs). Sourced from the
+  // validated sellableLpPositions list in the worker — NOT the raw registry —
+  // so a stale cached pool cannot block a pool forever.
+  openPoolAddresses?: readonly Address[];
+  // Agent-enforced per-position cap (create-form "Max 0G/position", decimal 0G
+  // string). The brain clamps each mint's amount0G to this value (stricter than
+  // the vault's perLpActionCap0G backstop). Bug 2: agent-enforced, NOT vault.
+  maxPerPosition0G?: string;
   selectedModel?: string;
 }
 
@@ -45,6 +55,7 @@ export async function decideLpAction(input: LpBrainInput): Promise<LpBrainDecisi
 
   const systemPrompt = buildLpSystemPrompt({
     fence: input.fence,
+    maxPerPosition0G: input.maxPerPosition0G,
     poolCount: input.pools.length,
     readiness: input.readiness,
   });
@@ -75,6 +86,9 @@ export async function decideLpAction(input: LpBrainInput): Promise<LpBrainDecisi
         maxTickWidth: input.fence.maxTickWidth,
         minAprPct: input.fence.minAprPct,
         maxAprPct: input.fence.maxAprPct,
+        // Agent-enforced per-position cap (Bug 2): stricter than the vault's
+        // perLpActionCap0G backstop. amount0G must be <= this value.
+        maxPerPosition0G: input.maxPerPosition0G,
       },
       vaultBalance0G: input.vaultBalance0G,
       readiness: {
@@ -82,12 +96,16 @@ export async function decideLpAction(input: LpBrainInput): Promise<LpBrainDecisi
         storageUploadReady: input.readiness.storageUploadReady,
         vaultWarnings: input.readiness.vaultWarnings,
       },
+      // Pools the agent already holds an LP position in. Re-entering the same
+      // pair would duplicate the position (Bug 3); pick a different candidate
+      // or hold. The server re-validates this after the response.
+      openPoolAddresses: (input.openPoolAddresses ?? []).map((a) => a.toLowerCase()),
       output_contract: {
         action: "mint | hold",
         poolAddress: "must match one supplied candidate when action is mint",
         tickLower: "integer, on the pool tickSpacing, within usable bounds",
         tickUpper: "integer > tickLower, on the pool tickSpacing, within usable bounds",
-        amount0G: "human decimal 0G string, never wei, <= perLpActionCap0G and <= remainingLpExposure0G",
+        amount0G: "human decimal 0G string, never wei, <= vault per-action ceiling, <= maxPerPosition0G when set, and <= remainingLpExposure0G",
         confidence: "0-100 number",
         reasons: "1-5 short audit-safe rationale lines, no chain-of-thought",
         summary: "one audit-safe sentence",
@@ -109,6 +127,8 @@ export async function decideLpAction(input: LpBrainInput): Promise<LpBrainDecisi
   return normalizeLpDecision({
     pools: input.pools,
     fence: input.fence,
+    openPoolAddresses: input.openPoolAddresses ?? [],
+    maxPerPosition0G: input.maxPerPosition0G,
     model: response.model,
     rawMessage: response.message,
     trace: response.trace,
@@ -118,11 +138,13 @@ export async function decideLpAction(input: LpBrainInput): Promise<LpBrainDecisi
 function normalizeLpDecision(input: {
   pools: readonly LpPoolCandidate[];
   fence: LpBrainFence;
+  openPoolAddresses: readonly Address[];
+  maxPerPosition0G?: string;
   model: string;
   rawMessage: string;
   trace?: { billingTotalCost?: string; provider?: string; requestId?: string; teeVerified?: boolean };
 }): LpBrainDecision {
-  const { pools, fence, model, rawMessage, trace } = input;
+  const { pools, fence, openPoolAddresses, maxPerPosition0G, model, rawMessage, trace } = input;
 
   let extracted: unknown;
   try {
@@ -165,6 +187,23 @@ function normalizeLpDecision(input: {
     );
   }
 
+  // Dedup gate (Bug 3: duplicate pool pairs). The vault enforces total 0G
+  // exposure + per-action cap but NOT one-NFT-per-pool, so this server-side
+  // gate is the authoritative backstop. The openPoolAddresses list is derived
+  // from the validated sellableLpPositions (worker) — a stale cached pool from
+  // the raw registry is filtered out by readLpPositionByTokenId on the listing
+  // path, so an exited pool is not blocked forever.
+  const openPoolSet = new Set(openPoolAddresses.map((a) => a.toLowerCase()));
+  if (openPoolSet.has(pool.poolAddress.toLowerCase())) {
+    return hold(
+      model,
+      rawMessage,
+      [...decision.reasons.map(sanitizeReason), "Pool already has an open position; pick a different pool or hold."],
+      trace,
+      true,
+    );
+  }
+
   if (!decision.amount0G) {
     return hold(model, rawMessage, [...decision.reasons.map(sanitizeReason), "Mint decision is missing amount0G."], trace, true);
   }
@@ -178,7 +217,22 @@ function normalizeLpDecision(input: {
     return hold(model, rawMessage, [...decision.reasons.map(sanitizeReason), "amount0G must be a positive number."], trace, true);
   }
   if (amount > parse0G(fence.perLpActionCap0G)) {
-    return hold(model, rawMessage, [...decision.reasons.map(sanitizeReason), "amount0G exceeds per-NFT cap."], trace, true);
+    return hold(model, rawMessage, [...decision.reasons.map(sanitizeReason), "amount0G exceeds vault per-action ceiling."], trace, true);
+  }
+  // Agent-enforced per-position cap (Bug 2): the operator's create-form
+  // "Max 0G/position" — stricter than the vault's perLpActionCap0G backstop.
+  // Clamp here (server-side); the vault is NOT tightened.
+  const trimmedMaxPerPosition0G = maxPerPosition0G?.trim();
+  if (trimmedMaxPerPosition0G) {
+    let agentMaxPerPosition: bigint;
+    try {
+      agentMaxPerPosition = parse0G(trimmedMaxPerPosition0G);
+    } catch {
+      return hold(model, rawMessage, [...decision.reasons.map(sanitizeReason), "maxPerPosition0G is invalid."], trace, true);
+    }
+    if (agentMaxPerPosition > 0n && amount > agentMaxPerPosition) {
+      return hold(model, rawMessage, [...decision.reasons.map(sanitizeReason), "amount0G exceeds agent max per position (maxPerPosition0G)."], trace, true);
+    }
   }
   if (amount > parse0G(fence.remainingLpExposure0G)) {
     return hold(model, rawMessage, [...decision.reasons.map(sanitizeReason), "amount0G exceeds remaining exposure headroom."], trace, true);
@@ -225,7 +279,7 @@ function normalizeTickBand(
   let upper = alignUp(tickUpper, spacing);
   let normalized = lower !== tickLower || upper !== tickUpper;
   const maxWidth = alignDown(fence.maxTickWidth, spacing);
-  if (maxWidth < spacing) {
+  if (maxWidth < spacing * 2) {
     return null;
   }
 
@@ -240,9 +294,48 @@ function normalizeTickBand(
     normalized = true;
   }
 
-  return lower < upper && upper - lower <= fence.maxTickWidth
+  if (!containsActiveTick(lower, upper, pool.currentTick)) {
+    const requestedWidth = upper > lower ? upper - lower : maxWidth;
+    const width = Math.max(spacing * 2, Math.min(maxWidth, alignDown(requestedWidth, spacing)));
+    const activeRange = deriveActiveTickRange(pool.currentTick, spacing, width, pool.w0gIsToken0);
+    lower = activeRange.tickLower;
+    upper = activeRange.tickUpper;
+    normalized = true;
+  }
+
+  return lower < upper && containsActiveTick(lower, upper, pool.currentTick) && upper - lower <= fence.maxTickWidth
     ? { normalized, tickLower: lower, tickUpper: upper }
     : null;
+}
+
+function containsActiveTick(tickLower: number, tickUpper: number, currentTick: number): boolean {
+  return tickLower < currentTick && currentTick < tickUpper;
+}
+
+function deriveActiveTickRange(
+  currentTick: number,
+  spacing: number,
+  width: number,
+  w0gIsToken0: boolean,
+): { tickLower: number; tickUpper: number } {
+  let tickLower: number;
+  let tickUpper: number;
+  if (w0gIsToken0) {
+    tickUpper = alignUp(currentTick + spacing, spacing);
+    tickLower = tickUpper - width;
+  } else {
+    tickLower = alignDown(currentTick, spacing);
+    tickUpper = tickLower + width;
+  }
+  if (tickLower >= currentTick) {
+    tickLower = alignDown(currentTick - spacing, spacing);
+    tickUpper = tickLower + width;
+  }
+  if (tickUpper <= currentTick) {
+    tickUpper = alignUp(currentTick + spacing, spacing);
+    tickLower = tickUpper - width;
+  }
+  return { tickLower, tickUpper };
 }
 
 function alignDown(value: number, spacing: number): number {

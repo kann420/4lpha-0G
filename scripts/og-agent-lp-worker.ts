@@ -2,9 +2,10 @@ import dotenv from "dotenv";
 import { mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { loadOgAgentLpWorkerConfig, runLpAgentWorkerOnce } from "../lib/agent/runtime";
+import type { OgAgentLpWorkerConfig } from "../lib/agent/runtime/lp-config";
+import type { OgAgentLpWorkerRunSummary } from "../lib/agent/runtime/lp-worker";
 
-dotenv.config({ path: ".env.local", quiet: true });
+type RunLpAgentWorkerOnce = (config: OgAgentLpWorkerConfig) => Promise<OgAgentLpWorkerRunSummary>;
 
 // Autonomous LP mint loop worker — close copy of scripts/og-agent-worker.ts.
 // Mint-only: mints LP positions within the vault's on-chain fence for agents
@@ -40,6 +41,12 @@ process.on("unhandledRejection", (reason) => {
 });
 
 async function main(): Promise<void> {
+  dotenv.config({ path: ".env.local", quiet: true });
+  const [{ loadOgAgentLpWorkerConfig }, { runLpAgentWorkerOnce }] = await Promise.all([
+    import("../lib/agent/runtime/lp-config"),
+    import("../lib/agent/runtime/lp-worker"),
+  ]);
+
   const config = loadOgAgentLpWorkerConfig();
   await acquireLocalWorkerLockIfNeeded(config.once);
   logWorkerEvent("started", {
@@ -55,7 +62,7 @@ async function main(): Promise<void> {
   });
 
   if (config.once) {
-    const summary = await runCycle(config);
+    const summary = await runCycle(config, runLpAgentWorkerOnce);
     logWorkerEvent("cycle", summary);
     await releaseLocalWorkerLock();
     return;
@@ -65,7 +72,7 @@ async function main(): Promise<void> {
     while (!stopRequested) {
       const startedAt = Date.now();
       try {
-        const summary = await runCycle(config);
+        const summary = await runCycle(config, runLpAgentWorkerOnce);
         logWorkerEvent("cycle", summary);
       } catch (error) {
         console.error(`[og-agent-lp-worker] ${sanitizeError(error)}`);
@@ -91,7 +98,7 @@ async function main(): Promise<void> {
   logWorkerEvent("stopped", { completedCycles });
 }
 
-async function runCycle(config: ReturnType<typeof loadOgAgentLpWorkerConfig>) {
+async function runCycle(config: OgAgentLpWorkerConfig, runLpAgentWorkerOnce: RunLpAgentWorkerOnce) {
   return Promise.race([
     runLpAgentWorkerOnce(config),
     new Promise<never>((_, reject) =>

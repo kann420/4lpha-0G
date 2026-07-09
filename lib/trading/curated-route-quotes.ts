@@ -452,14 +452,8 @@ function resolveMainnetRouteQuoteConfig(): {
   rpcSource: CuratedRouteQuoteSelection["rpcSource"];
   rpcUrl: string;
 } {
-  const mainnetRpc = process.env.OG_MAINNET_RPC_URL?.trim();
-  if (mainnetRpc) {
-    return {
-      rpcSource: "OG_MAINNET_RPC_URL",
-      rpcUrl: normalizeRpcUrl(mainnetRpc, "OG_MAINNET_RPC_URL"),
-    };
-  }
-
+  // Public RPC (OG_RPC_URL) is preferred — it has no daily request cap. quiknode
+  // (OG_MAINNET_RPC_URL) is only the fallback (faster but daily-capped).
   const genericRpc = process.env.OG_RPC_URL?.trim();
   const configuredNetwork = process.env.OG_NETWORK?.trim().toLowerCase();
   const configuredChainId = process.env.OG_CHAIN_ID?.trim();
@@ -467,6 +461,14 @@ function resolveMainnetRouteQuoteConfig(): {
     return {
       rpcSource: "OG_RPC_URL",
       rpcUrl: normalizeRpcUrl(genericRpc, "OG_RPC_URL"),
+    };
+  }
+
+  const mainnetRpc = process.env.OG_MAINNET_RPC_URL?.trim();
+  if (mainnetRpc) {
+    return {
+      rpcSource: "OG_MAINNET_RPC_URL",
+      rpcUrl: normalizeRpcUrl(mainnetRpc, "OG_MAINNET_RPC_URL"),
     };
   }
 

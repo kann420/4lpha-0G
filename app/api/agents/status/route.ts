@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { loadOgAgentWorkspace, setSingleOgAgentPaused } from "@/lib/agent/single-agent-server";
+import { invalidateOgAgentWorkspaceCache, loadOgAgentWorkspace, setSingleOgAgentPaused } from "@/lib/agent/single-agent-server";
 import { readMainnetOwnerAddress } from "@/lib/agent/mainnet-vault-resolver";
 import { validateCopilotWalletGate } from "@/lib/copilot/wallet-gate";
 import { getOgNetwork } from "@/lib/og/networks";
@@ -62,6 +62,9 @@ export async function POST(request: Request) {
     return statusError("agent_not_found", "Unknown 0G agent id.", 404);
   }
 
+  // Must invalidate before this reload — otherwise it can return the cached
+  // pre-mutation workspace from the loadOgAgentWorkspace call above.
+  invalidateOgAgentWorkspaceCache();
   const nextWorkspace = await loadOgAgentWorkspace({ agentId: parsed.data.agentId, live: true, ownerAddress });
   return NextResponse.json({ data: { deployment: updated, workspace: nextWorkspace } });
 }

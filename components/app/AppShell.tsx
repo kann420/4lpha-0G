@@ -80,18 +80,18 @@ function Header({
             style={{ animationDelay: "80ms" }}
           >
             <Image
-              src="/4lpha_logo.svg"
+              src="/4lpha_logo_180.png"
               alt="4lpha"
               width={64}
               height={64}
-              className="h-10 w-10 shrink-0 rounded-[26%] lg:h-16 lg:w-16"
+              className="h-10 w-10 shrink-0 lg:h-16 lg:w-16"
             />
             <div className="min-w-0">
               <p className="font-heading text-lg font-bold leading-none text-foreground lg:text-xl">
                 4lpha AI
               </p>
               <span className="mt-1 hidden rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-primary sm:inline-flex">
-                AI Trading Agent
+                Autonomous Agent
               </span>
             </div>
           </Link>
@@ -167,7 +167,7 @@ function HeaderNav({ delayStartMs = 150 }: { delayStartMs?: number }) {
             href={item.href}
             className={`animate-nav-in min-w-0 rounded-full px-3 py-3 text-base font-semibold transition-colors max-lg:flex-1 max-lg:px-2 max-lg:py-3 max-lg:text-center max-lg:text-sm ${
               active
-                ? "bg-panel-strong text-foreground"
+                ? "bg-primary/10 text-primary"
                 : "text-muted hover:bg-panel hover:text-foreground"
             }`}
             style={{ animationDelay: `${delayStartMs + index * 65}ms` }}

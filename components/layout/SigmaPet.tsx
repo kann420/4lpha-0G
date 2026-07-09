@@ -6,13 +6,16 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { usePathname } from "next/navigation";
 import {
+  dispatchSigmaPetReaction,
   SIGMA_ANIMATIONS,
   SIGMA_ATLAS_COLUMNS,
   SIGMA_ATLAS_ROWS,
   SIGMA_PET_GREETING,
   SIGMA_PET_STATE_EVENT,
   SIGMA_POSITION_STORAGE_KEY,
+  sigmaReactionForPathname,
   type SigmaPetAnimationState,
   type SigmaPetStateDetail,
 } from "@/lib/copilot/sigma-pet";
@@ -21,7 +24,17 @@ export { SIGMA_PET_GREETING, SIGMA_PET_STATE_EVENT } from "@/lib/copilot/sigma-p
 
 export function SigmaPet() {
   const petSize = 82;
-  const dragRef = useRef<{ offsetX: number; offsetY: number; pointerId: number } | null>(null);
+  const pathname = usePathname();
+  const dragRef = useRef<{
+    moved: boolean;
+    offsetX: number;
+    offsetY: number;
+    pointerId: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
+  const positionRef = useRef({ x: 0, y: 0 });
+  const suppressClickRef = useRef(false);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [ready, setReady] = useState(false);
   const [greetingDismissed, setGreetingDismissed] = useState(false);
@@ -34,13 +47,28 @@ export function SigmaPet() {
   const showBubble = Boolean(runtime.bubbleText) && !(isGreetingBubble && greetingDismissed);
 
   useEffect(() => {
+    positionRef.current = position;
+  }, [position]);
+
+  useEffect(() => {
+    const reaction = sigmaReactionForPathname(pathname);
+    if (!reaction) return;
+
+    const timer = window.setTimeout(() => {
+      dispatchSigmaPetReaction(reaction);
+    }, 350);
+
+    return () => window.clearTimeout(timer);
+  }, [pathname]);
+
+  useEffect(() => {
     function syncPosition() {
       const stored = readStoredPosition();
       const fallback = {
         x: window.innerWidth - petSize - 32,
         y: Math.max(84, Math.round(window.innerHeight * 0.18)),
       };
-      setPosition(clampSigmaPosition(stored ?? fallback, petSize));
+      updatePosition(clampSigmaPosition(stored ?? fallback, petSize));
       setReady(true);
     }
 
@@ -67,10 +95,14 @@ export function SigmaPet() {
   }, []);
 
   function handlePointerDown(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (isGreetingBubble) setGreetingDismissed(true);
     dragRef.current = {
+      moved: false,
       offsetX: event.clientX - position.x,
       offsetY: event.clientY - position.y,
       pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -79,7 +111,14 @@ export function SigmaPet() {
     const drag = dragRef.current;
     if (!drag) return;
 
-    setPosition(
+    const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
+    if (!drag.moved && distance > 6) {
+      drag.moved = true;
+      suppressClickRef.current = true;
+      dispatchSigmaPetReaction("sigma.drag", { cooldownMs: 8_000, force: true });
+    }
+
+    updatePosition(
       clampSigmaPosition(
         {
           x: event.clientX - drag.offsetX,
@@ -98,7 +137,21 @@ export function SigmaPet() {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     dragRef.current = null;
-    storePosition(position);
+    storePosition(positionRef.current);
+  }
+
+  function handleClick() {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+
+    dispatchSigmaPetReaction("sigma.click", { cooldownMs: 8_000, force: true });
+  }
+
+  function updatePosition(nextPosition: { x: number; y: number }) {
+    positionRef.current = nextPosition;
+    setPosition(nextPosition);
   }
 
   return (
@@ -122,6 +175,7 @@ export function SigmaPet() {
         aria-label="Move SIGMA pet"
         className="pointer-events-auto touch-none cursor-grab rounded-[18px] p-1 outline-none transition-transform duration-150 active:cursor-grabbing active:scale-[0.96] focus-visible:ring-2 focus-visible:ring-cyan-300/60"
         type="button"
+        onClick={handleClick}
         onFocus={() => {
           if (isGreetingBubble) setGreetingDismissed(true);
         }}

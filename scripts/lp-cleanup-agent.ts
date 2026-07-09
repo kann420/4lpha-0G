@@ -393,13 +393,20 @@ async function main() {
     console.log(JSON.stringify({ stage: "disable-automation", autoMint: res.autoMint }));
   }
 
-  // Unstake every staked position.
+  // Unstake every staked position. 60s sleep BETWEEN positions (quiknode 429
+  // guard — each route call does a live workspace load = many on-chain reads,
+  // and quiknode 429s at ~52 reads/min under burst).
   if (want("unstake")) {
     const stakedPositions = state.positions.filter((p) => p.staked);
     if (stakedPositions.length === 0) {
       console.log(JSON.stringify({ stage: "unstake", skipped: "no-staked-positions" }));
     }
-    for (const position of stakedPositions) {
+    for (let i = 0; i < stakedPositions.length; i += 1) {
+      const position = stakedPositions[i]!;
+      if (i > 0) {
+        console.log(JSON.stringify({ stage: "unstake", stage_detail: "rate-limit-sleep", waitSeconds: 60 }));
+        await sleep(60_000);
+      }
       await waitForLpCooldown(state.vault, state.cooldownSecondsLp, `unstake-${position.tokenId}`);
       const result = await lpExitViaRoute({
         account,
@@ -422,20 +429,32 @@ async function main() {
     }
   }
 
-  // Re-read after unstake to get fresh liquidity + positions list.
+  // Re-read after unstake to get fresh liquidity + positions list. 8s indexing
+  // sleep first so the unstake tx has indexed before the re-read (otherwise a
+  // position may still show staked=true and be skipped by zap-out).
   let postUnstake = state;
   if (want("unstake") || want("zap-out")) {
+    if (want("unstake")) {
+      console.log(JSON.stringify({ stage: "read-after-unstake", stage_detail: "indexing-sleep", waitSeconds: 8 }));
+      await sleep(8_000);
+    }
     postUnstake = await readState(args.agentId, owner);
     if (want("unstake")) printState(postUnstake, "read-after-unstake");
   }
 
-  // Zap-out every remaining (unstaked) position with liquidity > 0.
+  // Zap-out every remaining (unstaked) position with liquidity > 0. 60s sleep
+  // BETWEEN positions (quiknode 429 guard, same as unstake).
   if (want("zap-out")) {
     const zappable = postUnstake.positions.filter((p) => !p.staked && BigInt(p.liquidity || "0") > 0n);
     if (zappable.length === 0) {
       console.log(JSON.stringify({ stage: "zap-out", skipped: "no-zappable-positions" }));
     }
-    for (const position of zappable) {
+    for (let i = 0; i < zappable.length; i += 1) {
+      const position = zappable[i]!;
+      if (i > 0) {
+        console.log(JSON.stringify({ stage: "zap-out", stage_detail: "rate-limit-sleep", waitSeconds: 60 }));
+        await sleep(60_000);
+      }
       await waitForLpCooldown(state.vault, state.cooldownSecondsLp, `zap-out-${position.tokenId}`);
       const result = await lpExitViaRoute({
         account,

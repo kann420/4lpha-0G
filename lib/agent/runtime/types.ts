@@ -127,6 +127,17 @@ export type OgAgentLpRunStatus = "blocked" | "dry_run" | "errored" | "executed" 
 
 export type OgAgentLpDecision = "mint" | "hold" | "stake" | "unstake" | "zap-out" | "withdraw-native";
 
+export interface OgAgentLpAttemptRecord {
+  amount0G?: string;
+  error?: string;
+  poolAddress?: Address;
+  retryable?: boolean;
+  source: "fallback" | "llm";
+  status: "dry_run" | "errored" | "executed";
+  tickLower?: number;
+  tickUpper?: number;
+}
+
 export interface OgAgentLpRunRecord {
   agentId: string;
   agentName: string;
@@ -145,8 +156,10 @@ export interface OgAgentLpRunRecord {
   amount0G?: string;
   balanceBefore0G?: string;
   balanceAfter0G?: string;
+  attempts?: OgAgentLpAttemptRecord[];
   lpTxHash?: Hex;
   proofTxHash?: Hex;
+  storageWarning?: string;
   status: OgAgentLpRunStatus;
   error?: string;
 }

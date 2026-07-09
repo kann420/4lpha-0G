@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, Loader2, LogOut, Wallet } from "lucide-react";
 import type { Connector } from "wagmi";
+import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import type { OgNetworkId } from "@/lib/types";
 import { ConnectWalletModal } from "./ConnectWalletModal";
 import { useWalletConnection } from "./useWalletConnection";
@@ -46,10 +47,13 @@ export function WalletConnectButton({
 
   async function connect(connector: Connector) {
     setErrorMessage(null);
+    dispatchSigmaPetReaction("wallet.connect.start", { force: true });
     try {
       await wallet.connectAsync({ connector });
+      dispatchSigmaPetReaction("wallet.connected", { force: true });
       setModalOpen(false);
     } catch (error) {
+      dispatchSigmaPetReaction("wallet.connect.fail", { force: true });
       setErrorMessage(sanitizeWalletError(error));
     }
   }
@@ -66,13 +70,17 @@ export function WalletConnectButton({
 
   function disconnect() {
     wallet.disconnect();
+    dispatchSigmaPetReaction("wallet.disconnect", { force: true });
     setMenuOpen(false);
   }
 
   async function switchToOg() {
     try {
+      dispatchSigmaPetReaction("wallet.switch.start", { force: true });
       await wallet.switchToOg();
+      dispatchSigmaPetReaction("wallet.switch.success", { force: true });
     } catch (error) {
+      dispatchSigmaPetReaction("wallet.switch.fail", { force: true });
       setErrorMessage(sanitizeWalletError(error));
     }
   }

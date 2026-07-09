@@ -20,8 +20,17 @@ import {
 } from "@/lib/contracts/policy-vault";
 import {
   MAINNET_V3_VAULT_REGISTRY_PATH,
+  policyVaultV3Abi,
   type MainnetV3VaultRegistryEntry,
 } from "@/lib/contracts/policy-vault-v3";
+import {
+  NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS,
+  policyVaultV4LpEntryAbi,
+  policyVaultV4LpExitAbi,
+  policyVaultV4SwapAbi,
+  vaultRegistryV4Abi,
+} from "@/lib/contracts/policy-vault-v4";
+import { makeMainnetTransport } from "@/lib/og/mainnet-rpc";
 
 const MAINNET_CHAIN_ID = 16661;
 const OG_RPC_TIMEOUT_MS = 4_000;
@@ -77,26 +86,30 @@ export async function readMainnetV3VaultRegistry(): Promise<MainnetV3VaultRegist
   }
 }
 
-/// Resolve a V3 vault for an owner. An explicit env-configured V3 address
-/// (NEXT_PUBLIC_POLICY_VAULT_V3_MAINNET_ADDRESS / POLICY_VAULT_V3_MAINNET_ADDRESS)
-/// is treated as authoritative when set, because the off-chain registry can be
-/// missing, stale, or branch-local and there is NO on-chain V3 factory on 0G
-/// mainnet to reconcile. Otherwise fall back to the latest registry match
-/// (case-insensitive address match). Returns null if neither source has an entry.
+/// Resolve a V3 vault for an owner from the owner-scoped registry only.
+/// Env-configured V3 addresses are operator/script hints and must not decide a
+/// browser user's vault; every registry match is verified against on-chain
+/// owner() before being returned.
 ///
-/// TRUST BOUNDARY: neither source is on-chain truth. The env override is an
-/// operator assertion; the registry is a local deploy artifact. Misconfiguration
 /// can point UI/executor at the wrong V3 — operators must keep the env var or
-/// the registry file aligned with the actually-funded vault.
-export async function resolveMainnetV3VaultForOwner(owner: Address): Promise<Address | null> {
-  const envOverride = readConfiguredMainnetV3VaultAddress();
-  if (envOverride !== undefined) {
-    return getAddress(envOverride);
-  }
+export async function resolveMainnetV3VaultForOwner(
+  owner: Address,
+  client?: PublicClient,
+): Promise<Address | null> {
   const registry = await readMainnetV3VaultRegistry();
   const lower = owner.toLowerCase();
   const entry = [...registry].reverse().find((item) => item.owner.toLowerCase() === lower);
-  return entry ? getAddress(entry.vault) : null;
+  if (!entry) {
+    return null;
+  }
+  const vault = getAddress(entry.vault);
+  const publicClient = client ?? createMainnetPublicClient();
+  const onChainOwner = await publicClient.readContract({
+    address: vault,
+    abi: policyVaultV3Abi,
+    functionName: "owner",
+  }).catch(() => null) as Address | null;
+  return onChainOwner && onChainOwner.toLowerCase() === lower ? vault : null;
 }
 
 /// Pre-deploy guard: throw if the owner already has a V3 vault. V2 coexistence
@@ -151,23 +164,107 @@ export async function resolveMainnetVaultVersionsForOwner(
   return results.filter((result): result is { factory: Address; vault: Address; version: number } => result !== null);
 }
 
+export interface MainnetV4VaultResolution {
+  swapVault: Address;
+  lpEntryVault: Address;
+  lpExitVault: Address;
+}
+
+export interface ActiveVaultResolution {
+  v4: MainnetV4VaultResolution | null;
+  v3: Address | null;
+  v2Latest: Address | null;
+  v2Versions: Array<{ factory: Address; vault: Address; version: number }>;
+  swapActive: boolean;
+  lpActive: boolean;
+  active: boolean;
+}
+
+export async function resolveMainnetV4VaultForOwner(
+  owner: Address,
+  agentKey?: `0x${string}`,
+  client?: PublicClient,
+): Promise<(MainnetV4VaultResolution & { swapActive: boolean; lpActive: boolean; active: boolean }) | null> {
+  const registry = NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS;
+  if (registry === zeroAddress) {
+    return null;
+  }
+  const publicClient = client ?? createMainnetPublicClient();
+  const [swapVaultRaw, lpEntryVaultRaw, lpExitVaultRaw] = await publicClient.readContract({
+    address: registry,
+    abi: vaultRegistryV4Abi,
+    functionName: "vaultOf",
+    args: [owner],
+  });
+
+  if (swapVaultRaw === zeroAddress || lpEntryVaultRaw === zeroAddress || lpExitVaultRaw === zeroAddress) {
+    return null;
+  }
+
+  const swapVault = getAddress(swapVaultRaw);
+  const lpEntryVault = getAddress(lpEntryVaultRaw);
+  const lpExitVault = getAddress(lpExitVaultRaw);
+  if (agentKey === undefined) {
+    return { swapVault, lpEntryVault, lpExitVault, swapActive: false, lpActive: false, active: false };
+  }
+
+  const [swapEnabled, lpEntryEnabled, lpExitEnabled] = await Promise.all([
+    publicClient.readContract({
+      address: swapVault,
+      abi: policyVaultV4SwapAbi,
+      functionName: "agentKeyEnabled",
+      args: [agentKey],
+    }).catch(() => false),
+    publicClient.readContract({
+      address: lpEntryVault,
+      abi: policyVaultV4LpEntryAbi,
+      functionName: "agentKeyEnabled",
+      args: [agentKey],
+    }).catch(() => false),
+    publicClient.readContract({
+      address: lpExitVault,
+      abi: policyVaultV4LpExitAbi,
+      functionName: "agentKeyEnabled",
+      args: [agentKey],
+    }).catch(() => false),
+  ]);
+
+  const swapActive = Boolean(swapEnabled);
+  const lpActive = Boolean(lpEntryEnabled && lpExitEnabled);
+  return { swapVault, lpEntryVault, lpExitVault, swapActive, lpActive, active: swapActive && lpActive };
+}
+
+export async function resolveActiveVaultForOwner(
+  owner: Address,
+  agentKey: `0x${string}`,
+  client?: PublicClient,
+): Promise<ActiveVaultResolution> {
+  const publicClient = client ?? createMainnetPublicClient();
+  const [v4, v3, v2Versions] = await Promise.all([
+    resolveMainnetV4VaultForOwner(owner, agentKey, publicClient),
+    resolveMainnetV3VaultForOwner(owner, publicClient),
+    resolveMainnetVaultVersionsForOwner(owner, publicClient),
+  ]);
+  return {
+    v4,
+    v3,
+    v2Latest: v2Versions.at(-1)?.vault ?? null,
+    v2Versions,
+    swapActive: v4?.swapActive ?? false,
+    lpActive: v4?.lpActive ?? false,
+    active: v4?.active ?? false,
+  };
+}
+
 function createMainnetPublicClient(): PublicClient {
   const rpcUrl = process.env.OG_RPC_URL?.trim();
-  if (!rpcUrl) {
+  if (!rpcUrl && !process.env.OG_MAINNET_RPC_URL?.trim()) {
     throw new Error("OG_RPC_URL is required to resolve the mainnet Policy Vault.");
   }
-  // Default retryCount:0 preserves fast-fail; env override opts into 429
-  // backoff for bursty one-off scripts. viem only retries non-deterministic
-  // errors (429/5xx/network) — never contract reverts.
-  const retryCount = Number(process.env.OG_RPC_RETRY_COUNT ?? 0);
-  const retryDelay = Number(process.env.OG_RPC_RETRY_DELAY_MS ?? 150);
+  // Prefer quiknode with public fallback + batched read bursts (see makeMainnetTransport).
   return createPublicClient({
-    chain: make0GMainnetChain(rpcUrl),
-    transport: http(rpcUrl, {
-      retryCount: Number.isFinite(retryCount) && retryCount >= 0 ? retryCount : 0,
-      retryDelay: Number.isFinite(retryDelay) && retryDelay >= 0 ? retryDelay : 150,
-      timeout: OG_RPC_TIMEOUT_MS,
-    }),
+    chain: make0GMainnetChain(rpcUrl ?? process.env.OG_MAINNET_RPC_URL!.trim()),
+    transport: makeMainnetTransport(),
   });
 }
 

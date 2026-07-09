@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { isAddress, parseEther, type Hex } from "viem";
 
-import { loadOgAgentWorkspace, OgAgentDeployError } from "@/lib/agent/single-agent-server";
+import { invalidateOgAgentWorkspaceCache, loadOgAgentWorkspace, OgAgentDeployError } from "@/lib/agent/single-agent-server";
 import { readMainnetOwnerAddress } from "@/lib/agent/mainnet-vault-resolver";
 import { consumeActionNonce } from "@/lib/copilot/action-nonce-store";
 import { validateCopilotActionConsent } from "@/lib/copilot/wallet-gate";
@@ -11,6 +11,7 @@ import { isOgMainnetAgentId } from "@/lib/agent/single-agent";
 import { runLpMintForAgent } from "@/lib/agent/lp/lp-mint";
 import { runLpExitForAgent } from "@/lib/agent/lp/lp-exec";
 import { recordLpActionHistory } from "@/lib/agent/lp/lp-action-history";
+import { computeLpMintBudget } from "@/lib/agent/lp/lp-runtime-policy";
 import { findZiaLpVaultByPool } from "@/lib/contracts/zia-lp";
 
 export const runtime = "nodejs";
@@ -72,7 +73,7 @@ export async function POST(
     return mintError("agent_not_found", "Unknown 0G LP agent id.", 404);
   }
   if ((workspace.vault.vaultVersion ?? 1) < 3 || !workspace.vault.lpAdapter || !workspace.vault.lpPolicy) {
-    return mintError("migrate_to_v3", "LP mint requires a V3 vault with an LP adapter.", 409);
+    return mintError("migrate_to_lp_vault", "LP mint requires a V3/V4 LP vault with an LP adapter.", 409);
   }
   const vaultAddress = workspace.agent.deployment.vault;
   const consentError = await validateCopilotActionConsent(parsed.data.wallet, "mainnet", network.chainId, {
@@ -127,17 +128,27 @@ export async function POST(
   // obvious violations before the brain/quote/executor spend gas.
   const lpPolicy = workspace.vault.lpPolicy;
   const openLpExposure0G = workspace.vault.openLpExposure0G ?? "0";
-  const perLpActionCap = parseEther(lpPolicy.perLpActionCap0G);
-  const maxLpExposure = parseEther(lpPolicy.maxLpExposure0G);
-  const openLpExposure = parseEther(openLpExposure0G);
+  const mintBudget = computeLpMintBudget({
+    balance0G: workspace.vault.balance0G ?? "0",
+    maxLpExposure0G: lpPolicy.maxLpExposure0G,
+    maxPerPosition0G: workspace.agent.deployment.runtime?.maxPerPosition0G,
+    openLpExposure0G,
+    perLpActionCap0G: lpPolicy.perLpActionCap0G,
+  });
   if (amount <= 0n) {
     return mintError("invalid_amount", "amount0G must be > 0.", 400);
   }
-  if (amount > perLpActionCap) {
-    return mintError("cap_exceeded", `amount0G exceeds per-position cap (${lpPolicy.perLpActionCap0G} 0G).`, 400);
+  if (mintBudget.agentMaxPerPositionWei !== undefined && amount > mintBudget.agentMaxPerPositionWei) {
+    return mintError("agent_cap_exceeded", `amount0G exceeds agent max per position (${mintBudget.agentMaxPerPosition0G} 0G).`, 400);
   }
-  if (openLpExposure + amount > maxLpExposure) {
-    return mintError("exposure_exceeded", `amount0G exceeds remaining exposure headroom (open ${openLpExposure0G} + ${parsed.data.amount0G} > cap ${lpPolicy.maxLpExposure0G}).`, 400);
+  if (amount > mintBudget.vaultPerActionCapWei) {
+    return mintError("vault_cap_exceeded", `amount0G exceeds vault per-action ceiling (${lpPolicy.perLpActionCap0G} 0G).`, 400);
+  }
+  if (amount > mintBudget.remainingLpExposureWei) {
+    return mintError("exposure_exceeded", `amount0G exceeds remaining exposure headroom (${mintBudget.remainingLpExposure0G} 0G left of cap ${lpPolicy.maxLpExposure0G}).`, 400);
+  }
+  if (amount > mintBudget.balanceWei) {
+    return mintError("insufficient_balance", `amount0G exceeds available vault balance (${workspace.vault.balance0G ?? "0"} 0G).`, 400);
   }
   if (parsed.data.tickLower >= parsed.data.tickUpper) {
     return mintError("invalid_range", "tickLower must be < tickUpper.", 400);
@@ -203,9 +214,12 @@ export async function POST(
       : stakeError
         ? `${brainSummary} minted (stake failed — use Stake to retry)`
         : brainSummary;
+    const mintSummaryWithStorage = result.storageWarning
+      ? `${mintSummary} Storage warning: ${result.storageWarning}`
+      : mintSummary;
     await recordLpActionHistory({
       amount0G: result.amount0G,
-      brainSummary: mintSummary,
+      brainSummary: mintSummaryWithStorage,
       decision: "mint",
       deployment: workspace.agent.deployment,
       lpTxHash: result.lpTxHash,
@@ -228,6 +242,7 @@ export async function POST(
         vault: vaultAddress,
       }).catch(() => undefined);
     }
+    invalidateOgAgentWorkspaceCache();
     return NextResponse.json(
       {
         data: {
@@ -239,6 +254,7 @@ export async function POST(
           tickUpper: result.tickUpper,
           amount0G: result.amount0G,
           quoteSource: result.quoteSource,
+          storageWarning: result.storageWarning,
           staked,
           stakeTxHash,
           stakeError,

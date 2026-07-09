@@ -1,6 +1,6 @@
 import "server-only";
 
-import { parseEther, type Address, type Hex, type PublicClient } from "viem";
+import { type Address, type Hex, type PublicClient } from "viem";
 
 import { decideLpAction } from "@/lib/agent/runtime/lp-brain";
 import { executeMainnetPolicyVaultLpAction, type PolicyVaultLpExecution } from "@/lib/executor/policy-vault-lp";
@@ -14,6 +14,8 @@ import {
 } from "@/lib/contracts/zia-lp";
 import { quoteLpMint } from "@/lib/agent/lp/tick-math";
 import { buildFence, buildPoolCandidates, makeMainnetPublicClient, parse0G, quoteZiaExactPoolSwap, readPairedToken } from "@/lib/agent/lp/lp-context";
+import { addTokenIdToRegistry } from "@/lib/agent/lp/lp-position-registry";
+import { applyRuntimeLpFence, computeLpMintBudget, type LpMintBudget } from "@/lib/agent/lp/lp-runtime-policy";
 
 // Shared LP mint helper — the brain (0G Compute Router) picks a pool + tick
 // range + amount within the fence, then `quoteLpMint` computes the conservative
@@ -60,12 +62,13 @@ export interface RunLpMintResult {
   amount0G: string;
   brainSummary?: string;
   quoteSource: "llm-intent" | "ui-intent";
+  storageWarning?: string;
 }
 
 export async function runLpMintForAgent(input: RunLpMintInput): Promise<RunLpMintResult> {
   // Load with retry — readVaultSnapshot is wrapped in withTimeout and a flaky
   // mainnet RPC read can leave the snapshot ready:false even though the vault
-  // is fine on-chain. The shared helper retries until the V3 vault snapshot is
+  // is fine on-chain. The shared helper retries until the LP vault snapshot is
   // usable so the auto-stake chain (mint → stake) isn't aborted by a transient
   // RPC timeout at the mint step.
   const workspace = await loadReadyLpWorkspace(input.deployment);
@@ -76,7 +79,7 @@ export async function runLpMintForAgent(input: RunLpMintInput): Promise<RunLpMin
   // / quote reads below), not a runtime defense — the helper has already
   // guaranteed all four conditions before returning.
   if (!vault.ready || !vault.vault || !vault.lpAdapter || !vault.lpPolicy) {
-    throw new Error("LP mint requires a ready V3 vault with an LP adapter and lpPolicy.");
+    throw new Error("LP mint requires a ready LP vault with an LP adapter and lpPolicy.");
   }
   // Re-check the OFF-CHAIN agent pause flag from the FRESH snapshot. The route /
   // worker pre-check it on a stale load (S0); an off-chain pause
@@ -93,7 +96,7 @@ export async function runLpMintForAgent(input: RunLpMintInput): Promise<RunLpMin
 
   // Build the candidate set + fence from the live snapshot.
   const pools = await buildPoolCandidates(publicClient, input.constrainPoolAddress);
-  const fence = buildFence(vault);
+  const fence = applyRuntimeLpFence(buildFence(vault), input.deployment.runtime);
 
   // Decide: either the UI override (per-card route) or the brain.
   let decision: { poolAddress: Address; tickLower: number; tickUpper: number; amount0G: string; summary?: string; quoteSource: "llm-intent" | "ui-intent" };
@@ -122,6 +125,8 @@ export async function runLpMintForAgent(input: RunLpMintInput): Promise<RunLpMin
     const brainDecision = await decideLpAction({
       pools,
       fence,
+      maxPerPosition0G: input.deployment.runtime?.maxPerPosition0G,
+      openPoolAddresses: (vault.sellableLpPositions ?? []).map((position) => position.poolAddress.toLowerCase() as Address),
       vaultBalance0G: vault.balance0G ?? "0",
       readiness: {
         vaultReady: vault.ready,
@@ -141,6 +146,21 @@ export async function runLpMintForAgent(input: RunLpMintInput): Promise<RunLpMin
       summary: brainDecision.summary,
       quoteSource: "llm-intent",
     };
+  }
+
+  const mintBudget = computeLpMintBudget({
+    balance0G: vault.balance0G ?? "0",
+    maxLpExposure0G: vault.lpPolicy.maxLpExposure0G,
+    maxPerPosition0G: input.deployment.runtime?.maxPerPosition0G,
+    openLpExposure0G: vault.openLpExposure0G ?? "0",
+    perLpActionCap0G: vault.lpPolicy.perLpActionCap0G,
+  });
+  const decisionAmount = parse0G(decision.amount0G);
+  if (decisionAmount <= 0n) {
+    throw new Error("LP mint amount must be > 0.");
+  }
+  if (decisionAmount > mintBudget.maxAmountWei) {
+    throw new Error(formatMintBudgetExceeded(mintBudget, vault.lpPolicy));
   }
 
   // Quote: read slot0 for sqrtPriceX96 + currentTick, verify W0G leg, then use
@@ -169,6 +189,18 @@ export async function runLpMintForAgent(input: RunLpMintInput): Promise<RunLpMin
     agentRef: input.deployment.agentRef,
   });
 
+  // Record the freshly-minted NFT in the server-side position registry so
+  // readSellableLpPositions can enumerate via scalar token-id reads (no
+  // getLogs) and the dedup gate can block re-entering the same pool. Best-effort
+  // only: a registry write failure must not turn a successful mint into a 500.
+  if (execution.tokenId !== undefined) {
+    try {
+      await addTokenIdToRegistry(agentKey, input.deployment.vault, execution.tokenId.toString(), decision.poolAddress);
+    } catch (err) {
+      console.warn("[lp-registry] addTokenIdToRegistry failed (non-fatal):", err instanceof Error ? err.message : String(err));
+    }
+  }
+
   return {
     lpTxHash: execution.lpTxHash,
     proofTxHash: execution.proofTxHash,
@@ -180,10 +212,28 @@ export async function runLpMintForAgent(input: RunLpMintInput): Promise<RunLpMin
     amount0G: decision.amount0G,
     brainSummary: decision.summary,
     quoteSource: decision.quoteSource,
+    storageWarning: execution.storageWarning,
   };
 }
 
 // --- helpers ---
+
+function formatMintBudgetExceeded(
+  budget: LpMintBudget,
+  lpPolicy: { maxLpExposure0G: string; perLpActionCap0G: string },
+): string {
+  switch (budget.limitingFactor) {
+    case "agent-max-per-position":
+      return `amount0G exceeds agent max per position (${budget.agentMaxPerPosition0G} 0G).`;
+    case "vault-per-action-ceiling":
+      return `amount0G exceeds vault per-action ceiling (${lpPolicy.perLpActionCap0G} 0G).`;
+    case "remaining-exposure":
+      return `amount0G exceeds remaining exposure headroom (${budget.remainingLpExposure0G} 0G of ${lpPolicy.maxLpExposure0G} 0G left).`;
+    case "vault-balance":
+      return `amount0G exceeds available vault balance (${budget.maxAmount0G} 0G).`;
+  }
+  return "amount0G exceeds LP mint budget.";
+}
 
 async function buildQuote(
   publicClient: PublicClient,

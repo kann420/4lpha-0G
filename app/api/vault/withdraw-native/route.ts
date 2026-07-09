@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { readMainnetOwnerAddress, resolveMainnetV3VaultForOwner } from "@/lib/agent/mainnet-vault-resolver";
 import { withdrawMainnetVaultNative } from "@/lib/agent/mainnet-vault-withdraw";
-import { loadOgAgentWorkspace, OgAgentDeployError } from "@/lib/agent/single-agent-server";
+import { invalidateOgAgentWorkspaceCache, loadOgAgentWorkspace, OgAgentDeployError } from "@/lib/agent/single-agent-server";
 import { isOgMainnetAgentId } from "@/lib/agent/single-agent";
 import { recordLpActionHistory } from "@/lib/agent/lp/lp-action-history";
 import { consumeActionNonce } from "@/lib/copilot/action-nonce-store";
@@ -104,6 +104,7 @@ export async function POST(request: Request) {
       owner: ownerAddress,
       amount0G,
     });
+    invalidateOgAgentWorkspaceCache();
     if (parsed.data.agentId && isOgMainnetAgentId(parsed.data.agentId)) {
       const workspace = await loadOgAgentWorkspace({
         agentId: parsed.data.agentId,

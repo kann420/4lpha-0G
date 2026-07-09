@@ -7,6 +7,8 @@ import {
   custom,
   decodeEventLog,
   http,
+  parseEther,
+  type Abi,
   type Address,
   type Chain,
   type EIP1193Provider,
@@ -27,10 +29,37 @@ import {
   type PolicyVaultFactoryVersion,
   type PolicyVaultPolicy,
 } from "@/lib/contracts/policy-vault";
-import { buildCopilotWalletAccessMessage } from "@/lib/copilot/wallet-access";
+import { policyVaultV3Abi } from "@/lib/contracts/policy-vault-v3";
+import {
+  NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS,
+  NEXT_PUBLIC_POLICY_VAULT_ZIA_LP_ADAPTER_V4_MAINNET_ADDRESS,
+  ensureV4BytecodeReady,
+  policyVaultV4LpEntryAbi,
+  policyVaultV4LpEntryBytecode,
+  policyVaultV4LpExitAbi,
+  policyVaultV4LpExitBytecode,
+  policyVaultV4SwapAbi,
+  policyVaultV4SwapBytecode,
+  vaultRegistryV4Abi,
+  type PolicyVaultV4LpPolicy,
+  type PolicyVaultV4SwapPolicy,
+} from "@/lib/contracts/policy-vault-v4";
+import { buildV3LpAllowlists } from "@/lib/contracts/zia-lp";
+import { ziaNonfungiblePositionManagerAbi, ZIA_LP_MAINNET } from "@/lib/contracts/zia-lp";
+import {
+  buildCopilotWalletAccessMessage,
+  buildVaultMigrateV4FinalizeConsentMessage,
+} from "@/lib/copilot/wallet-access";
+import { requestActionConsentNonce } from "@/components/agents/lp/actionConsentNonce";
+import {
+  type PerNftDecision,
+  type V4VaultTrio,
+} from "@/lib/agent/vault-migrate-v4-shared";
 import type { OgNetworkConfig } from "@/lib/types";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const ZERO_BYTES32 = `0x${"00".repeat(32)}` as Hex;
+const MIGRATE_V4_USER_GAS_RESERVE_WEI = parseEther("0.02");
 
 export interface VersionedVault {
   factory: Address;
@@ -38,21 +67,72 @@ export interface VersionedVault {
   version: number;
 }
 
+// Client-side view of the V4 migration phase-1 inventory review. Mirrors the
+// server response shape (structurally) — the fetch JSON is cast to this.
+export interface V4MigrationNftInventory {
+  tokenId: string;
+  stage?: string;
+  decision?: PerNftDecision;
+  staked?: boolean;
+  stakeVault?: Address;
+  agentKey?: Hex;
+  poolId?: Hex;
+  tickLower?: number;
+  tickUpper?: number;
+  deployedNative0G?: string;
+  deployedNativeSource?: string;
+}
+
+export interface V4MigrationResult {
+  oldVault: Address;
+  v4Trio: V4VaultTrio;
+  inventoryHash?: Hex;
+  preservedTokenIds?: string[];
+  repointedAgents?: string[];
+  retired?: boolean;
+}
+
+interface V4MigrationPlan {
+  agentKeys: Hex[];
+  blockingIssues: string[];
+  inventory: {
+    fromBlock: string;
+    nativeBalance0G: string;
+    nfts: V4MigrationNftInventory[];
+    scannedToBlock: string;
+    tokenBalances: { token: Address; balance: string }[];
+  } | null;
+  inventoryHash: Hex | null;
+  needsV4Deploy: boolean;
+  planHash: Hex;
+  source: { vault: Address; version: 1 | 2 | 3 } | null;
+  v4Trio: V4VaultTrio | null;
+}
+
 export interface WalletPolicyVaultState {
   createVault: (policyOverride?: PolicyVaultPolicy) => Promise<void>;
+  createVaultV4: (swapPolicyOverride?: PolicyVaultV4SwapPolicy, lpPolicyOverride?: PolicyVaultV4LpPolicy) => Promise<void>;
   factoryAddress: Address | null;
   activeVaultVersion?: number;
   isCreating: boolean;
   isDiscovering: boolean;
   isMigratingToV3: boolean;
+  isMigratingToV4: boolean;
   legacyVaults: VersionedVault[];
   migrateVault: () => Promise<void>;
+  migrateToV4: () => Promise<void>;
   migrateVaultToV3: () => Promise<void>;
   migrationRequired: boolean;
   refreshVaultAddress: () => Promise<void>;
   statusText: string;
   vaultAddress: Address | null;
   vaults: Address[];
+  v4MigrateError: string | null;
+  v4MigrateResult: V4MigrationResult | null;
+  v4MigrationAvailable: boolean;
+  v4SwapAddress: Address | null;
+  v4LpEntryAddress: Address | null;
+  v4LpExitAddress: Address | null;
   v3MigrationAvailable: boolean;
   v3VaultAddress: Address | null;
   versionedVaults: VersionedVault[];
@@ -78,11 +158,17 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [isMigratingToV3, setIsMigratingToV3] = useState(false);
+  const [isMigratingToV4, setIsMigratingToV4] = useState(false);
+  const [v4MigrateResult, setV4MigrateResult] = useState<V4MigrationResult | null>(null);
+  const [v4MigrateError, setV4MigrateError] = useState<string | null>(null);
   const [statusText, setStatusText] = useState("Connect a wallet to resolve its Policy Vault.");
   // V3 singleton (mainnet-only, deployer-owned, resolved from the off-chain registry
   // via /api/vault/v3-status). When present it supersedes the latest V2 factory vault
   // as the active vault, and the v2 -> v3 migrate panel becomes available.
   const [v3VaultAddress, setV3VaultAddress] = useState<Address | null>(null);
+  const [v4SwapAddress, setV4SwapAddress] = useState<Address | null>(null);
+  const [v4LpEntryAddress, setV4LpEntryAddress] = useState<Address | null>(null);
+  const [v4LpExitAddress, setV4LpExitAddress] = useState<Address | null>(null);
   const [legacyV2Balance, setLegacyV2Balance] = useState<bigint>(0n);
   const signMessage = useSignMessage();
   const requestIdRef = useRef(0);
@@ -105,6 +191,9 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
       setVaults([]);
       setVersionedVaults([]);
       setV3VaultAddress(null);
+      setV4SwapAddress(null);
+      setV4LpEntryAddress(null);
+      setV4LpExitAddress(null);
       setLegacyV2Balance(0n);
       setStatusText("Connect a wallet to resolve its Policy Vault.");
       return;
@@ -115,6 +204,9 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
       setVaults([]);
       setVersionedVaults([]);
       setV3VaultAddress(null);
+      setV4SwapAddress(null);
+      setV4LpEntryAddress(null);
+      setV4LpExitAddress(null);
       setLegacyV2Balance(0n);
       setStatusText("PolicyVaultFactory is not configured for this network.");
       return;
@@ -150,6 +242,32 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
       // treated as legacy). The v2 -> v3 migrate panel is gated on the legacy V2
       // still holding native 0G, so we read its balance here.
       if (network.id === "mainnet" && walletAccount.address && requestIdRef.current === requestId) {
+        let resolvedV4 = false;
+        try {
+          if (NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS !== ZERO_ADDRESS) {
+            const [swapVault, lpEntryVault, lpExitVault] = await publicClient.readContract({
+              address: NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS,
+              abi: vaultRegistryV4Abi,
+              functionName: "vaultOf",
+              args: [walletAccount.address],
+            });
+            if (requestIdRef.current === requestId) {
+              const hasV4 = swapVault !== ZERO_ADDRESS && lpEntryVault !== ZERO_ADDRESS && lpExitVault !== ZERO_ADDRESS;
+              setV4SwapAddress(hasV4 ? swapVault : null);
+              setV4LpEntryAddress(hasV4 ? lpEntryVault : null);
+              setV4LpExitAddress(hasV4 ? lpExitVault : null);
+              if (hasV4) {
+                resolvedV4 = true;
+                setVaultAddress(swapVault);
+                setStatusText("Resolved V4 Policy Vault trio from VaultRegistryV4.");
+              }
+            }
+          }
+        } catch {
+          setV4SwapAddress(null);
+          setV4LpEntryAddress(null);
+          setV4LpExitAddress(null);
+        }
         try {
           const v3Response = await fetch(
             `/api/vault/v3-status?ownerAddress=${walletAccount.address}`,
@@ -158,7 +276,7 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
             const payload = (await v3Response.json()) as { data?: { v3VaultAddress?: Address | null } };
             const v3 = (payload.data?.v3VaultAddress ?? null) as Address | null;
             setV3VaultAddress(v3);
-            if (v3) {
+            if (v3 && !resolvedV4) {
               setVaultAddress(v3);
               const legacy = verified.at(-1);
               if (legacy) {
@@ -183,6 +301,9 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
         setVaults([]);
         setVersionedVaults([]);
         setV3VaultAddress(null);
+        setV4SwapAddress(null);
+        setV4LpEntryAddress(null);
+        setV4LpExitAddress(null);
         setLegacyV2Balance(0n);
         setStatusText("Could not scan PolicyVaultFactory logs from this RPC.");
       }
@@ -299,6 +420,80 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
     walletAccount.isConnected,
   ]);
 
+  const createVaultV4 = useCallback(async (
+    swapPolicyOverride?: PolicyVaultV4SwapPolicy,
+    lpPolicyOverride?: PolicyVaultV4LpPolicy,
+  ) => {
+    if (!walletAccount.isConnected || !walletAccount.address) {
+      setStatusText("Connect the owner wallet before creating a V4 vault.");
+      return;
+    }
+    if (creationConfig === null) {
+      setStatusText(readiness.reason);
+      return;
+    }
+    if (network.id !== "mainnet") {
+      setStatusText("V4 user vault deployment is configured for 0G mainnet only.");
+      return;
+    }
+    if (NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS === ZERO_ADDRESS) {
+      setStatusText("VaultRegistryV4 is not configured.");
+      return;
+    }
+    if (NEXT_PUBLIC_POLICY_VAULT_ZIA_LP_ADAPTER_V4_MAINNET_ADDRESS === ZERO_ADDRESS) {
+      setStatusText("ZiaLpAdapterV4 is not configured.");
+      return;
+    }
+
+    setIsCreating(true);
+    try {
+      if (connectedChainId !== network.chainId) {
+        setStatusText(`Switching wallet to ${network.networkName}.`);
+        await switchChain.switchChainAsync({ chainId: network.chainId });
+      }
+      const walletClient = await getWalletClient(chain);
+      const [account] = await walletClient.getAddresses();
+      if (account.toLowerCase() !== walletAccount.address.toLowerCase()) {
+        throw new Error("Wallet account changed before V4 vault creation.");
+      }
+
+      // H6 FIX: delegate to the resumable trio deployer. It reads each registry slot, reuses an
+      // already-registered third, and deploys+registers each MISSING third one at a time — so a
+      // mid-flow failure (user rejects/loses a tx) never dead-ends on AlreadyRegistered. Generous
+      // explicit gas is set inside each deploy so the wallet skips its (failing on 0G) estimation.
+      // Policy overrides are unused by the only caller; the trio uses the default creation policy.
+      void swapPolicyOverride;
+      void lpPolicyOverride;
+      const trio = await ensureWalletV4Trio(
+        { account, creationConfig, publicClient, setStatusText, walletClient },
+        null,
+      );
+
+      setV4SwapAddress(trio.swapVault);
+      setV4LpEntryAddress(trio.lpEntryVault);
+      setV4LpExitAddress(trio.lpExitVault);
+      setVaultAddress(trio.swapVault);
+      setVaults((current) => dedupeAddresses([...current, trio.swapVault]));
+      setStatusText("V4 Policy Vault trio created and registered.");
+    } catch (error) {
+      setStatusText(error instanceof Error ? sanitizeWalletError(error.message) : "V4 vault creation failed.");
+    } finally {
+      setIsCreating(false);
+    }
+  }, [
+    chain,
+    connectedChainId,
+    creationConfig,
+    network.chainId,
+    network.id,
+    network.networkName,
+    publicClient,
+    readiness.reason,
+    switchChain,
+    walletAccount.address,
+    walletAccount.isConnected,
+  ]);
+
   const migrateVault = useCallback(async () => {
     if (!walletAccount.isConnected || !walletAccount.address) {
       setStatusText("Connect the owner wallet before migrating a vault.");
@@ -367,7 +562,7 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
           functionName: "withdrawNative",
           args: [legacyBalance],
         });
-        const withdrawTxHash = await walletClient.writeContract(withdrawSimulation.request);
+        const withdrawTxHash = await walletClient.writeContract({ ...withdrawSimulation.request, gas: 200_000n });
         await waitForReceipt(publicClient, withdrawTxHash);
 
         setStatusText("Depositing migrated 0G into PolicyVaultV2.");
@@ -378,7 +573,7 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
           functionName: "depositNative",
           value: legacyBalance,
         });
-        const depositTxHash = await walletClient.writeContract(depositSimulation.request);
+        const depositTxHash = await walletClient.writeContract({ ...depositSimulation.request, gas: 200_000n });
         await waitForReceipt(publicClient, depositTxHash);
       }
 
@@ -458,7 +653,7 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
           functionName: "withdrawNative",
           args: [legacyBalance],
         });
-        const withdrawTxHash = await walletClient.writeContract(withdrawSimulation.request);
+        const withdrawTxHash = await walletClient.writeContract({ ...withdrawSimulation.request, gas: 200_000n });
         await waitForReceipt(publicClient, withdrawTxHash);
 
         setStatusText("Depositing migrated 0G into the V3 Policy Vault.");
@@ -469,7 +664,7 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
           functionName: "depositNative",
           value: legacyBalance,
         });
-        const depositTxHash = await walletClient.writeContract(depositSimulation.request);
+        const depositTxHash = await walletClient.writeContract({ ...depositSimulation.request, gas: 200_000n });
         await waitForReceipt(publicClient, depositTxHash);
       }
 
@@ -541,6 +736,169 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
     walletAccount.address,
     walletAccount.isConnected,
   ]);
+  /*
+
+  // vault, deposit into the new vault, re-point all agents, flip .env.local) —
+      setStatusText("Migrating: deploying new vault, moving funds, re-pointing agents. This may take 1-3 min — keep the tab open.");
+  */
+  const migrateToV4 = useCallback(async () => {
+    if (!walletAccount.isConnected || !walletAccount.address) {
+      setStatusText("Connect the owner wallet before migrating to V4.");
+      return;
+    }
+    if (network.id !== "mainnet") {
+      setStatusText("Migrate to V4 is configured for 0G mainnet only.");
+      return;
+    }
+    if (creationConfig === null) {
+      setStatusText(readiness.reason);
+      return;
+    }
+    setV4MigrateError(null);
+    setV4MigrateResult(null);
+    setIsMigratingToV4(true);
+    try {
+      if (connectedChainId !== network.chainId) {
+        setStatusText(`Switching wallet to ${network.networkName}.`);
+        await switchChain.switchChainAsync({ chainId: network.chainId });
+      }
+      const walletClient = await getWalletClient(chain);
+      const [account] = await walletClient.getAddresses();
+      if (account.toLowerCase() !== walletAccount.address.toLowerCase()) {
+        throw new Error("Wallet account changed before V4 migration.");
+      }
+
+      setStatusText("Building V4 migration plan.");
+      const planResponse = await fetch("/api/vault/migrate-v4/plan", {
+        body: JSON.stringify({ wallet: { address: account, chainId: network.chainId } }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const planPayload = (await planResponse.json().catch(() => ({}))) as { data?: V4MigrationPlan; error?: { code?: string; message?: string } };
+      if (!planResponse.ok || !planPayload.data) {
+        const messageText = planPayload.error?.message ?? "Unable to build the V4 migration plan.";
+        setV4MigrateError(`${planPayload.error?.code ?? "plan_failed"}: ${messageText}`);
+        setStatusText(messageText);
+        return;
+      }
+      const plan = planPayload.data;
+      if (plan.blockingIssues.includes("already_v4")) {
+        setStatusText("This wallet already has a registered V4 Policy Vault.");
+        await discoverVaults();
+        return;
+      }
+      if (!plan.source) {
+        throw new Error("No legacy vault was found for this wallet.");
+      }
+
+      const v4Trio = await ensureWalletV4Trio({
+        account,
+        creationConfig,
+        publicClient,
+        setStatusText,
+        walletClient,
+      }, plan.v4Trio);
+      setV4SwapAddress(v4Trio.swapVault);
+      setV4LpEntryAddress(v4Trio.lpEntryVault);
+      setV4LpExitAddress(v4Trio.lpExitVault);
+
+      const uniqueAgentKeys = Array.from(new Set(plan.agentKeys.map((key) => key.toLowerCase()))).map((key) => key as Hex);
+      if (uniqueAgentKeys.length > 0) {
+        setStatusText("Enabling migrated agent keys on V4.");
+        await enableAgentKeysOnV4Trio({ account, agentKeys: uniqueAgentKeys, publicClient, trio: v4Trio, walletClient });
+      }
+
+      if (plan.source.version === 3) {
+        if (!plan.inventory || !plan.inventoryHash) {
+          throw new Error("V3 migration plan is missing inventory.");
+        }
+        setStatusText("Preserving V3 LP NFTs into V4.");
+        await preserveV3Nfts({
+          account,
+          inventory: plan.inventory,
+          publicClient,
+          sourceVault: plan.source.vault,
+          trio: v4Trio,
+          walletClient,
+        });
+      }
+
+      setStatusText("Moving native 0G into V4 Swap and retiring the source vault.");
+      await moveNativeAndRetireSource({
+        account,
+        publicClient,
+        sourceVersion: plan.source.version,
+        sourceVault: plan.source.vault,
+        trio: v4Trio,
+        walletClient,
+      });
+
+      setStatusText("Signing finalize consent.");
+      const { nonce, expiresAt } = await requestActionConsentNonce("vault-migrate-v4", account);
+      const message = buildVaultMigrateV4FinalizeConsentMessage({
+        address: account,
+        chainId: network.chainId,
+        networkId: network.id,
+        sourceVault: plan.source.vault,
+        sourceVersion: plan.source.version,
+        planHash: plan.planHash,
+        inventoryHash: plan.inventoryHash,
+        v4SwapAddress: v4Trio.swapVault,
+        v4LpEntryAddress: v4Trio.lpEntryVault,
+        v4LpExitAddress: v4Trio.lpExitVault,
+        nonce,
+        expiresAt,
+      });
+      const signature = await signMessage.signMessageAsync({ message });
+      const finalizeResponse = await fetch("/api/vault/migrate-v4", {
+        body: JSON.stringify({
+          wallet: { address: account, chainId: network.chainId, message, signature },
+          nonce,
+          expiresAt,
+          sourceVault: plan.source.vault,
+          sourceVersion: plan.source.version,
+          planHash: plan.planHash,
+          inventoryHash: plan.inventoryHash ?? undefined,
+          v4Trio: { swap: v4Trio.swapVault, lpEntry: v4Trio.lpEntryVault, lpExit: v4Trio.lpExitVault },
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const finalizePayload = (await finalizeResponse.json().catch(() => ({}))) as {
+        data?: V4MigrationResult;
+        error?: { code?: string; message?: string };
+      };
+      if (!finalizeResponse.ok || !finalizePayload.data) {
+        const messageText = finalizePayload.error?.message ?? "Unable to finalize the V4 migration.";
+        setV4MigrateError(`${finalizePayload.error?.code ?? "migration_failed"}: ${messageText}`);
+        setStatusText(messageText);
+        return;
+      }
+      setV4MigrateResult(finalizePayload.data);
+      setStatusText("V4 migration complete. The V4 vault trio is active for this wallet.");
+      await discoverVaults();
+    } catch (error) {
+      const messageText = error instanceof Error ? sanitizeWalletError(error.message) : "V4 migration failed.";
+      setV4MigrateError(messageText);
+      setStatusText(messageText);
+    } finally {
+      setIsMigratingToV4(false);
+    }
+  }, [
+    chain,
+    connectedChainId,
+    creationConfig,
+    discoverVaults,
+    network.chainId,
+    network.id,
+    network.networkName,
+    publicClient,
+    readiness.reason,
+    signMessage,
+    switchChain,
+    walletAccount.address,
+    walletAccount.isConnected,
+  ]);
 
   const activeVaultVersion = versionedVaults.at(-1)?.version;
   const latestFactoryVersion = factoryVersions.at(-1)?.version;
@@ -548,14 +906,17 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
   return {
     activeVaultVersion,
     createVault,
+    createVaultV4,
     factoryAddress,
     isCreating,
     isDiscovering,
     isMigratingToV3,
+    isMigratingToV4,
     legacyVaults: latestFactoryVersion === undefined
       ? []
       : versionedVaults.filter((entry) => entry.version < latestFactoryVersion),
     migrateVault,
+    migrateToV4,
     migrateVaultToV3,
     // Suppress the v1 -> v2 factory panel once a V3 singleton exists; the v2 -> v3
     // panel takes over and creating a fresh V2 via factory would be a step backward.
@@ -568,6 +929,12 @@ export function useWalletPolicyVault(network: OgNetworkConfig): WalletPolicyVaul
     statusText,
     vaultAddress,
     vaults,
+    v4MigrateError,
+    v4MigrateResult,
+    v4MigrationAvailable: v4SwapAddress === null && (v3VaultAddress !== null || versionedVaults.length > 0),
+    v4SwapAddress,
+    v4LpEntryAddress,
+    v4LpExitAddress,
     v3MigrationAvailable: v3VaultAddress !== null && legacyV2Balance > 0n,
     v3VaultAddress,
     versionedVaults,
@@ -705,6 +1072,461 @@ async function verifyVaultOwner(
   }
 }
 
+function toV4SwapPolicy(policy: PolicyVaultPolicy): PolicyVaultV4SwapPolicy {
+  return {
+    perTradeCap0G: policy.perTradeCap0G,
+    dailyCap0G: policy.dailyCap0G,
+    maxExposure0G: policy.maxExposure0G,
+    cooldownSeconds: policy.cooldownSeconds,
+    maxDeadlineWindowSeconds: policy.maxDeadlineWindowSeconds,
+    defaultMinOutBps: policy.defaultMinOutBps,
+  };
+}
+
+function toV4LpPolicy(policy: PolicyVaultPolicy): PolicyVaultV4LpPolicy {
+  return {
+    perLpActionCap0G: policy.perTradeCap0G,
+    lpDailyCap0G: policy.dailyCap0G,
+    maxLpExposure0G: policy.maxExposure0G,
+    cooldownSecondsLp: policy.cooldownSeconds,
+    lpMinOutBps: policy.defaultMinOutBps,
+    minLiquidityFloor: 1n,
+    allowStaking: true,
+  };
+}
+
+async function ensureWalletV4Trio(
+  {
+    account,
+    creationConfig,
+    publicClient,
+    setStatusText,
+    walletClient,
+  }: {
+    account: Address;
+    creationConfig: NonNullable<ReturnType<typeof getPolicyVaultCreationConfig>>;
+    publicClient: ReturnType<typeof createPublicClient>;
+    setStatusText: (value: string) => void;
+    walletClient: WalletClient;
+  },
+  plannedTrio: V4VaultTrio | null,
+): Promise<V4VaultTrio> {
+  if (NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS === ZERO_ADDRESS) {
+    throw new Error("VaultRegistryV4 is not configured.");
+  }
+  if (NEXT_PUBLIC_POLICY_VAULT_ZIA_LP_ADAPTER_V4_MAINNET_ADDRESS === ZERO_ADDRESS) {
+    throw new Error("ZiaLpAdapterV4 is not configured.");
+  }
+  const registryTrio = await readRegistryV4Trio(publicClient, account);
+  if (registryTrio) {
+    if (plannedTrio && !sameAddress(registryTrio.swapVault, plannedTrio.swapVault)) {
+      throw new Error("V4 registry changed after planning. Refresh and retry.");
+    }
+    return registryTrio;
+  }
+
+  const lpAllowlists = buildV3LpAllowlists();
+  const swapBytecode = ensureV4BytecodeReady(policyVaultV4SwapBytecode, "PolicyVaultV4Swap");
+  const lpEntryBytecode = ensureV4BytecodeReady(policyVaultV4LpEntryBytecode, "PolicyVaultV4LpEntry");
+  const lpExitBytecode = ensureV4BytecodeReady(policyVaultV4LpExitBytecode, "PolicyVaultV4LpExit");
+  const swapPolicy = toV4SwapPolicy(creationConfig.policy);
+  const lpPolicy = toV4LpPolicy(creationConfig.policy);
+
+  // H6 FIX: resume a partial deploy. Read each registry slot individually; reuse an already-
+  // registered third and deploy+register each MISSING third one at a time (register right after
+  // deploy). A mid-flow failure then never forces a full 3-contract redeploy that reverts
+  // AlreadyRegistered on the slot that already succeeded.
+  let lpEntryVault = await readRegistrySlotV4(publicClient, "lpEntryVaultOf", account);
+  if (!lpEntryVault) {
+    setStatusText("Deploying V4 LP Entry.");
+    const lpEntryHash = await walletClient.deployContract({
+      account,
+      chain: null,
+      abi: policyVaultV4LpEntryAbi,
+      bytecode: lpEntryBytecode,
+      gas: 8_000_000n, // explicit generous gas → wallet skips (failing) estimation on 0G (actual ~4.44M, refunded if unused)
+      args: [
+        account,
+        creationConfig.executor,
+        NEXT_PUBLIC_POLICY_VAULT_ZIA_LP_ADAPTER_V4_MAINNET_ADDRESS,
+        creationConfig.proofRegistry,
+        false,
+        NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS,
+        lpPolicy,
+        lpAllowlists.allowedLpPools,
+        lpAllowlists.allowedStakeVaults,
+        lpAllowlists.stakeVaultForLpPool,
+      ],
+    });
+    lpEntryVault = await readContractAddressFromDeploy(publicClient, lpEntryHash);
+    setStatusText("Registering V4 LP Entry.");
+    await writeAndWait(walletClient, publicClient, {
+      account,
+      address: NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS,
+      abi: vaultRegistryV4Abi,
+      functionName: "registerLpEntry",
+      args: [lpEntryVault],
+      gas: 300_000n,
+    });
+  }
+
+  let lpExitVault = await readRegistrySlotV4(publicClient, "lpExitVaultOf", account);
+  if (!lpExitVault) {
+    setStatusText("Deploying V4 LP Exit.");
+    const lpExitHash = await walletClient.deployContract({
+      account,
+      chain: null,
+      abi: policyVaultV4LpExitAbi,
+      bytecode: lpExitBytecode,
+      gas: 8_000_000n, // explicit generous gas → wallet skips (failing) estimation on 0G (actual ~4.40M, refunded if unused)
+      args: [
+        account,
+        creationConfig.executor,
+        NEXT_PUBLIC_POLICY_VAULT_ZIA_LP_ADAPTER_V4_MAINNET_ADDRESS,
+        creationConfig.proofRegistry,
+        false,
+        NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS,
+        lpEntryVault,
+        lpAllowlists.allowedLpPools,
+        creationConfig.allowedTokens,
+      ],
+    });
+    lpExitVault = await readContractAddressFromDeploy(publicClient, lpExitHash);
+    setStatusText("Registering V4 LP Exit.");
+    await writeAndWait(walletClient, publicClient, {
+      account,
+      address: NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS,
+      abi: vaultRegistryV4Abi,
+      functionName: "registerLpExit",
+      args: [lpExitVault],
+      gas: 300_000n,
+    });
+  }
+
+  let swapVault = await readRegistrySlotV4(publicClient, "swapVaultOf", account);
+  if (!swapVault) {
+    setStatusText("Deploying V4 Swap.");
+    const swapHash = await walletClient.deployContract({
+      account,
+      chain: null,
+      abi: policyVaultV4SwapAbi,
+      bytecode: swapBytecode,
+      gas: 5_500_000n, // explicit generous gas → wallet skips (failing) estimation on 0G (actual ~3M, refunded if unused)
+      args: [
+        account,
+        creationConfig.executor,
+        creationConfig.adapter,
+        creationConfig.proofRegistry,
+        swapPolicy,
+        creationConfig.allowedTokens,
+        creationConfig.allowedPools,
+        false,
+        NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS,
+      ],
+    });
+    swapVault = await readContractAddressFromDeploy(publicClient, swapHash);
+    setStatusText("Registering V4 Swap.");
+    await writeAndWait(walletClient, publicClient, {
+      account,
+      address: NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS,
+      abi: vaultRegistryV4Abi,
+      functionName: "registerSwap",
+      args: [swapVault],
+      gas: 300_000n,
+    });
+  }
+
+  // Link LP Entry → LP Exit (one-time onlyOwner). Skip if already linked so a resume is idempotent.
+  const linkedExit = (await publicClient.readContract({
+    address: lpEntryVault,
+    abi: policyVaultV4LpEntryAbi,
+    functionName: "lpExitVault",
+  }).catch(() => ZERO_ADDRESS)) as Address;
+  if (!linkedExit || linkedExit === ZERO_ADDRESS) {
+    setStatusText("Linking LP Entry to LP Exit.");
+    await writeAndWait(walletClient, publicClient, {
+      account,
+      address: lpEntryVault,
+      abi: policyVaultV4LpEntryAbi,
+      functionName: "setLpExitVault",
+      args: [lpExitVault],
+      gas: 250_000n,
+    });
+  }
+
+  const trio = await readRegistryV4Trio(publicClient, account);
+  if (!trio) throw new Error("V4 registry did not resolve after registration.");
+  return trio;
+}
+
+async function readRegistryV4Trio(publicClient: ReturnType<typeof createPublicClient>, owner: Address): Promise<V4VaultTrio | null> {
+  if (NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS === ZERO_ADDRESS) return null;
+  const [swapVault, lpEntryVault, lpExitVault] = await publicClient.readContract({
+    address: NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS,
+    abi: vaultRegistryV4Abi,
+    functionName: "vaultOf",
+    args: [owner],
+  }).catch(() => [ZERO_ADDRESS, ZERO_ADDRESS, ZERO_ADDRESS] as const);
+  if (swapVault === ZERO_ADDRESS || lpEntryVault === ZERO_ADDRESS || lpExitVault === ZERO_ADDRESS) return null;
+  return { swapVault, lpEntryVault, lpExitVault };
+}
+
+async function readRegistrySlotV4(
+  publicClient: ReturnType<typeof createPublicClient>,
+  fn: "swapVaultOf" | "lpEntryVaultOf" | "lpExitVaultOf",
+  owner: Address,
+): Promise<Address | null> {
+  const value = (await publicClient.readContract({
+    address: NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS,
+    abi: vaultRegistryV4Abi,
+    functionName: fn,
+    args: [owner],
+  }).catch(() => ZERO_ADDRESS)) as Address;
+  return value && value !== ZERO_ADDRESS ? value : null;
+}
+
+async function enableAgentKeysOnV4Trio({
+  account,
+  agentKeys,
+  publicClient,
+  trio,
+  walletClient,
+}: {
+  account: Address;
+  agentKeys: Hex[];
+  publicClient: ReturnType<typeof createPublicClient>;
+  trio: V4VaultTrio;
+  walletClient: WalletClient;
+}) {
+  await enableAgentKeysOnVault({ account, agentKeys, publicClient, vault: trio.swapVault, abi: policyVaultV4SwapAbi, walletClient });
+  await enableAgentKeysOnVault({ account, agentKeys, publicClient, vault: trio.lpEntryVault, abi: policyVaultV4LpEntryAbi, walletClient });
+  await enableAgentKeysOnVault({ account, agentKeys, publicClient, vault: trio.lpExitVault, abi: policyVaultV4LpExitAbi, walletClient });
+}
+
+async function enableAgentKeysOnVault({
+  account,
+  agentKeys,
+  abi,
+  publicClient,
+  vault,
+  walletClient,
+}: {
+  account: Address;
+  agentKeys: Hex[];
+  abi: Abi | readonly unknown[];
+  publicClient: ReturnType<typeof createPublicClient>;
+  vault: Address;
+  walletClient: WalletClient;
+}) {
+  const missing: Hex[] = [];
+  for (const agentKey of agentKeys) {
+    const enabled = await publicClient.readContract({
+      address: vault,
+      abi,
+      functionName: "agentKeyEnabled",
+      args: [agentKey],
+    }).catch(() => false);
+    if (!enabled) missing.push(agentKey);
+  }
+  if (missing.length === 0) return;
+  await writeAndWait(walletClient, publicClient, {
+    account,
+    address: vault,
+    abi,
+    functionName: "setAgentKeysEnabled",
+    args: [missing, true],
+    gas: 400_000n,
+  });
+}
+
+async function preserveV3Nfts({
+  account,
+  inventory,
+  publicClient,
+  sourceVault,
+  trio,
+  walletClient,
+}: {
+  account: Address;
+  inventory: NonNullable<V4MigrationPlan["inventory"]>;
+  publicClient: ReturnType<typeof createPublicClient>;
+  sourceVault: Address;
+  trio: V4VaultTrio;
+  walletClient: WalletClient;
+}) {
+  for (const nft of inventory.nfts) {
+    if (nft.stage === "skipped_burned") continue;
+    if (!nft.agentKey || !nft.poolId || nft.tickLower === undefined || nft.tickUpper === undefined || nft.deployedNative0G === undefined) {
+      throw new Error(`NFT ${nft.tokenId} is missing V3 accounting; migration halted before moving it.`);
+    }
+    const tokenId = BigInt(nft.tokenId);
+    let owner = await ownerOfNfpm(publicClient, tokenId);
+    if (nft.staked && nft.stakeVault) {
+      await writeAndWait(walletClient, publicClient, {
+        account,
+        address: sourceVault,
+        abi: policyVaultV3Abi,
+        functionName: "unstakeLpOwner",
+        args: [tokenId, nft.stakeVault],
+      });
+      owner = await ownerOfNfpm(publicClient, tokenId);
+    }
+    if (sameAddress(owner, sourceVault)) {
+      await writeAndWait(walletClient, publicClient, {
+        account,
+        address: sourceVault,
+        abi: policyVaultV3Abi,
+        functionName: "rescueNft",
+        args: [ZIA_LP_MAINNET.nonfungiblePositionManager, tokenId],
+      });
+      owner = await ownerOfNfpm(publicClient, tokenId);
+    }
+    if (sameAddress(owner, account)) {
+      await writeAndWait(walletClient, publicClient, {
+        account,
+        address: ZIA_LP_MAINNET.nonfungiblePositionManager,
+        abi: ziaNonfungiblePositionManagerAbi,
+        functionName: "safeTransferFrom",
+        args: [account, trio.lpEntryVault, tokenId],
+      });
+      owner = await ownerOfNfpm(publicClient, tokenId);
+    }
+    if (!sameAddress(owner, trio.lpEntryVault)) {
+      throw new Error(`NFT ${nft.tokenId} custody is ${owner}; expected V4 LP Entry.`);
+    }
+    const importedOwner = await publicClient.readContract({
+      address: trio.lpEntryVault,
+      abi: policyVaultV4LpEntryAbi,
+      functionName: "lpNftOwner",
+      args: [tokenId],
+    }).catch(() => ZERO_BYTES32) as Hex;
+    if (importedOwner.toLowerCase() === ZERO_BYTES32.toLowerCase()) {
+      await writeAndWait(walletClient, publicClient, {
+        account,
+        address: trio.lpEntryVault,
+        abi: policyVaultV4LpEntryAbi,
+        functionName: "importLpNft",
+        args: [tokenId, nft.agentKey, nft.poolId, nft.tickLower, nft.tickUpper, BigInt(nft.deployedNative0G)],
+      });
+    }
+  }
+}
+
+async function moveNativeAndRetireSource({
+  account,
+  publicClient,
+  sourceVersion,
+  sourceVault,
+  trio,
+  walletClient,
+}: {
+  account: Address;
+  publicClient: ReturnType<typeof createPublicClient>;
+  sourceVersion: 1 | 2 | 3;
+  sourceVault: Address;
+  trio: V4VaultTrio;
+  walletClient: WalletClient;
+}) {
+  const sourceAbi = sourceVersion === 3 ? policyVaultV3Abi : policyVaultAbi;
+  const sourceBalance = await publicClient.getBalance({ address: sourceVault });
+  if (sourceBalance > 0n) {
+    await writeAndWait(walletClient, publicClient, {
+      account,
+      address: sourceVault,
+      abi: sourceAbi,
+      functionName: "withdrawNative",
+      args: [sourceBalance],
+      gas: 200_000n,
+    });
+    const depositWei = sourceBalance > MIGRATE_V4_USER_GAS_RESERVE_WEI ? sourceBalance - MIGRATE_V4_USER_GAS_RESERVE_WEI : 0n;
+    if (depositWei > 0n) {
+      await writeAndWait(walletClient, publicClient, {
+        account,
+        address: trio.swapVault,
+        abi: policyVaultV4SwapAbi,
+        functionName: "depositNative",
+        args: [],
+        value: depositWei,
+        gas: 200_000n,
+      });
+    }
+  }
+  const [paused, revoked] = await Promise.all([
+    publicClient.readContract({ address: sourceVault, abi: sourceAbi, functionName: "paused" }).catch(() => false),
+    publicClient.readContract({ address: sourceVault, abi: sourceAbi, functionName: "executorRevoked" }).catch(() => false),
+  ]);
+  if (!paused) {
+    await writeBestEffortOwnerTx({ account, address: sourceVault, args: [true], abi: sourceAbi, functionName: "setPaused", publicClient, walletClient });
+  }
+  if (!revoked) {
+    await writeBestEffortOwnerTx({ account, address: sourceVault, args: [], abi: sourceAbi, functionName: "revokeExecutor", publicClient, walletClient });
+  }
+}
+
+async function ownerOfNfpm(publicClient: ReturnType<typeof createPublicClient>, tokenId: bigint): Promise<Address> {
+  const owner = await publicClient.readContract({
+    address: ZIA_LP_MAINNET.nonfungiblePositionManager,
+    abi: ziaNonfungiblePositionManagerAbi,
+    functionName: "ownerOf",
+    args: [tokenId],
+  });
+  return owner as Address;
+}
+
+function sameAddress(left: Address | string, right: Address | string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+async function readContractAddressFromDeploy(
+  publicClient: ReturnType<typeof createPublicClient>,
+  hash: Hex,
+): Promise<Address> {
+  const receipt = await waitForReceipt(publicClient, hash);
+  // H7 FIX: a null receipt means the tx was not confirmed in time; a reverted create can still
+  // carry a contractAddress on some clients. Never treat either as a successful deploy.
+  if (!receipt) {
+    throw new Error(`Deployment ${hash} was not confirmed in time. Check the explorer before retrying.`);
+  }
+  if (receipt.status !== "success") {
+    throw new Error(`Deployment ${hash} reverted on-chain.`);
+  }
+  const address = receipt.contractAddress;
+  if (!address) {
+    throw new Error("Deployment receipt did not include a contract address.");
+  }
+  return address;
+}
+
+async function writeAndWait(
+  walletClient: WalletClient,
+  publicClient: ReturnType<typeof createPublicClient>,
+  request: {
+    account: Address;
+    address: Address;
+    abi: Abi | readonly unknown[];
+    functionName: string;
+    args?: readonly unknown[];
+    value?: bigint;
+    // UX FIX: pass an explicit gas limit so the wallet does NOT call eth_estimateGas (which fails on
+    // 0G in OKX/some wallets → "network fee estimation unsuccessful", blocking Confirm). Unused gas
+    // is refunded, so a generous limit costs nothing extra.
+    gas?: bigint;
+  },
+) {
+  const hash = await walletClient.writeContract({ chain: null, ...request } as Parameters<WalletClient["writeContract"]>[0]);
+  // H7 FIX: assert the tx actually succeeded. Previously a mined-but-reverted tx (or a 90s timeout
+  // returning null) was silently treated as success, so a broken registration/setLpExitVault/deposit
+  // let the flow report "trio created" on a half-built vault.
+  const receipt = await waitForReceipt(publicClient, hash);
+  if (!receipt) {
+    throw new Error(`Transaction ${hash} was not confirmed in time. Check the explorer before retrying.`);
+  }
+  if (receipt.status !== "success") {
+    throw new Error(`Transaction ${hash} reverted on-chain (${request.functionName}).`);
+  }
+  return receipt;
+}
+
 async function assertLegacyVaultIsNativeOnly(
   publicClient: ReturnType<typeof createPublicClient>,
   vault: Address,
@@ -748,6 +1570,7 @@ async function writeBestEffortOwnerTx({
   account,
   address,
   args,
+  abi = policyVaultAbi,
   functionName,
   publicClient,
   walletClient,
@@ -755,6 +1578,7 @@ async function writeBestEffortOwnerTx({
   account: Address;
   address: Address;
   args: readonly unknown[];
+  abi?: Abi | readonly unknown[];
   functionName: "revokeExecutor" | "setPaused";
   publicClient: ReturnType<typeof createPublicClient>;
   walletClient: WalletClient;
@@ -763,9 +1587,10 @@ async function writeBestEffortOwnerTx({
     const txHash = await walletClient.writeContract({
       account,
       address,
-      abi: policyVaultAbi,
+      abi,
       functionName,
       args,
+      gas: 200_000n, // explicit gas → wallet skips (failing) estimation on 0G
     } as never);
     await waitForReceipt(publicClient, txHash);
   } catch {

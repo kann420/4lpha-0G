@@ -4,7 +4,9 @@ param(
   [switch]$ExecuteWorker,
   [switch]$NoWorker,
   [switch]$NoBrowser,
-  [switch]$NoInstall
+  [switch]$NoInstall,
+  [switch]$Start,
+  [switch]$OpenOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -205,11 +207,33 @@ exit 1
     -WindowStyle Hidden | Out-Null
 }
 
-$launchLock = Enter-LaunchLock -Path $lockPath
+$launchLock = $null
 try {
   if (-not (Test-Path (Join-Path $repoRoot "package.json"))) {
     throw "package.json was not found in $repoRoot"
   }
+
+  if ($OpenOnly) {
+    $existing = Find-ExistingDevServer
+    if ($existing) {
+      $url = "http://localhost:$($existing.Port)"
+      Write-Output "4lpha 0G dev server is already running."
+      Write-Output "PID: $($existing.Process.Id)"
+      Write-Output "URL: $url"
+      Write-Output "Logs: $logPath"
+      Write-Output "Errors: $errPath"
+      if (-not $NoBrowser) {
+        Open-LocalUrl -Url $url
+      }
+      exit 0
+    }
+
+    Write-Output "No tracked 4lpha 0G dev server is running."
+    Write-Output "Run dev-local.cmd to start the full dev server."
+    exit 0
+  }
+
+  $launchLock = Enter-LaunchLock -Path $lockPath
 
   if (-not (Test-Path (Join-Path $repoRoot "node_modules")) -and -not $NoInstall) {
     if (Test-Path (Join-Path $repoRoot "package-lock.json")) {
@@ -267,14 +291,28 @@ try {
   } elseif ($PSBoundParameters.ContainsKey("WithWorker") -and $WithWorker) {
     Write-Output "Agent worker: dry-run"
   } else {
-    $workerMode = if ($ExecuteWorker) { "execute" } else { "dry-run" }
-    Write-Output "Agent worker: env/default ($workerMode unless env overrides)"
+    # dev-local.ts resolves execute mode from env: OG_AGENT_WORKER_EXECUTE or
+    # AGENT_TRADE_LIVE_ENABLED. Read .env.local so this label reflects reality.
+    $envExecute = $false
+    $envFile = Join-Path $repoRoot ".env.local"
+    if (Test-Path $envFile) {
+      foreach ($line in Get-Content -Path $envFile) {
+        if ($line -match '^\s*(OG_AGENT_WORKER_EXECUTE|AGENT_TRADE_LIVE_ENABLED)\s*=\s*(1|true|yes|on)\s*$') {
+          $envExecute = $true
+        }
+      }
+    }
+    $workerMode = if ($envExecute) { "execute (from .env.local)" } else { "dry-run" }
+    Write-Output "Agent worker: $workerMode"
   }
   Write-Output "Logs: $logPath"
   Write-Output "Errors: $errPath"
   Write-Output ""
   Write-Output "Live logs are shown in this window. Press Ctrl+C to stop."
   Write-Output ""
+
+  $launchLock.Dispose()
+  $launchLock = $null
 
   & npm.cmd @arguments 2>&1 | Tee-Object -FilePath $logPath -Append
   $exitCode = if ($LASTEXITCODE -is [int]) { $LASTEXITCODE } else { 1 }
@@ -283,5 +321,7 @@ try {
   }
   exit $exitCode
 } finally {
-  $launchLock.Dispose()
+  if ($launchLock) {
+    $launchLock.Dispose()
+  }
 }

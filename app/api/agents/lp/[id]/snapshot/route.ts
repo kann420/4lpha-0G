@@ -32,7 +32,17 @@ export async function GET(
     return snapshotError("invalid_wallet", "Connected wallet address is not valid.", 400);
   }
 
-  const workspace = await loadOgAgentWorkspace({ agentId, live: true, ownerAddress });
+  let workspace = await loadOgAgentWorkspace({ agentId, live: true, ownerAddress });
+  if (workspace.agent.id !== agentId || !workspace.agent.deployment) {
+    return snapshotError("agent_not_found", "Unknown 0G LP agent id.", 404);
+  }
+  if (!ownerAddress && (workspace.vault.vaultVersion ?? 1) < 3) {
+    workspace = await loadOgAgentWorkspace({
+      agentId,
+      live: true,
+      ownerAddress: workspace.agent.deployment.owner,
+    });
+  }
   if (workspace.agent.id !== agentId || !workspace.agent.deployment) {
     return snapshotError("agent_not_found", "Unknown 0G LP agent id.", 404);
   }
