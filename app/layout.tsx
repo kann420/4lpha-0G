@@ -21,7 +21,15 @@ const geistMono = Geist_Mono({
   display: "swap",
 });
 
+// Without metadataBase, Next.js resolves relative og:image/twitter:image URLs
+// against a default of http://localhost:3000 — link-preview crawlers (Telegram,
+// Zalo, Facebook, etc.) then can't fetch the image at all. Falls back to the
+// real production domain so this stays correct even if NEXT_PUBLIC_APP_URL is
+// unset or misconfigured in a given deploy environment.
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL?.trim() || "https://0g.4lpha.tech";
+
 export const metadata: Metadata = {
+  metadataBase: new URL(APP_URL),
   title: "4lpha 0G",
   description:
     "AI-powered token intelligence and autonomous trading agents on 0G, with Smart Scan for fast risk-aware discovery.",
@@ -32,7 +40,7 @@ export const metadata: Metadata = {
     title: "4lpha 0G",
     description:
       "AI-powered token intelligence and autonomous trading agents on 0G, with Smart Scan for fast risk-aware discovery.",
-    images: [{ url: "/preview.png", width: 1200, height: 630 }],
+    images: [{ url: "/preview.png", width: 1683, height: 935 }],
     type: "website",
   },
   twitter: {
