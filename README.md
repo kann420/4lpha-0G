@@ -13,7 +13,7 @@
 - AI Scan
 - Copilot
 - Trading Agent
-- LP Agent (0G-native Zia/TradeGPT LP, autonomous mint + stake through Policy Vault V3)
+- LP Agent (0G-native Zia/TradeGPT LP, autonomous mint + stake through Policy Vault V3/V4)
 - Fund as a 0G Policy Vault
 
 The product is designed to stand on its own as a 0G-native autonomous trading workspace.
@@ -31,8 +31,8 @@ The app is organized around practical operator flows:
 | AI Scan | 0G-powered token and wallet scanner for contract facts, risk signals, route context, and policy-ready evidence packets. |
 | Copilot | Embedded chat for reasoning, policy review, and trade assistance powered through server-only routes, with executable trade commands routed through Zia (TradeGPT) context before Policy Vault submission. |
 | Trading Agent | Agent setup, run review, status, execution logs, and policy-aware trade actions using Zia (TradeGPT) route context plus 0G Policy Vault enforcement. |
-| LP Agent | 0G-native Zia/TradeGPT LP agent: the 0G Compute Router picks the pool/range, Policy Vault V3 enforces the on-chain fence (allowlisted pools, per-action/daily cap, max exposure, min-out, cooldown), and the vault mints + auto-stakes the LP NFT into the matching Zia vault so advertised APR is actually earned. Manual unstake / zap-out / owner withdraw are exposed as explicit controls. |
-| Fund / Vault | 0G Policy Vault funding, limits, executor controls, pause/revoke, proof links, and withdrawals. V2 is the multi-user swap vault; V3 adds the LP primitive layer and is deployer/owner-only. |
+| LP Agent | 0G-native Zia/TradeGPT LP agent: the 0G Compute Router picks the pool/range, the Policy Vault (V3 or V4) enforces the on-chain fence (allowlisted pools, per-action/daily cap, max exposure, min-out, cooldown), and the vault mints + auto-stakes the LP NFT into the matching Zia vault so advertised APR is actually earned. Manual unstake / zap-out / owner withdraw are exposed as explicit controls. |
+| Fund / Vault | 0G Policy Vault funding, limits, executor controls, pause/revoke, proof links, and withdrawals. V2 is the multi-user swap vault; V3 adds the LP primitive layer and is deployer/owner-only; V4 (in progress) brings the LP layer back to a per-user vault. |
 
 Copilot is intentionally embedded in AI Scan and Agents. This repo does not introduce a standalone `/copilot` product surface.
 
@@ -45,8 +45,8 @@ The main demo path should use 0G for real work:
 - 0G Compute Router for reasoning, Copilot responses, and the LP agent's pool/range selection.
 - Zia (TradeGPT) route context for executable quote and route selection, and Zia pool discovery for LP.
 - 0G Storage for redacted audit bundles and run evidence.
-- 0G Chain Galileo testnet for proof anchoring during demo flows (V3 LP and Agentic ID are mainnet-only).
-- 0G Policy Vault contracts (V2 swap for all users; V3 swap + LP for the deployer/owner) for bounded trade execution and fund control.
+- 0G Chain Galileo testnet for proof anchoring during demo flows (V3/V4 LP and Agentic ID are mainnet-only).
+- 0G Policy Vault contracts (V2 swap for all users; V3 swap + LP, deployer/owner-only; V4 swap + LP, per-user, in progress) for bounded trade execution and fund control.
 
 ### High-level flow
 
@@ -62,7 +62,7 @@ flowchart LR
   Zia["Zia (TradeGPT) route + pool context"]
   Storage["0G Storage"]
   Chain["0G Chain proof anchoring"]
-  VaultPolicy["0G Policy Vault (V2 swap / V3 swap+LP)"]
+  VaultPolicy["0G Policy Vault (V2 swap / V3 swap+LP / V4 swap+LP per-user)"]
   Proof["Proof Registry"]
   Worker["Swap agent worker"]
   LpWorker["LP agent worker"]
@@ -95,12 +95,11 @@ flowchart LR
 
 ## Deployed 0G Contracts
 
-The vault path uses deployed 0G contracts and curated routes rather than a legacy smart-account or arbitrary executor path. There are two active vault versions on mainnet:
+The vault path uses deployed 0G contracts and curated routes rather than a legacy smart-account or arbitrary executor path. There are three vault versions on mainnet:
 
 - **V2 (multi-user, swap-only).** The app resolves each connected wallet's vault through `PolicyVaultFactoryV2.vaultOf(wallet)`. A new user creates a new vault instance from the deployed V2 factory; the factory, adapter, proof registry, and AgenticID contracts do not need to be redeployed for each user. V2 is the vault for every browser user — trading agent, deposit, Copilot, AI scan.
 - **V3 (singleton, deployer/owner-only, swap + LP).** V3 preserves the V2 swap surface byte-for-byte and adds the LP primitive layer (`zapInMintLp`, `stakeLp`, `unstakeLp`, `zapOut`, and a reserved `claimRewards` slot that reverts `RewardsNotConfigured` until Zia ships a claim ABI). V3 is **owner-only by design**: there is no on-chain V3 factory on 0G mainnet (`PolicyVaultFactoryV3` exceeds EIP-170's 24KB deployed-bytecode cap, so it is retained for EDR/local tests only). The deployer/server deploys a V3 singleton directly via `scripts/create-mainnet-vault-v3.ts` and tracks `owner => vaultAddress` in an off-chain registry (`.data/deployments/mainnet-policy-vault-v3-registry.json`). The server resolver `resolveMainnetV3VaultForOwner` returns the V3 vault only for the deployer (registry/env entry) and falls back to V2 for everyone else. The LP Agent gates on `vaultVersion >= 3 && lpAdapter != address(0)`.
-
-**V4 (in progress, per-user, three-way split).** V4 splits the vault into `PolicyVaultV4Swap` + `PolicyVaultV4LpEntry` + `PolicyVaultV4LpExit`, registered per owner in a shared `VaultRegistryV4` (owner-called `register*(vault)`, not self-registration, to close a registry-spoofing loss-of-funds path), with a new `ZiaLpAdapterV4`. Unlike V3, V4 vaults are per-user again — the trio deploys from the UI with the connected wallet instead of a deployer-only singleton — while keeping every V2 swap and V3 LP capability plus a guided V1/V2/V3 → V4 migration flow. Shared infra (`VaultRegistryV4`, `ZiaLpAdapterV4`) is deployed on 0G mainnet and the swap path has executed a real trade end-to-end; the LP entry/exit thirds and the in-app migration flow are still being hardened on the `fix/vault-v4-blockers` branch and are not yet the default path for new users. Treat V4 as active development, not a documented, shipped surface, until this section is updated again.
+- **V4 (per-user, three-way split, in progress).** V4 brings the LP layer back to a per-user vault instead of V3's deployer-only singleton. Each owner gets a trio — `PolicyVaultV4Swap` + `PolicyVaultV4LpEntry` + `PolicyVaultV4LpExit` — deployed from the UI with the connected wallet and registered in a shared `VaultRegistryV4` (`registerSwap`/`registerLpEntry`/`registerLpExit(vault)`, owner-called and unspoofable — self-registration was rejected in review because a fake contract's `owner()` could impersonate the victim). The trio keeps every V2 swap and V3 LP capability plus a guided V1/V2/V3 → V4 migration flow (`/api/vault/migrate-v4`). Shared infra (`VaultRegistryV4`, `ZiaLpAdapterV4`) is deployed on 0G mainnet and the swap third has executed a real trade end-to-end; the LP entry/exit thirds and the in-app migration flow are still being hardened on the `fix/vault-v4-blockers` branch and are not yet the default path for new users — treat V4 as active development, not a finished surface, until this section is updated again.
 
 `PolicyVaultFactoryV2` (version `2`) is the active factory and the source of truth for new V2 vault creation. `PolicyVaultFactory` (V1) remains deployed as a legacy factory: the app still discovers V1 vaults so existing operators keep working, and offers an in-app migration from a V1 vault to a V2 vault. The V2 vault adds agent-scoped positions: every trade request carries a `bytes32 agentKey`, so trades and exposure are tracked per agent inside one owner vault instead of one vault per agent.
 
@@ -115,6 +114,15 @@ The vault path uses deployed 0G contracts and curated routes rather than a legac
 | ProofRegistry | [`0xfe87d95B76E297Bb28b0eC4dD72b15cfC2b14E7a`](https://chainscan.0g.ai/address/0xfe87d95B76E297Bb28b0eC4dD72b15cfC2b14E7a) | Anchors audit roots, policy hashes, model metadata hashes, and vault action hashes. Shared by V2 and V3. |
 | CuratedUniswapV3RouteAdapter | [`0xfaa8A8e03307dd901054E16Ee89189d006DBf6Db`](https://chainscan.0g.ai/address/0xfaa8A8e03307dd901054E16Ee89189d006DBf6Db) | Real mainnet swap adapter for allowlisted ZIA/Oku routes, tokens, pools, routers, and selectors. Wired as the V3 swap adapter immutable. |
 | AgenticID | [`0x058c5f4c72810d7d4fc0bef3875a8f779de7e59c`](https://chainscan.0g.ai/address/0x058c5f4c72810d7d4fc0bef3875a8f779de7e59c) | Canonical ERC-7857 identity record (ERC-165 `supportsInterface`) for agent, vault, executor, and storage references. |
+
+**V4 shared infra (0G Mainnet, in progress — see `fix/vault-v4-blockers`).** V4 does not have fixed swap/LP-entry/LP-exit vault addresses like V3: each owner's trio is deployed on demand and looked up through the registry (`VaultRegistryV4.vaultOf(owner)` → `(swapVault, lpEntryVault, lpExitVault)`). Only the registry itself and the LP adapter are shared singletons:
+
+| Contract | Address | Purpose |
+|---|---|---|
+| VaultRegistryV4 | [`0x222A47639E74bf738711dfF65D192D434A10F2d0`](https://chainscan.0g.ai/address/0x222A47639E74bf738711dfF65D192D434A10F2d0) | Maps `owner => (swapVault, lpEntryVault, lpExitVault)`. Registration is owner-called (`register*(vault)`, checked against `IOwnable(vault).owner() == msg.sender`), not self-registration, to close a spoofing path where a fake contract's `owner()` could claim another owner's slot. |
+| ZiaLpAdapterV4 | [`0x032726ada42a1E13B6999e24051F782a2a4aFEC3`](https://chainscan.0g.ai/address/0x032726ada42a1E13B6999e24051F782a2a4aFEC3) | V4's LP adapter for allowlisted Zia Uniswap-V3 pools, same narrow shape as the V3 `ZiaLpAdapter` (immutable NFPM/swap router/W0G, recipient hard-pinned to the calling vault). |
+
+The V4 Swap third reuses the existing `CuratedUniswapV3RouteAdapter` (same address as the V3 swap adapter above) — V4 only introduces a new contract for the LP side.
 
 Zia mainnet constants (address-only, public; mirrored in `lib/contracts/zia-lp.ts`): Zia NFT Position Manager `0x5143ba6007C197b4cF66c20601b9dB97E0F98c6A`, Zia Swap Router `0x18cCa38E51c4C339A6BD6e174025f08360FEEf30`, Zia Quoter V2 `0x23b55293b7F06F6c332a0dDA3D88d8921218425B`, Zia Uniswap V3 Factory `0x6F3945Ab27296D1D66D8EEb042ff1B4fb2E0CE70`.
 
@@ -398,6 +406,19 @@ NEXT_PUBLIC_POLICY_VAULT_V3_MAINNET_LP_MIN_OUT_BPS=9500
 NEXT_PUBLIC_POLICY_VAULT_V3_MAINNET_LP_MIN_LIQUIDITY_FLOOR=1000000
 NEXT_PUBLIC_POLICY_VAULT_V3_MAINNET_LP_ALLOW_STAKING=true
 ```
+
+### V4 Policy Vault (per-user, three-way split — in progress)
+
+V4 vaults are per-user again: the `PolicyVaultV4Swap`/`PolicyVaultV4LpEntry`/`PolicyVaultV4LpExit` trio deploys from the UI with the connected wallet, so there are no per-user hardhat deploy env vars. Only the shared registry and LP adapter singletons are configured here.
+
+```env
+NEXT_PUBLIC_POLICY_VAULT_V4_REGISTRY_MAINNET_ADDRESS=
+NEXT_PUBLIC_VAULT_REGISTRY_V4_MAINNET_FROM_BLOCK=
+NEXT_PUBLIC_POLICY_VAULT_ZIA_LP_ADAPTER_V4_MAINNET_ADDRESS=
+MAINNET_DEPLOY_ZIA_LP_ADAPTER_V4=false
+```
+
+This surface is still landing on `fix/vault-v4-blockers` — the registry and LP adapter are deployed on mainnet, but the per-user create and V1/V2/V3 → V4 migration flows are not yet the default path and are excluded from the smoke paths below until verified end to end.
 
 ### Feature Flags
 
