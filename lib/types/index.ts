@@ -340,7 +340,7 @@ export interface AgentTradeRouteQuoteResponse {
 
 export type AgentTradeSide = "buy" | "sell";
 export type AgentTradeIntent = "preview" | "execute";
-export type AgentTradeBackendMode = "stub" | "wired";
+export type AgentTradeBackendMode = "stub" | "unavailable" | "wired";
 export type AgentTradeReadiness = "ready" | "review" | "blocked";
 export type AgentTradeExecutionStatus = "blocked" | "queued" | "stubbed" | "submitted";
 
@@ -361,10 +361,118 @@ export interface AgentTradeRouteOption {
   venue: string;
 }
 
+/** Public, redacted record returned by the Galileo-only roster endpoint. */
+export interface GalileoPublicAgentRecord {
+  agentKey: Hex;
+  agentRef: string;
+  chainId: 16602;
+  createdAt: string;
+  storageRef: string;
+  storageRoot: Hex;
+  storageVerified: true;
+  vault: Address;
+}
+
+export interface GalileoAgentRosterResponse {
+  data?: {
+    agents: GalileoPublicAgentRecord[];
+    chainId: 16602;
+    networkId: "testnet";
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
+/**
+ * Server-normalized tuple that is prepared before a Galileo owner signs. It
+ * deliberately contains no signature or service-wallet material.
+ */
+export interface GalileoTradeConsentRequest {
+  action: "trade";
+  chainId: 16602;
+  clientRequestId: string;
+  networkId: "testnet";
+  owner: Address;
+  trade: {
+    adapter: Address;
+    agentKey: Hex;
+    agentRef: string;
+    amountIn: string;
+    minOut: string;
+    payloadDigest: Hex;
+    policyHash: Hex;
+    poolId: Hex;
+    quoteBlock: string;
+    quoteExpiry: number;
+    reserveNative: string;
+    reserveToken: string;
+    side: AgentTradeSide;
+    trustedQuote: string;
+    vault: Address;
+  };
+}
+
+export interface GalileoTradeConsentIssue {
+  consentMessage: string;
+  expiresAt: number;
+  nonce: string;
+  prepareId: string;
+}
+
+export interface GalileoTradeConsentSubmission extends GalileoTradeConsentIssue {
+  wallet: {
+    address: Address;
+    chainId: 16602;
+    message: string;
+    signature: Hex;
+  };
+}
+
+export interface GalileoTradePreviewDetails {
+  adapter: Address;
+  agentKey: Hex;
+  agentKeyEnabled: boolean;
+  agentRef: string;
+  amountOutMin: string;
+  consentRequest?: GalileoTradeConsentRequest;
+  cooldownReady: boolean;
+  dailyCapRemaining: string;
+  decisionReason?: string;
+  executorRevoked: boolean;
+  feeBps: number;
+  poolId: Hex;
+  priceImpactBps: string;
+  policyHash: Hex;
+  poolNativeReserve: string;
+  poolTokenReserve: string;
+  quoteBlock: string;
+  sellableInventory: string;
+  storageAvailable: boolean;
+  trustedQuote: string;
+  userMinOut: string;
+  vault: Address;
+  vaultBalance: string;
+  vaultMinOut: string;
+  vaultPaused: boolean;
+}
+
+export interface GalileoTradeEvidence {
+  proofTxHash?: Hex;
+  storageRef?: string;
+  storageRoot?: Hex;
+  storageTxHash?: Hex;
+  tradeTxHash?: Hex;
+}
+
 export interface AgentTradeRequest {
   agentId: string;
   amountIn: string;
   auditId?: string;
+  chainId?: 16602;
+  clientRequestId?: string;
+  galileoConsent?: GalileoTradeConsentSubmission;
   intent: AgentTradeIntent;
   networkId: OgNetworkId;
   ownerAddress?: Address;
@@ -419,12 +527,14 @@ export interface AgentTradePreview {
     recipient: "vault-owner";
   };
   proofBundle: AgentAuditProofPreview;
+  galileo?: GalileoTradePreviewDetails;
   quote: AgentRouteQuote;
   route: AgentTradeRouteOption;
   vaultAddress?: Address;
 }
 
 export interface AgentTradeExecution {
+  galileo?: GalileoTradeEvidence;
   id: string;
   proofBundle: AgentAuditProofPreview;
   reason?: string;

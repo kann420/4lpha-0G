@@ -28,6 +28,9 @@
     "smoke:preflight": "hardhat run scripts/preflight.ts --network ogGalileo",
     "smoke:preflight:mainnet": "hardhat run scripts/preflight.ts --network ogMainnet",
     "smoke:vault": "hardhat run scripts/smoke-galileo.ts --network ogGalileo",
+    "deploy:galileo:trade-stack": "hardhat run scripts/deploy-galileo-trade-stack.ts --network ogGalileo",
+    "deploy:galileo:trade-stack:local": "hardhat run scripts/deploy-galileo-trade-stack.ts --network hardhatGalileo",
+    "verify:galileo:trade-stack": "tsx scripts/verify-galileo-trade-stack.ts",
     "deploy:vault:mainnet": "hardhat run scripts/deploy-mainnet-core.ts --network ogMainnet",
     "deploy:vault:mainnet:factory": "hardhat run scripts/deploy-mainnet-factory.ts --network ogMainnet",
     "deploy:vault:mainnet:factory:v2": "hardhat run scripts/deploy-mainnet-factory-v2.ts --network ogMainnet",
@@ -73,7 +76,11 @@
     "smoke:v4:lp-lifecycle": "node scripts/lp-mainnet-v4-smoke.ts lp-lifecycle",
     "smoke:v4:lp-v4": "node scripts/lp-mainnet-v4-smoke.ts lp-v4",
     "smoke:v4:lp-partial": "node scripts/lp-mainnet-v4-smoke.ts lp-partial",
-    "smoke:v4:sweep": "node scripts/lp-mainnet-v4-smoke.ts sweep"
+    "smoke:v4:sweep": "node scripts/lp-mainnet-v4-smoke.ts sweep",
+    "remotion:preview": "remotion preview remotion/index.ts",
+    "remotion:render": "remotion render remotion/index.ts 4lpha-lp-agent output/4lpha-lp-agent.mp4",
+    "remotion:render:png": "remotion render remotion/index.ts 4lpha-lp-agent --image-format=png",
+    "remotion:render:lp-agent": "remotion render remotion/index.ts 4lpha-lp-agent output/4lpha-lp-agent.mp4"
   },
   "dependencies": {
     "@0gfoundation/0g-storage-ts-sdk": "^1.2.10",
@@ -91,6 +98,7 @@
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
     "@openzeppelin/contracts": "^5.6.1",
+    "@remotion/cli": "^4.0.487",
     "@tailwindcss/postcss": "4.3.1",
     "@types/node": "20.19.25",
     "@types/react": "19.2.7",
@@ -99,6 +107,7 @@
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.9",
     "hardhat": "^3.9.0",
+    "remotion": "^4.0.487",
     "tailwindcss": "4.3.1",
     "tsx": "^4.21.0",
     "typescript": "6.0.3"

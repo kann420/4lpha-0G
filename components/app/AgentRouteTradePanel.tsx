@@ -12,6 +12,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { AGENT_TRADE_ROUTES } from "@/lib/agent/trade-catalog";
+import { GalileoTradePanel } from "@/components/app/GalileoTradePanel";
 import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import type {
   AgentTradePreview,
@@ -30,6 +31,10 @@ export function AgentRouteTradePanel({
   networkLabel: string;
   onPreviewChange?: (preview: AgentTradePreview | null) => void;
 }) {
+  if (networkId === "testnet") {
+    return <GalileoTradePanel networkLabel={networkLabel} onPreviewChange={onPreviewChange} />;
+  }
+
   return (
     <AgentRouteTradePanelBody
       key={networkId}

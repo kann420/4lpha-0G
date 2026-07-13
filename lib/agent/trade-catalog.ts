@@ -1,4 +1,5 @@
 import type { AgentTradeRouteOption } from "@/lib/types";
+import { GALILEO_AGENT_TRADE_ROUTE } from "@/lib/galileo/trade-route";
 import { formatEther } from "viem";
 import { CURATED_MAINNET_POLICY_VAULT_ROUTES } from "@/lib/contracts/curated-routes";
 import { defaultMainnetPolicyVaultPolicy } from "@/lib/contracts/policy-vault";
@@ -6,53 +7,13 @@ import { SINGLE_OG_AGENT_ID, isOgMainnetAgentId } from "@/lib/agent/single-agent
 
 const MAINNET_ROUTE_CAP_0G = format0GAmount(defaultMainnetPolicyVaultPolicy.perTradeCap0G);
 
-const TESTNET_AGENT_TRADE_ROUTES: AgentTradeRouteOption[] = [
-  {
-    agentId: "agent-aura",
-    auditId: "audit-042",
-    defaultAmountIn: "0.05",
-    defaultSide: "buy",
-    id: "galileo-mock-w0g-musd",
-    inputToken: "0G",
-    label: "W0G / mUSD mock route",
-    maxAmountIn: "0.32",
-    minAmountOutRequired: true,
-    networkId: "testnet",
-    outputToken: "mUSD",
-    readiness: "ready",
-    venue: "Mock adapter",
-  },
-  {
-    agentId: "agent-kepler",
-    auditId: "audit-041",
-    defaultAmountIn: "0.03",
-    defaultSide: "sell",
-    id: "galileo-mock-inventory-trim",
-    inputToken: "mUSD",
-    label: "mUSD / W0G inventory trim",
-    maxAmountIn: "0.18",
-    minAmountOutRequired: true,
-    networkId: "testnet",
-    outputToken: "0G",
-    readiness: "review",
-    venue: "Mock adapter",
-  },
-  {
-    agentId: "agent-aura",
-    auditId: "audit-040",
-    defaultAmountIn: "0.04",
-    defaultSide: "buy",
-    id: "galileo-unprotected-demo-route",
-    inputToken: "0G",
-    label: "Unprotected demo route",
-    maxAmountIn: "0.04",
-    minAmountOutRequired: false,
-    networkId: "testnet",
-    outputToken: "mRISK",
-    readiness: "blocked",
-    venue: "Rejected adapter",
-  },
-];
+// Galileo routes are populated only after the dedicated attested sandbox stack
+// is deployed and verified. The legacy mock rehearsal routes must never appear
+// in the public-testnet trade UI.
+// Keep this descriptor separate from the mainnet curated routes. Testnet UI
+// imports the Galileo module directly, so selecting Galileo never resolves a
+// mainnet route, address, or execution module.
+export const TESTNET_AGENT_TRADE_ROUTES: AgentTradeRouteOption[] = [GALILEO_AGENT_TRADE_ROUTE];
 
 const MAINNET_AGENT_TRADE_ROUTES: AgentTradeRouteOption[] = CURATED_MAINNET_POLICY_VAULT_ROUTES.map((route) => ({
   agentId: SINGLE_OG_AGENT_ID,
