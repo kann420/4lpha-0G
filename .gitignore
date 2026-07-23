@@ -29,3 +29,8 @@ pnpm-debug.log*
 *.bak
 .env*.bak
 .r3-*
+
+# Marketing Video Templates (Remotion)
+marketing-video-p2v/
+marketing-video-pmg/
+.remotion/

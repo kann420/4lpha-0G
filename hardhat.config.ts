@@ -4,7 +4,11 @@ import { defineConfig } from "hardhat/config";
 
 dotenv.config({ path: ".env.local", quiet: true });
 
-const configuredPrivateKeys = [process.env.DEPLOYER_PRIVATE_KEY]
+const galileoPrivateKeys = [process.env.GALILEO_DEPLOYER_PRIVATE_KEY]
+  .filter((value): value is string => value !== undefined && value !== "")
+  .filter((value, index, values) => values.indexOf(value) === index);
+
+const mainnetPrivateKeys = [process.env.DEPLOYER_PRIVATE_KEY]
   .filter((value): value is string => value !== undefined && value !== "")
   .filter((value, index, values) => values.indexOf(value) === index);
 
@@ -86,17 +90,28 @@ export default defineConfig({
       blockGasLimit: 60_000_000,
       transactionGasCap: 60_000_000,
     },
+    hardhatGalileo: {
+      type: "edr-simulated",
+      chainType: "l1",
+      chainId: 16602,
+      allowUnlimitedContractSize: true,
+      blockGasLimit: 60_000_000,
+      transactionGasCap: 60_000_000,
+    },
     ogGalileo: {
       type: "http",
       chainType: "l1",
-      url: process.env.OG_RPC_URL ?? "https://evmrpc-testnet.0g.ai",
-      accounts: configuredPrivateKeys,
+      // Deliberately no OG_RPC_URL / DEPLOYER_PRIVATE_KEY fallback. The invalid
+      // placeholder fails before a network request when a caller forgot to set
+      // the Galileo-specific endpoint.
+      url: process.env.OG_GALILEO_RPC_URL ?? "https://missing-galileo-rpc.invalid",
+      accounts: galileoPrivateKeys.length === 0 ? [] : galileoPrivateKeys,
     },
     ogMainnet: {
       type: "http",
       chainType: "l1",
       url: process.env.OG_RPC_URL ?? "https://evmrpc.0g.ai",
-      accounts: configuredPrivateKeys,
+      accounts: mainnetPrivateKeys.length === 0 ? [] : mainnetPrivateKeys,
     },
   },
 });

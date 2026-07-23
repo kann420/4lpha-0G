@@ -17,6 +17,7 @@ import { VaultActionPanel } from "@/components/app/VaultActionPanel";
 import { VaultPocketsPanel } from "@/components/app/VaultPocketsPanel";
 import { useOgNetwork } from "@/components/app/useOgNetwork";
 import { useWalletPolicyVault, type V4MigrationResult } from "@/components/app/useWalletPolicyVault";
+import { useGalileoWalletVault, type GalileoVaultState } from "@/components/app/useGalileoWalletVault";
 import {
   getPolicyVaultReadiness,
   UNBOUNDED_POLICY_LIMIT,
@@ -69,6 +70,7 @@ const INITIAL_CUSTOM_POLICY_FORM: CustomPolicyForm = {
 export function VaultSurface() {
   const { network, networkId, setNetworkId } = useOgNetwork();
   const walletVault = useWalletPolicyVault(network);
+  const galileoVault = useGalileoWalletVault(network.id === "testnet");
   const vaultReadiness = getPolicyVaultReadiness(network.id);
   const walletAccount = useAccount();
   const ownerBalance = useBalance({
@@ -162,6 +164,9 @@ export function VaultSurface() {
               />
             </div>
             <div className="animate-feed-reveal min-w-0" style={{ animationDelay: "120ms" }}>
+              {network.id === "testnet" ? (
+                <GalileoSwapVaultPanel vault={galileoVault} />
+              ) : null}
               <FundManualDepositPanel
                 factoryAddress={walletVault.factoryAddress}
                 creationReady={vaultReadiness.isReady}
@@ -171,7 +176,7 @@ export function VaultSurface() {
                 network={network}
                 onCreateVault={walletVault.createVault}
                 onRefreshVaultAddress={walletVault.refreshVaultAddress}
-                legacyCreateAvailable={network.id !== "mainnet"}
+                legacyCreateAvailable={false}
                 vaultAddress={walletVault.vaultAddress}
                 walletConnected={walletAccount.isConnected}
               />
@@ -295,6 +300,71 @@ function FundRouteHeader({ network }: { network: OgNetworkConfig }) {
             label="Routes"
             value={`${CURATED_MAINNET_POLICY_VAULT_ROUTES.length} curated`}
           />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function GalileoSwapVaultPanel({ vault }: { vault: GalileoVaultState }) {
+  const [depositAmount, setDepositAmount] = useState("0.001");
+  const [withdrawAmount, setWithdrawAmount] = useState("0.001");
+  const nativeReserve = vault.poolNativeReserve === null ? "—" : `${formatUnits(vault.poolNativeReserve, 18)} 0G`;
+  const tokenReserve = vault.poolTokenReserve === null ? "—" : `${formatUnits(vault.poolTokenReserve, 6)} mUSDC`;
+  const poolHealth = vault.poolNativeReserve !== null && vault.poolTokenReserve !== null
+    ? (vault.poolNativeReserve < parseEther("0.25") || vault.poolTokenReserve < 250_000_000n ? "Below operating floor" : "Healthy")
+    : "Unavailable";
+
+  return (
+    <section className="rounded-hero border border-primary/25 bg-panel-solid-strong p-4 sm:p-6 lg:rounded-[30px]" style={{ boxShadow: "var(--shadow-hero)" }}>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">GALILEO TESTNET · REAL TX · SANDBOX LIQUIDITY</p>
+          <h2 className="mt-2 font-heading text-xl font-semibold text-foreground">Galileo Swap Vault</h2>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-muted">Wallet actions are chain-pinned to 16602 and re-verify the attested sandbox stack before signing.</p>
+        </div>
+        <button type="button" onClick={() => void vault.refresh()} disabled={vault.isBusy} className="inline-flex h-10 items-center justify-center gap-2 rounded-full border border-line bg-panel px-4 text-sm text-foreground disabled:opacity-50">
+          <RefreshCcw className="h-4 w-4" /> Refresh
+        </button>
+      </div>
+
+      <div className="mt-5 grid gap-3 sm:grid-cols-3">
+        <StatTile icon={<ShieldCheck className="h-4 w-4" />} label="Attestation" tone={vault.attested ? "emerald" : "amber"} value={vault.attested ? "Verified" : "Pending"} />
+        <StatTile icon={<Network className="h-4 w-4" />} label="Pool reserves" value={`${nativeReserve} / ${tokenReserve}`} />
+        <StatTile icon={<AlertTriangle className="h-4 w-4" />} label="Pool health" tone={poolHealth === "Healthy" ? "emerald" : "amber"} value={poolHealth} />
+      </div>
+
+      <div className="mt-4 rounded-card border border-line bg-background/30 p-4 text-sm">
+        <p className="font-mono text-xs text-foreground break-all">Vault: {vault.vaultAddress ?? "No Galileo vault deployed"}</p>
+        <p className="mt-2 text-muted">{vault.status}</p>
+        {!vault.vaultAddress ? (
+          <button type="button" disabled={!vault.canCreate} onClick={() => void vault.createVault()} className="mt-3 rounded-full bg-foreground px-3 py-2 text-xs font-medium text-background disabled:opacity-50">
+            Deploy my Galileo Swap Vault
+          </button>
+        ) : null}
+        {!vault.attested ? <p className="mt-2 text-xs leading-5 text-amber">Your wallet deploys this Galileo-only vault. The dedicated server attestor must then attest its exact on-chain configuration; this UI cannot self-attest or substitute a mainnet registry.</p> : null}
+        {vault.attestationRequest ? <p className="mt-2 font-mono text-[11px] leading-5 text-muted">Attestation request staged for vault {vault.attestationRequest.vault}; deployment {vault.attestationRequest.deploymentTxHash.slice(0, 10)}…</p> : null}
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        <div className="rounded-card border border-line bg-panel p-4">
+          <p className="text-sm font-medium text-foreground">Testnet funding</p>
+          <p className="mt-1 text-xs leading-5 text-muted">Faucet balance: {vault.faucetBalance === null ? "—" : `${formatUnits(vault.faucetBalance, 6)} mUSDC`}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button type="button" disabled={vault.isBusy} onClick={() => void vault.requestFaucet()} className="rounded-full border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-medium text-primary disabled:opacity-50">Claim 10 mUSDC</button>
+            <input value={depositAmount} onChange={(event) => setDepositAmount(event.target.value)} inputMode="decimal" aria-label="Deposit 0G amount" className="min-w-0 flex-1 rounded-full border border-line bg-background px-3 text-xs text-foreground" />
+            <button type="button" disabled={!vault.canWrite} onClick={() => void vault.deposit(depositAmount)} className="rounded-full bg-foreground px-3 py-2 text-xs font-medium text-background disabled:opacity-50">Deposit 0G</button>
+          </div>
+        </div>
+        <div className="rounded-card border border-line bg-panel p-4">
+          <p className="text-sm font-medium text-foreground">Owner safety controls</p>
+          <p className="mt-1 text-xs leading-5 text-muted">Pause: {vault.paused === null ? "—" : vault.paused ? "active" : "off"} · Executor: {vault.executorRevoked === null ? "—" : vault.executorRevoked ? "revoked" : "active"}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button type="button" disabled={!vault.canWrite} onClick={() => void vault.setPaused(!vault.paused)} className="rounded-full border border-line px-3 py-2 text-xs text-foreground disabled:opacity-50">{vault.paused ? "Unpause" : "Pause"}</button>
+            <button type="button" disabled={!vault.canWrite || vault.executorRevoked === true} onClick={() => void vault.revokeExecutor()} className="rounded-full border border-red-500/30 px-3 py-2 text-xs text-red-300 disabled:opacity-50">Revoke executor</button>
+            <input value={withdrawAmount} onChange={(event) => setWithdrawAmount(event.target.value)} inputMode="decimal" aria-label="Withdraw 0G amount" className="min-w-0 flex-1 rounded-full border border-line bg-background px-3 text-xs text-foreground" />
+            <button type="button" disabled={!vault.canWrite} onClick={() => void vault.withdraw(withdrawAmount)} className="rounded-full border border-line px-3 py-2 text-xs text-foreground disabled:opacity-50">Withdraw</button>
+          </div>
         </div>
       </div>
     </section>
