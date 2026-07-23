@@ -31,6 +31,7 @@
     "deploy:galileo:trade-stack": "hardhat run scripts/deploy-galileo-trade-stack.ts --network ogGalileo",
     "deploy:galileo:trade-stack:local": "hardhat run scripts/deploy-galileo-trade-stack.ts --network hardhatGalileo",
     "verify:galileo:trade-stack": "tsx scripts/verify-galileo-trade-stack.ts",
+    "attest:galileo:vault": "node --conditions=react-server --import tsx/esm scripts/galileo-attest-vault.ts",
     "deploy:vault:mainnet": "hardhat run scripts/deploy-mainnet-core.ts --network ogMainnet",
     "deploy:vault:mainnet:factory": "hardhat run scripts/deploy-mainnet-factory.ts --network ogMainnet",
     "deploy:vault:mainnet:factory:v2": "hardhat run scripts/deploy-mainnet-factory-v2.ts --network ogMainnet",

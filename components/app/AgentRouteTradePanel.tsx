@@ -12,6 +12,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { AGENT_TRADE_ROUTES } from "@/lib/agent/trade-catalog";
+import { GalileoAgentDeployPanel } from "@/components/app/GalileoAgentDeployPanel";
 import { GalileoTradePanel } from "@/components/app/GalileoTradePanel";
 import { dispatchSigmaPetReaction } from "@/lib/copilot/sigma-pet";
 import type {
@@ -32,7 +33,7 @@ export function AgentRouteTradePanel({
   onPreviewChange?: (preview: AgentTradePreview | null) => void;
 }) {
   if (networkId === "testnet") {
-    return <GalileoTradePanel networkLabel={networkLabel} onPreviewChange={onPreviewChange} />;
+    return <GalileoTestnetPanels networkLabel={networkLabel} onPreviewChange={onPreviewChange} />;
   }
 
   return (
@@ -42,6 +43,29 @@ export function AgentRouteTradePanel({
       networkLabel={networkLabel}
       onPreviewChange={onPreviewChange}
     />
+  );
+}
+
+/**
+ * Galileo needs its own agent-creation surface: the testnet roster is a local
+ * Storage-verified record, not a mainnet Agentic ID, so it cannot reuse the
+ * mainnet create flow. Deploying an agent bumps rosterToken to reload the roster.
+ */
+function GalileoTestnetPanels({
+  networkLabel,
+  onPreviewChange,
+}: {
+  networkLabel: string;
+  onPreviewChange?: (preview: AgentTradePreview | null) => void;
+}) {
+  const [rosterToken, setRosterToken] = useState(0);
+  const bumpRoster = useCallback(() => setRosterToken((value) => value + 1), []);
+
+  return (
+    <div className="grid gap-4">
+      <GalileoAgentDeployPanel onDeployed={bumpRoster} />
+      <GalileoTradePanel networkLabel={networkLabel} onPreviewChange={onPreviewChange} rosterToken={rosterToken} />
+    </div>
   );
 }
 

@@ -27,9 +27,12 @@ const ALLOWED_STORAGE_ORIGINS = new Set([
 export function GalileoTradePanel({
   networkLabel,
   onPreviewChange,
+  rosterToken = 0,
 }: {
   networkLabel: string;
   onPreviewChange?: (preview: AgentTradePreview | null) => void;
+  /** Bumped by the deploy panel so a freshly created agent appears without a reload. */
+  rosterToken?: number;
 }) {
   const account = useAccount();
   const signMessage = useSignMessage();
@@ -88,7 +91,7 @@ export function GalileoTradePanel({
     }
   }, [account.address]);
 
-  useEffect(() => { void loadAgents(); }, [loadAgents]);
+  useEffect(() => { void loadAgents(); }, [loadAgents, rosterToken]);
 
   const requestTrade = useCallback(async (intent: "preview" | "execute", signedConsent?: GalileoTradeConsentSubmission) => {
     if (!account.address || !selectedAgent) {

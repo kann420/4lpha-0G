@@ -430,6 +430,44 @@ export interface GalileoTradeConsentSubmission extends GalileoTradeConsentIssue 
   };
 }
 
+/**
+ * Owner-supplied agent configuration for a Galileo deploy consent. The server
+ * derives the agent key and reference from this; the client never supplies them.
+ */
+export interface GalileoAgentDeployConfig {
+  filters: string[];
+  name: string;
+  runtime?: {
+    maxHoldingMinutes?: number;
+    maxPositions?: number;
+    maxTrade0G?: string;
+    slippageBps?: number;
+  };
+  vault: Address;
+}
+
+/** Deploy consent adds the server-derived identity to the base consent issue. */
+export interface GalileoAgentDeployConsentIssue extends GalileoTradeConsentIssue {
+  agentKey: Hex;
+  agentRef: string;
+  configDigest: Hex;
+}
+
+export interface GalileoAgentDeployResponse {
+  data?: {
+    agentKey?: Hex;
+    agentRef?: string;
+    status?: "already_verified";
+    storageRef?: string;
+    storageRoot?: Hex;
+    storageVerified?: true;
+  };
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
 export interface GalileoTradePreviewDetails {
   adapter: Address;
   agentKey: Hex;
