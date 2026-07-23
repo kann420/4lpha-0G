@@ -18,6 +18,7 @@
     "dev:full": "node --conditions=react-server --import tsx scripts/dev-local.ts",
     "dev:dry-run": "node --conditions=react-server --import tsx scripts/dev-local.ts --dry-run",
     "dev:app": "next dev",
+    "prebuild": "hardhat compile",
     "build": "next build",
     "start": "node scripts/start-production.mjs",
     "start:web": "next start",
